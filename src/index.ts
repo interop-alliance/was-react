@@ -1,0 +1,171 @@
+/*!
+ * Copyright (c) 2026 Interop Alliance. All rights reserved.
+ */
+/**
+ * `@interop/was-react`: build "Bring Your Own Everything" (BYOE) apps on Wallet
+ * Attached Storage -- DID-Auth login via a CHAPI wallet, local-first encrypted
+ * storage, and background sync to a WAS server.
+ *
+ * This is the core entry. The optional MUI + react-router components live at
+ * `@interop/was-react/mui`; the Node-only dev-grant provisioner lives at
+ * `@interop/was-react/dev`. Neither is re-exported here.
+ */
+
+// Configuration contract.
+export {
+  DEFAULT_DB_NAME,
+  DEFAULT_STORAGE_KEY_PREFIX,
+  DEFAULT_SYNC_POLL_MS,
+  DEFAULT_EXPIRY_WARNING_MS,
+  DEFAULT_EXPIRY_WATCH_MS,
+  collectionKeyForId,
+  type WasCollectionConfig,
+  type WasSyncConfig,
+  type WasExpiryConfig,
+  type WasAppConfig,
+  type StoreRegistryEntry,
+  type StoreRegistry
+} from './config.js'
+
+// Grant parsing / topology routing.
+export {
+  parseInvocationTarget,
+  parseGrants,
+  type ParsedGrants
+} from './grants.js'
+
+// Identity: seed-derived agents + per-collection vault keys.
+export {
+  deriveIdentity,
+  deriveCollectionKeys,
+  DEFAULT_IDENTITY_HANDLE,
+  DEFAULT_KAK_HANDLE,
+  type IdentityAgents,
+  type CollectionKeys
+} from './identity/agents.js'
+export {
+  createDocumentLoader,
+  type DocumentLoader
+} from './identity/documentLoader.js'
+export { createSeedStore, type SeedStore } from './identity/seedStore.js'
+export {
+  issueSeedCredential,
+  parseSeedCredential,
+  findSeedCredential,
+  wrapCredentialForStore,
+  bytesToBase64url,
+  base64urlToBytes,
+  type SeedCredentialConfig,
+  type ParsedSeedCredential
+} from './identity/seedCredential.js'
+export { initAppSession } from './identity/initAppSession.js'
+export {
+  persistAppSession,
+  restoreAppSession,
+  clearAppSession,
+  isExpired,
+  isNearExpiry,
+  earliestExpiry,
+  type AppSessionRecord,
+  type RestoredAppSession
+} from './identity/appSession.js'
+
+// Auth: CHAPI bridge, VPR construction, response verification, login flow.
+export {
+  DEFAULT_MEDIATOR_BASE,
+  loadChapi,
+  chapiGet,
+  chapiStore
+} from './auth/chapi.js'
+export {
+  RW_ACTIONS,
+  SPACE_READ_REFERENCE_ID,
+  newChallenge,
+  buildSeedProbeVpr,
+  buildGrantsVpr
+} from './auth/loginRequest.js'
+export {
+  verifyLoginPresentation,
+  grantsOf,
+  checkGrants,
+  type CheckedGrants
+} from './auth/verifyResponse.js'
+export {
+  loginWithWallet,
+  requestGrants,
+  LoginCancelledError,
+  type LoginConfig,
+  type LoginPhase,
+  type LoginOutcome
+} from './auth/loginFlow.js'
+export type {
+  WalletAPIMessage,
+  IVPOffer,
+  IVPRequest,
+  IVPRDetails,
+  IVPRQuery,
+  IQueryByExample,
+  IDIDAuthenticationQuery,
+  IZcapQuery,
+  ICapabilityQueryDetail,
+  WalletResponse,
+  WalletRequestProfile,
+  IVerifiableCredential,
+  IVerifiablePresentation,
+  IZcap
+} from './auth/walletRequestTypes.js'
+
+// The collection-agnostic RxDB-WAS replication core.
+export * from './sync/index.js'
+
+// Storage: local encrypted replica, the process-wide store holder, entity
+// stores, the delegated remote store, sync status, rehydrate mechanism, and the
+// replication controller.
+export { LocalStore } from './storage/localStore.js'
+export {
+  setLocalStore,
+  requireStore,
+  hasStore,
+  clearLocalStore,
+  getDeviceId
+} from './storage/storageManager.js'
+export { createEntityStore, type EntityStore } from './storage/entityStore.js'
+export { WasRemoteStore, type MarkerResult } from './storage/wasRemoteStore.js'
+export {
+  useSyncStatusStore,
+  type SyncStatus
+} from './storage/syncStatusStore.js'
+export {
+  hydrateAll,
+  clearAllEntityStores,
+  patchFromChange,
+  scheduleRehydrate
+} from './storage/rehydrate.js'
+export {
+  isAuthError,
+  SyncController,
+  createSyncController
+} from './storage/syncController.js'
+export { startWasSync } from './storage/wasSync.js'
+
+// Session lifecycle: the wallet-mode auth store factory + the app-ready gate.
+export {
+  createAuthStore,
+  useAppReady,
+  type AuthStatus,
+  type AuthState,
+  type WasAuthStore
+} from './session/index.js'
+
+// React: the session provider + hooks.
+export {
+  WasSessionProvider,
+  WasSessionContext,
+  useAuthStore,
+  useSession,
+  useLogin,
+  useLogout,
+  useReconnect,
+  useSyncStatus,
+  type SyncRollup
+} from './react/index.js'
