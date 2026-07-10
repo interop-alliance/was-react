@@ -1,6 +1,6 @@
 # @interop/was-react Changelog
 
-## 0.0.1 - TBD
+## 0.1.0-0.1.1 -
 
 ### Added
 
@@ -21,4 +21,3 @@
   `SyncStatusChip`) under the `./mui` entry.
 - Node-only dev-grants provisioner (`provisionDevGrants`) and the
 `was-provision-dev-grants` CLI under the `./dev` entry.
-</content>
