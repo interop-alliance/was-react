@@ -27,6 +27,12 @@ describe('parseSeed', () => {
       0xde, 0xad, 0xbe, 0xef
     ])
   })
+
+  it('decodes hex and base64url of the same bytes to identical output', () => {
+    const bytes = [0xfb, 0xff, 0xbf]
+    expect(Array.from(parseSeed('fbffbf'))).toEqual(bytes)
+    expect(Array.from(parseSeed('-_-_'))).toEqual(bytes)
+  })
 })
 
 describe('parseCollections', () => {

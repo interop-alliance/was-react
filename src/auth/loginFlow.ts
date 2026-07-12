@@ -46,26 +46,40 @@ import type { ParsedGrants } from '../grants.js'
  * central app config later.
  */
 export interface LoginConfig {
-  /** This app's own web origin (the anti-phishing bind on the app key). */
+  /**
+   * This app's own web origin (the anti-phishing bind on the app key).
+   */
   appOrigin: string
-  /** Human-readable app name, used in the wallet consent reason lines. */
+  /**
+   * Human-readable app name, used in the wallet consent reason lines.
+   */
   appName: string
-  /** The WAS collection ids to request read/write grants for. */
+  /**
+   * The WAS collection ids to request read/write grants for.
+   */
   collections: string[]
-  /** The seed-credential type name + vocabulary namespace. */
+  /**
+   * The seed-credential type name + vocabulary namespace.
+   */
   credential: SeedCredentialConfig
-  /** The JSON-LD document loader (see `createDocumentLoader`). */
+  /**
+   * The JSON-LD document loader (see `createDocumentLoader`).
+   */
   documentLoader: DocumentLoader
   /**
    * The expected WAS server URL. When set, every granted zcap must target it;
    * grants pointing anywhere else are rejected at login.
    */
   wasServerUrl?: string
-  /** The CHAPI mediator base URL (defaults to `DEFAULT_MEDIATOR_BASE`). */
+  /**
+   * The CHAPI mediator base URL (defaults to `DEFAULT_MEDIATOR_BASE`).
+   */
   mediatorBase?: string
 }
 
-/** A user-facing progress phase, for the login page's status line. */
+/**
+ * A user-facing progress phase, for the login page's status line.
+ */
 export type LoginPhase =
   'probing' | 'storing-key' | 'requesting-grants' | 'verifying'
 
@@ -74,13 +88,19 @@ export interface LoginOutcome {
   identity: IdentityAgents
   grants: IZcap[]
   parsed: ParsedGrants
-  /** ISO timestamp: the earliest expiry across the grants. */
+  /**
+   * ISO timestamp: the earliest expiry across the grants.
+   */
   expires: string
-  /** Whether this login created a brand-new app key (first run). */
+  /**
+   * Whether this login created a brand-new app key (first run).
+   */
   firstRun: boolean
 }
 
-/** Thrown when the user cancels/dismisses a wallet popup. */
+/**
+ * Thrown when the user cancels/dismisses a wallet popup.
+ */
 export class LoginCancelledError extends Error {
   constructor(step: string) {
     super(`The wallet request was cancelled (${step}).`)

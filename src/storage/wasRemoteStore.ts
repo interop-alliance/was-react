@@ -21,9 +21,12 @@ import type { ZcapClient } from '@interop/ezcap'
 import type { IZcap } from '@interop/data-integrity-core'
 import { WasClient } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
+import { errorStatus, errorMessage } from '../sync/index.js'
 import type { ParsedGrants } from '../grants.js'
 
-/** The outcome of a best-effort encryption-marker PUT, for diagnostics. */
+/**
+ * The outcome of a best-effort encryption-marker PUT, for diagnostics.
+ */
 export interface MarkerResult {
   collectionId: string
   ok: boolean
@@ -112,10 +115,8 @@ export class WasRemoteStore {
       })
       return { collectionId, ok: true, status: response.status }
     } catch (err) {
-      const status =
-        (err as { status?: number }).status ??
-        (err as { response?: { status?: number } }).response?.status
-      const message = err instanceof Error ? err.message : String(err)
+      const status = errorStatus(err)
+      const message = errorMessage(err)
       return { collectionId, ok: false, status, error: message }
     }
   }

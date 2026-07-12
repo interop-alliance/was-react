@@ -11,32 +11,55 @@
  * Reactivity note: local writes patch the Map optimistically after the localStore
  * write resolves. Pulled remote changes are applied per-doc by the sync layer
  * through `patch` / `drop` (no whole-collection re-hydrate), keeping multi-device
- * edits and tombstones live without re-hydrate storms.
+ * edits and tombstones live without re-hydrate storms. Those per-doc remote
+ * patches are coalesced: a pull burst is buffered and flushed on a microtask as a
+ * single Map clone + single `set`, so an initial device sync of N docs is one
+ * re-render rather than N (and O(N) Map copies rather than O(N^2)). Interactive
+ * local writes stay immediate so a single edit is snappy.
  */
 import { create, type UseBoundStore, type StoreApi } from 'zustand'
 import { requireStore } from './storageManager.js'
 
 export interface EntityStore<T extends { id: string }> {
-  /** Decrypted payloads keyed by logical uuid. */
+  /**
+   * Decrypted payloads keyed by logical uuid.
+   */
   byId: Map<string, T>
   hydrated: boolean
-  /** Decrypt every live row of the collection into the Map. */
+  /**
+   * Decrypt every live row of the collection into the Map.
+   */
   hydrate: () => Promise<void>
-  /** Encrypt+insert a new doc, then add it to the Map. */
+  /**
+   * Encrypt+insert a new doc, then add it to the Map.
+   */
   insert: (doc: T) => Promise<void>
-  /** Re-encrypt a doc in place (sequence+1), then replace it in the Map. */
+  /**
+   * Re-encrypt a doc in place (sequence+1), then replace it in the Map.
+   */
   update: (doc: T) => Promise<void>
-  /** Tombstone a doc, then drop it from the Map. */
+  /**
+   * Tombstone a doc, then drop it from the Map.
+   */
   remove: (uuid: string) => Promise<void>
-  /** Replace the whole Map (used by hydrate and, later, the sync stream). */
+  /**
+   * Replace the whole Map WITHOUT persisting. This is the app-facing bulk
+   * reset verb: the registry pattern wires `StoreRegistryEntry.clear` to
+   * `replaceAll([])` on logout (see the README). Discards any buffered pull
+   * burst so it cannot resurrect docs past the reset.
+   */
   replaceAll: (docs: T[]) => void
   /**
    * Upsert one already-decrypted doc into the Map WITHOUT persisting (the sync
    * stream owns the persisted row already). Used for per-doc reactive patching
-   * of pulled/conflict-resolved remote changes.
+   * of pulled/conflict-resolved remote changes; coalesced into one store update
+   * per pull burst (see the reactivity note above).
    */
   patch: (doc: T) => void
-  /** Drop one doc from the Map WITHOUT persisting (remote tombstone patch). */
+  /**
+   * Drop one doc from the Map WITHOUT persisting (remote tombstone patch);
+   * coalesced with `patch` into one store update per pull burst.
+   */
   drop: (uuid: string) => void
 }
 
@@ -49,56 +72,96 @@ export interface EntityStore<T extends { id: string }> {
 export function createEntityStore<T extends { id: string }>(
   collectionKey: string
 ): UseBoundStore<StoreApi<EntityStore<T>>> {
-  return create<EntityStore<T>>(set => ({
-    byId: new Map<string, T>(),
-    hydrated: false,
-    hydrate: async () => {
-      const docs = await requireStore().listEntities<T>(collectionKey)
-      set({ byId: new Map(docs.map(d => [d.id, d])), hydrated: true })
-    },
-    insert: async doc => {
-      await requireStore().insertEntity(collectionKey, doc)
+  return create<EntityStore<T>>(set => {
+    // The pull path (`patch` / `drop`) can fire once per remote change; an
+    // initial device sync of N docs would otherwise clone the byId Map N times
+    // and push N separate store updates (O(N^2) copies + N re-renders). Buffer
+    // the per-doc remote patches and flush the whole burst in ONE Map clone +
+    // ONE `set` on a microtask, preserving per-event insert/drop ordering.
+    const pending: Array<
+      { type: 'upsert'; doc: T } | { type: 'drop'; uuid: string }
+    > = []
+    let flushScheduled = false
+
+    /**
+     * Applies the buffered pull burst in one Map clone + one `set`.
+     */
+    function flushPending(): void {
+      flushScheduled = false
+      if (pending.length === 0) {
+        return
+      }
+      const ops = pending.splice(0)
       set(state => {
+        let changed = false
         const byId = new Map(state.byId)
-        byId.set(doc.id, doc)
-        return { byId }
-      })
-    },
-    update: async doc => {
-      await requireStore().updateEntity(collectionKey, doc)
-      set(state => {
-        const byId = new Map(state.byId)
-        byId.set(doc.id, doc)
-        return { byId }
-      })
-    },
-    remove: async uuid => {
-      await requireStore().deleteEntity(collectionKey, uuid)
-      set(state => {
-        const byId = new Map(state.byId)
-        byId.delete(uuid)
-        return { byId }
-      })
-    },
-    replaceAll: docs => {
-      set({ byId: new Map(docs.map(d => [d.id, d])), hydrated: true })
-    },
-    patch: doc => {
-      set(state => {
-        const byId = new Map(state.byId)
-        byId.set(doc.id, doc)
-        return { byId }
-      })
-    },
-    drop: uuid => {
-      set(state => {
-        if (!state.byId.has(uuid)) {
-          return state
+        for (const op of ops) {
+          if (op.type === 'upsert') {
+            byId.set(op.doc.id, op.doc)
+            changed = true
+          } else if (byId.delete(op.uuid)) {
+            changed = true
+          }
         }
-        const byId = new Map(state.byId)
-        byId.delete(uuid)
-        return { byId }
+        // A burst of stray drops (ids not present) leaves the Map untouched;
+        // keep the old reference so no needless re-render fires.
+        return changed ? { byId } : state
       })
     }
-  }))
+
+    /**
+     * Schedules a single microtask flush per pull burst.
+     */
+    function schedulePendingFlush(): void {
+      if (!flushScheduled) {
+        flushScheduled = true
+        queueMicrotask(flushPending)
+      }
+    }
+
+    return {
+      byId: new Map<string, T>(),
+      hydrated: false,
+      hydrate: async () => {
+        const docs = await requireStore().listEntities<T>(collectionKey)
+        set({ byId: new Map(docs.map(d => [d.id, d])), hydrated: true })
+      },
+      insert: async doc => {
+        await requireStore().insertEntity(collectionKey, doc)
+        set(state => {
+          const byId = new Map(state.byId)
+          byId.set(doc.id, doc)
+          return { byId }
+        })
+      },
+      update: async doc => {
+        await requireStore().updateEntity(collectionKey, doc)
+        set(state => {
+          const byId = new Map(state.byId)
+          byId.set(doc.id, doc)
+          return { byId }
+        })
+      },
+      remove: async uuid => {
+        await requireStore().deleteEntity(collectionKey, uuid)
+        set(state => {
+          const byId = new Map(state.byId)
+          byId.delete(uuid)
+          return { byId }
+        })
+      },
+      replaceAll: docs => {
+        pending.length = 0
+        set({ byId: new Map(docs.map(doc => [doc.id, doc])), hydrated: true })
+      },
+      patch: doc => {
+        pending.push({ type: 'upsert', doc })
+        schedulePendingFlush()
+      },
+      drop: uuid => {
+        pending.push({ type: 'drop', uuid })
+        schedulePendingFlush()
+      }
+    }
+  })
 }

@@ -22,18 +22,30 @@
  *
  * The resolution rules, in order:
  *
- * 1. Version-only conflict: when the real master's content (`data` +
- *    `_deleted`) still equals the assumed master's, the server holds nothing
- *    newer than what this replica last synced -- the 412 came from a stale
- *    `If-Match` (typically our own earlier write racing its feed echo). The
- *    local state (edit or tombstone) is re-asserted and re-pushed against the
- *    corrected version. Without this rule a local delete would be dropped by
- *    rule 4 and the entity would silently resurrect.
- * 2. Both sides carry an LWW payload: pure payload LWW via `payloadWins`.
- * 3. A live local edit vs an incomparable remote (e.g. a remote tombstone):
+ * 1. Version-only conflict: when the real master's whole content (`data` +
+ *    `custom` + `_deleted`) still equals the assumed master's, the server holds
+ *    nothing newer than what this replica last synced -- the 412 came from a
+ *    stale `If-Match` (typically our own earlier write racing its feed echo).
+ *    The local state (edit or tombstone) is re-asserted and re-pushed against
+ *    the corrected version. Without this rule a local delete would be dropped by
+ *    rule 5 and the entity would silently resurrect. `custom` MUST be part of
+ *    this comparison, or a concurrent metadata-only edit committed on the server
+ *    would be misclassified here and clobbered (rule 2 is what settles it).
+ * 2. Metadata conflict: `data` and `_deleted` are unchanged from the assumed
+ *    master but `custom` differs -- a metadata-only edit committed on the server
+ *    since this replica last synced (another device won the `/meta` race).
+ *    Metadata carries no LWW timestamp of its own (the payload `updatedAt` lives
+ *    in the encrypted `data`, which is equal on both sides here), so there is no
+ *    payload to compare; the sound, replica-independent default is that the
+ *    server-committed state wins -- the real master is adopted for `custom`.
+ *    Without this rule the equal-`data` case would fall through to rule 3, where
+ *    the two payloads compare equal and the tie keeps the local (stale) `custom`,
+ *    silently clobbering the committed metadata.
+ * 3. Both sides carry an LWW payload: pure payload LWW via `payloadWins`.
+ * 4. A live local edit vs an incomparable remote (e.g. a remote tombstone):
  *    the edit wins and is re-pushed (resurrection).
- * 4. Everything else -- a local tombstone vs a REAL remote content change, or
- *    both sides incomparable: the master wins. Together with rule 3 this makes
+ * 5. Everything else -- a local tombstone vs a REAL remote content change, or
+ *    both sides incomparable: the master wins. Together with rule 4 this makes
  *    the delete-vs-concurrent-edit rule "the edit wins" on every replica: a
  *    tombstone carries no LWW payload of its own, so a genuine racing edit
  *    deterministically survives, whichever write reached the server first.
@@ -42,13 +54,17 @@ import type { WithDeleted } from 'rxdb/plugins/core'
 import type { Json, SyncedDoc } from './types.js'
 import { remotePayloadWins } from './lww.js'
 
-/** The LWW fields read out of a decrypted entity payload. */
+/**
+ * The LWW fields read out of a decrypted entity payload.
+ */
 interface LwwPayload {
   updatedAt: string
   deviceId: string
 }
 
-/** Structural equality of two opaque bodies (used for the fast `isEqual`). */
+/**
+ * Structural equality of two opaque bodies (used for the fast `isEqual`).
+ */
 function bodiesEqual(a: Json | undefined, b: Json | undefined): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
 }
@@ -122,32 +138,51 @@ export function makeLwwConflictHandler(
       newDocumentState: WithDeleted<SyncedDoc>
       assumedMasterState?: WithDeleted<SyncedDoc>
     }): Promise<WithDeleted<SyncedDoc>> {
-      // Rule 1 -- version-only conflict: the master's content is exactly what
-      // this replica last synced (only the revision moved, e.g. our own write
-      // racing its feed echo), so nothing remote is actually newer. Re-assert
-      // the local state -- crucially including a local TOMBSTONE, which rule 4
-      // would otherwise drop (the silent-resurrection bug).
+      // Rule 1 -- version-only conflict: the master's whole content (`data` +
+      // `custom`) is exactly what this replica last synced (only the revision
+      // moved, e.g. our own write racing its feed echo), so nothing remote is
+      // actually newer. Re-assert the local state -- crucially including a local
+      // TOMBSTONE, which rule 5 would otherwise drop (the silent-resurrection
+      // bug). `custom` is part of this equality so a concurrent metadata-only
+      // edit is NOT misclassified here (rule 2 handles it).
       if (
         assumedMasterState !== undefined &&
         realMasterState._deleted === assumedMasterState._deleted &&
-        bodiesEqual(realMasterState.data, assumedMasterState.data)
+        bodiesEqual(realMasterState.data, assumedMasterState.data) &&
+        bodiesEqual(realMasterState.custom, assumedMasterState.custom)
       ) {
         return newDocumentState
+      }
+      // Rule 2 -- metadata conflict: `data` and `_deleted` are unchanged from
+      // the assumed master, but `custom` moved on the server (a metadata-only
+      // edit that won the `/meta` race on another device). Metadata has no LWW
+      // timestamp of its own -- the payload `updatedAt` lives in `data`, equal
+      // on both sides here -- so the sound, replica-independent default is that
+      // the server-committed state wins: adopt the real master for `custom`.
+      // Without this rule the equal-`data` case would reach rule 3 with two
+      // equal payloads and the tie would keep the local (stale) metadata.
+      if (
+        assumedMasterState !== undefined &&
+        realMasterState._deleted === assumedMasterState._deleted &&
+        bodiesEqual(realMasterState.data, assumedMasterState.data) &&
+        !bodiesEqual(realMasterState.custom, assumedMasterState.custom)
+      ) {
+        return realMasterState
       }
       const [remote, local] = await Promise.all([
         lwwFieldsOf(realMasterState, decrypt),
         lwwFieldsOf(newDocumentState, decrypt)
       ])
-      // Rule 2 -- both sides comparable: pure payload LWW.
+      // Rule 3 -- both sides comparable: pure payload LWW.
       if (remote && local) {
         return payloadWins(remote, local) ? realMasterState : newDocumentState
       }
-      // Rule 3 -- a live local edit against a remote tombstone (or otherwise
+      // Rule 4 -- a live local edit against a remote tombstone (or otherwise
       // incomparable remote): keep the edit (resurrect / re-assert the write).
       if (local && !remote) {
         return newDocumentState
       }
-      // Rule 4 -- everything else (a local tombstone racing a REAL remote
+      // Rule 5 -- everything else (a local tombstone racing a REAL remote
       // content change, or both incomparable): the master wins, which is
       // deterministic and convergent across replicas (the edit survives the
       // delete on every device).

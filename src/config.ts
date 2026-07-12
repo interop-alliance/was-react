@@ -28,17 +28,27 @@ import type { SeedCredentialConfig } from './identity/seedCredential.js'
  * mapped to its WAS collection `id` (the generic, interoperable name).
  */
 export interface WasCollectionConfig {
-  /** App-side name; the localStore / RxDB collection handle. */
+  /**
+   * App-side name; the localStore / RxDB collection handle.
+   */
   key: string
-  /** WAS collection id (the unprefixed, cross-app generic name). */
+  /**
+   * WAS collection id (the unprefixed, cross-app generic name).
+   */
   id: string
 }
 
-/** Optional replication tuning; each field falls back to a documented default. */
+/**
+ * Optional replication tuning; each field falls back to a documented default.
+ */
 export interface WasSyncConfig {
-  /** Replication batch size; `undefined` leaves the adapter default. */
+  /**
+   * Replication batch size; `undefined` leaves the adapter default.
+   */
   batchSize?: number
-  /** RxDB `retryTime` backoff (ms); `undefined` leaves the adapter default. */
+  /**
+   * RxDB `retryTime` backoff (ms); `undefined` leaves the adapter default.
+   */
   retryMs?: number
   /**
    * Periodic re-sync interval (ms) that keeps an open session converging while
@@ -48,7 +58,9 @@ export interface WasSyncConfig {
   pollMs?: number
 }
 
-/** Optional near-expiry warning tuning; each field has the same default. */
+/**
+ * Optional near-expiry warning tuning; each field has the same default.
+ */
 export interface WasExpiryConfig {
   /**
    * How close to grant expiry (ms) the reconnect warning is raised proactively.
@@ -67,20 +79,30 @@ export interface WasExpiryConfig {
  * through the auth, storage, and sync layers.
  */
 export interface WasAppConfig {
-  /** Human-readable app name, used in the wallet consent reason lines. */
+  /**
+   * Human-readable app name, used in the wallet consent reason lines.
+   */
   appName: string
-  /** This app's own web origin (the anti-phishing bind on the app key). */
+  /**
+   * This app's own web origin (the anti-phishing bind on the app key).
+   */
   appOrigin: string
   /**
    * The expected WAS server URL. When set, every granted zcap must target it;
    * grants pointing anywhere else are rejected at login.
    */
   wasServerUrl?: string
-  /** The CHAPI mediator base URL (the requesting origin is appended). */
+  /**
+   * The CHAPI mediator base URL (the requesting origin is appended).
+   */
   mediatorBase?: string
-  /** The storage collections (logical key to WAS collection id). */
+  /**
+   * The storage collections (logical key to WAS collection id).
+   */
   collections: WasCollectionConfig[]
-  /** The seed-credential type name + vocabulary namespace. */
+  /**
+   * The seed-credential type name + vocabulary namespace.
+   */
   credential: SeedCredentialConfig
   /**
    * Base name for the local RxDB database and session IndexedDB naming. Defaults
@@ -93,9 +115,13 @@ export interface WasAppConfig {
    * prefix so an existing per-install device id is preserved.
    */
   storageKeyPrefix?: string
-  /** Replication tuning; all fields optional with documented defaults. */
+  /**
+   * Replication tuning; all fields optional with documented defaults.
+   */
   sync?: WasSyncConfig
-  /** Near-expiry warning tuning; all fields optional with the same default. */
+  /**
+   * Near-expiry warning tuning; all fields optional with the same default.
+   */
   expiry?: WasExpiryConfig
 }
 
@@ -106,16 +132,22 @@ export interface WasAppConfig {
  * without a rigid CRUD interface.
  */
 export interface StoreRegistryEntry {
-  /** Decrypt every live row of this collection into the app's store. */
+  /**
+   * Decrypt every live row of this collection into the app's store.
+   */
   hydrate: () => Promise<void>
   /**
    * Upsert one already-decrypted payload into the store WITHOUT persisting (the
    * sync stream already owns the persisted row).
    */
   upsert: (doc: { id: string }) => void
-  /** Drop one payload (by logical uuid) from the store WITHOUT persisting. */
+  /**
+   * Drop one payload (by logical uuid) from the store WITHOUT persisting.
+   */
   drop: (uuid: string) => void
-  /** Empty this collection's store (logout). */
+  /**
+   * Empty this collection's store (logout).
+   */
   clear: () => void
 }
 
@@ -125,10 +157,14 @@ export interface StoreRegistryEntry {
  */
 export type StoreRegistry = Record<string, StoreRegistryEntry>
 
-/** Default base name for the local RxDB database + session IndexedDB naming. */
+/**
+ * Default base name for the local RxDB database + session IndexedDB naming.
+ */
 export const DEFAULT_DB_NAME = 'was-react'
 
-/** Default `localStorage` key prefix (e.g. `was-react:deviceId`). */
+/**
+ * Default `localStorage` key prefix (e.g. `was-react:deviceId`).
+ */
 export const DEFAULT_STORAGE_KEY_PREFIX = 'was-react:'
 
 /**
@@ -139,10 +175,14 @@ export const DEFAULT_STORAGE_KEY_PREFIX = 'was-react:'
  */
 export const DEFAULT_SYNC_POLL_MS = 15000
 
-/** Default near-expiry warning threshold (ms): 1 hour. */
+/**
+ * Default near-expiry warning threshold (ms): 1 hour.
+ */
 export const DEFAULT_EXPIRY_WARNING_MS = 60 * 60 * 1000
 
-/** Default near-expiry watch poll interval (ms): 1 minute. */
+/**
+ * Default near-expiry watch poll interval (ms): 1 minute.
+ */
 export const DEFAULT_EXPIRY_WATCH_MS = 60 * 1000
 
 /**

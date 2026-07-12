@@ -42,6 +42,13 @@ describe('base64url helpers', () => {
     const encoded = bytesToBase64url(randomSeed())
     expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/)
   })
+
+  it('encodes a known vector padding-free with url-safe characters', () => {
+    // Bytes [0xfb, 0xff, 0xbf] encode as base64url "-_-_" (uses - and _).
+    const bytes = new Uint8Array([0xfb, 0xff, 0xbf])
+    expect(bytesToBase64url(bytes)).toBe('-_-_')
+    expect(Array.from(base64urlToBytes('-_-_'))).toEqual([0xfb, 0xff, 0xbf])
+  })
 })
 
 describe('issueSeedCredential', () => {

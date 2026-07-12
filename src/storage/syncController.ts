@@ -34,6 +34,7 @@ import {
   createWasReplication,
   createWasSyncPort,
   withFeedMasterRead,
+  WasSyncAuthError,
   type SyncCheckpoint,
   type SyncedDoc
 } from '../sync/index.js'
@@ -46,13 +47,18 @@ import type { LocalStore } from './localStore.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'
 import { useSyncStatusStore } from './syncStatusStore.js'
 
-/** The subset of an RxJS `Subscription` we hold (rxjs is a transitive dep). */
+/**
+ * The subset of an RxJS `Subscription` we hold (rxjs is a transitive dep).
+ */
 type Unsubscribable = { unsubscribe: () => void }
 
 /**
- * Whether a replication error (an RxError wrapping the port's thrown errors)
- * carries an HTTP 401/403 anywhere in its tree -- the storage-access-expired
- * signal.
+ * Whether a replication error signals expired/revoked storage access. Every WAS
+ * request the replication makes funnels through the sync port, which maps a
+ * `401` / `403` to a typed {@link WasSyncAuthError} at the boundary. RxDB then
+ * wraps that thrown error inside an RxError (nested under `cause` / `errors` /
+ * `parameters.errors`), so this walks the error graph looking for a
+ * `WasSyncAuthError` instance rather than re-extracting raw status codes.
  *
  * @param err {unknown}
  * @returns {boolean}
@@ -66,21 +72,13 @@ export function isAuthError(err: unknown): boolean {
       continue
     }
     seen.add(current)
+    if (current instanceof WasSyncAuthError) {
+      return true
+    }
     const candidate = current as {
-      status?: unknown
-      statusCode?: unknown
       cause?: unknown
       parameters?: { errors?: unknown[] }
       errors?: unknown[]
-      response?: { status?: unknown }
-    }
-    const statuses = [
-      candidate.status,
-      candidate.statusCode,
-      candidate.response?.status
-    ]
-    if (statuses.includes(401) || statuses.includes(403)) {
-      return true
     }
     if (candidate.cause) {
       queue.push(candidate.cause)
@@ -111,6 +109,7 @@ export class SyncController {
   private _onlineHandler?: () => void
   private _pollTimer?: ReturnType<typeof setInterval>
   private _started = false
+  private _stopped = false
 
   constructor({
     collections,
@@ -151,7 +150,10 @@ export class SyncController {
     ) => void
     onAuthError?: () => void
   }): Promise<void> {
-    if (this._started) {
+    // `stop()` is terminal: a controller stopped before `start()` ran (a logout
+    // that raced an in-flight session bootstrap) must never spin up
+    // replications against the now-closed database.
+    if (this._started || this._stopped) {
       return
     }
     this._started = true
@@ -162,6 +164,18 @@ export class SyncController {
 
     try {
       for (const { key, id } of this._collections) {
+        const capability = remoteStore.collectionCapability(id)
+        // A collection the grant set does not cover would otherwise sync with no
+        // capability and draw a fail-closed 403, tripping the session-wide
+        // "storage access expired" banner. Skip it (and flag it) instead so an
+        // uncovered collection never masquerades as expired access.
+        if (!capability) {
+          console.warn(
+            `Skipping sync for "${id}": no delegated capability covers it.`
+          )
+          setStatus(id, 'error')
+          continue
+        }
         setStatus(id, 'idle')
         // Wrap the verbatim port so the 412 conflict re-read resolves `version`
         // from the changes-feed body (CORS hides the `GET` ETag cross-origin).
@@ -170,9 +184,7 @@ export class SyncController {
             was: remoteStore.was,
             spaceId: remoteStore.spaceId,
             collectionId: id,
-            ...(remoteStore.collectionCapability(id) && {
-              capability: remoteStore.collectionCapability(id)
-            })
+            capability
           })
         )
         const state = createWasReplication({
@@ -240,6 +252,9 @@ export class SyncController {
    * @returns {Promise<void>}
    */
   async stop(): Promise<void> {
+    // Latch first so a concurrent `start()` (a logout racing the session
+    // bootstrap) sees the controller as terminally stopped and bails.
+    this._stopped = true
     if (this._onlineHandler) {
       window.removeEventListener('online', this._onlineHandler)
       this._onlineHandler = undefined

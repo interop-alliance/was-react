@@ -5,7 +5,9 @@ import { describe, it, expect } from 'vitest'
 import type { IZcap } from '@interop/data-integrity-core'
 import { parseGrants, parseInvocationTarget } from './grants.js'
 
-/** Minimal delegated-zcap stub carrying just the fields `parseGrants` reads. */
+/**
+ * Minimal delegated-zcap stub carrying just the fields `parseGrants` reads.
+ */
 function grant(invocationTarget: string): IZcap {
   return {
     '@context': ['https://w3id.org/zcap/v1'],

@@ -44,6 +44,30 @@ import { deriveCollectionKeys } from '../identity/agents.js'
 type EntityPayload = { id: string }
 
 /**
+ * A stable, RxDB-safe database name per controller DID (FNV-1a hex), so two
+ * wallet users on one browser never collide on the same local database.
+ *
+ * @param options {object}
+ * @param options.dbName {string}   the app's base database name
+ * @param options.controllerDid {string}   the session controller DID
+ * @returns {string}
+ */
+export function dbNameForController({
+  dbName,
+  controllerDid
+}: {
+  dbName: string
+  controllerDid: string
+}): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < controllerDid.length; index++) {
+    hash ^= controllerDid.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return `${dbName}-${hash.toString(16).padStart(8, '0')}`
+}
+
+/**
  * The local encrypted store. Construct via {@link LocalStore.init}, which
  * derives the per-collection ciphers from the master seed and opens RxDB.
  */

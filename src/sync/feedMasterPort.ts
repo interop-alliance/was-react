@@ -2,26 +2,28 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * A thin adapter over a {@link WasSyncPort} that resolves a resource's current
- * master state (for the 412 conflict re-read) from the CHANGES-FEED BODY rather
- * than the base port's `GET` ETag header.
+ * The `get` half of a {@link WasSyncPort}: resolves a resource's current master
+ * state (for the 412 conflict re-read) from the CHANGES-FEED BODY. Wraps a
+ * {@link WasSyncBasePort} (query + conditional writes) and adds the `get` the
+ * conflict assembler needs, producing a full {@link WasSyncPort}.
  *
- * Why this exists: the mutable-head model settles a 412 by re-reading the
- * resource's current `version` and comparing payloads (LWW). The verbatim
- * `wasSyncPort.get()` reads that `version` from the response's `etag` header --
- * which a browser hides on a CROSS-ORIGIN response unless the server sends
- * `Access-Control-Expose-Headers: etag`. A server that does not expose it makes
- * cross-origin `get()` report `version: 0`, which makes the loser of a push race
- * re-push forever with a stale `If-Match` and never converge. The `changes` feed
- * carries `version` (and `data`, `_deleted`, ...) in the JSON BODY, which CORS
- * never strips, so resolving the master from the feed is both correct and
- * origin-independent. Normal pull/push are unaffected (they already read
- * `version` from the feed body), so only `get` is overridden.
+ * Why the feed body rather than a `GET` ETag header: the mutable-head model
+ * settles a 412 by re-reading the resource's current `version` and comparing
+ * payloads (LWW). A raw `GET` reads that `version` from the response's `etag`
+ * header -- which a browser hides on a CROSS-ORIGIN response unless the server
+ * sends `Access-Control-Expose-Headers: etag`. A server that does not expose it
+ * would make a cross-origin re-read report `version: 0`, so the loser of a push
+ * race would re-push forever with a stale `If-Match` and never converge. The
+ * `changes` feed carries `version` (and `data`, `_deleted`, ...) in the JSON
+ * BODY, which CORS never strips, so resolving the master from the feed is both
+ * correct and origin-independent. Normal pull/push are unaffected (they already
+ * read `version` from the feed body).
  */
 import type {
   Json,
   MasterState,
   SyncCheckpoint,
+  WasSyncBasePort,
   WasSyncPort,
   WireDoc
 } from './types.js'
@@ -53,13 +55,14 @@ function toMasterState(doc: WireDoc): MasterState {
 }
 
 /**
- * Wraps a base port so its `get` resolves the master state from the changes feed.
- * `query`, `putContent`, `deleteContent`, and `putMeta` pass straight through.
+ * Wraps a base port with a `get` that resolves the master state from the changes
+ * feed. `query`, `putContent`, `deleteContent`, and `putMeta` pass straight
+ * through.
  *
- * @param base {WasSyncPort}
+ * @param base {WasSyncBasePort}
  * @returns {WasSyncPort}
  */
-export function withFeedMasterRead(base: WasSyncPort): WasSyncPort {
+export function withFeedMasterRead(base: WasSyncBasePort): WasSyncPort {
   return {
     query: base.query.bind(base),
     putContent: base.putContent.bind(base),
@@ -76,12 +79,26 @@ export function withFeedMasterRead(base: WasSyncPort): WasSyncPort {
         if (found) {
           return toMasterState(found)
         }
+        // Reached the end of the feed without finding it: the resource is
+        // genuinely absent (a delete/delete race), so report `null` and let the
+        // conflict assembler synthesize a tombstone.
         if (next === null || documents.length === 0) {
-          break
+          return null
         }
         checkpoint = next
       }
-      return null
+      // The page budget ran out before the feed's end. The feed is keyset-
+      // ordered ascending on `updatedAt`, so a just-conflicted resource sits at
+      // the tail -- the least-reachable position -- and may well be past the
+      // cap. Reporting `null` here would fabricate a false tombstone in the
+      // conflict assembler and drop the winner's payload. Throw instead: RxDB
+      // treats a thrown push-handler error as retryable, so the whole
+      // replication cycle retries rather than diverging.
+      throw new Error(
+        `Feed master re-read for resource "${id}" exhausted its ` +
+          `${MAX_PAGES}-page scan budget without reaching the end of the ` +
+          `changes feed; retrying.`
+      )
     }
   }
 }

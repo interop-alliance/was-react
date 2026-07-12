@@ -28,6 +28,7 @@ import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import { CapabilityAgent } from '@interop/webkms-client'
 import { deriveIdentity } from '../identity/agents.js'
 import { RW_ACTIONS } from '../auth/loginRequest.js'
+import { errorStatus } from '../sync/index.js'
 
 /**
  * A fixed, distinct default provisioner seed -- the "wallet" that owns the dev
@@ -46,15 +47,25 @@ export const DEFAULT_PROVISIONER_SEED: Uint8Array = new Uint8Array([
  * given) is `{ grants }`.
  */
 export interface ProvisionDevGrantsResult {
-  /** One delegated read/write zcap per requested collection. */
+  /**
+   * One delegated read/write zcap per requested collection.
+   */
   grants: IDelegatedZcap[]
-  /** The created space id. */
+  /**
+   * The created space id.
+   */
   spaceId: string
-  /** The absolute space URL (`<serverUrl>/space/<spaceId>`). */
+  /**
+   * The absolute space URL (`<serverUrl>/space/<spaceId>`).
+   */
   spaceUrl: string
-  /** The app (relying party) controller DID the grants were delegated to. */
+  /**
+   * The app (relying party) controller DID the grants were delegated to.
+   */
   appDid: string
-  /** The throwaway provisioner (space owner) DID. */
+  /**
+   * The throwaway provisioner (space owner) DID.
+   */
   provisionerDid: string
   /**
    * Present only when `probe` was requested: the result of PUTting the
@@ -230,9 +241,7 @@ export async function provisionDevGrants({
     log(`  AUTHORIZED -- server responded ${response.status}`)
     result.probe = { authorized: true, status: response.status }
   } catch (err) {
-    const status =
-      (err as { status?: number }).status ??
-      (err as { response?: { status?: number } }).response?.status
+    const status = errorStatus(err)
     const data = (err as { data?: unknown }).data
     log(`  NOT AUTHORIZED -- status ${status ?? 'n/a'}`)
     if (data !== undefined) {

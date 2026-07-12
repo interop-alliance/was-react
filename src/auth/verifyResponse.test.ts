@@ -76,7 +76,9 @@ beforeAll(async () => {
   appDid = (await deriveIdentity({ seed: appSeed })).controllerDid
 })
 
-/** An UNSIGNED structural grant (checkGrants is structural, not cryptographic). */
+/**
+ * An UNSIGNED structural grant (checkGrants is structural, not cryptographic).
+ */
 function grantFor({
   collectionId,
   controller = appDid,
@@ -101,14 +103,18 @@ function grantFor({
   } as unknown as IZcap
 }
 
-/** The full wallet-shaped grant set: RW collection grants + space read. */
+/**
+ * The full wallet-shaped grant set: RW collection grants + space read.
+ */
 function fullGrantSet(): IZcap[] {
   const grants = TEST_COLLECTIONS.map(id => grantFor({ collectionId: id }))
   grants.push(grantFor({ actions: ['GET', 'HEAD'] }))
   return grants
 }
 
-/** Signs a wallet-style VP with optional embedded VC and zcap array. */
+/**
+ * Signs a wallet-style VP with optional embedded VC and zcap array.
+ */
 async function walletVp({
   challenge,
   domain = ORIGIN,

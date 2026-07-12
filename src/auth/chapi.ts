@@ -19,10 +19,14 @@ import { loadOnce, WebCredential } from 'credential-handler-polyfill'
 import type { IVerifiablePresentation } from '@interop/data-integrity-core'
 import type { IVPRDetails } from './walletRequestTypes.js'
 
-/** The default CHAPI mediator base; the requesting origin is appended at load. */
+/**
+ * The default CHAPI mediator base; the requesting origin is appended at load.
+ */
 export const DEFAULT_MEDIATOR_BASE = 'https://authn.io/mediator?origin='
 
-/** The wire shape a CHAPI response resolves to. */
+/**
+ * The wire shape a CHAPI response resolves to.
+ */
 interface ChapiWireResponse {
   dataType?: string
   data?: unknown
@@ -47,7 +51,9 @@ function e2eBridgeActive(): boolean {
 
 let e2eRequestId = 0
 
-/** Queues a request for the e2e harness and polls for its response. */
+/**
+ * Queues a request for the e2e harness and polls for its response.
+ */
 async function e2eRoundTrip(
   type: 'get' | 'store',
   body: unknown

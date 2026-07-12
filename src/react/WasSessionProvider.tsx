@@ -10,7 +10,7 @@
  * created lazily in a `useState` initializer so it survives re-renders and is
  * never rebuilt.
  */
-import { createContext, useState, type ReactNode } from 'react'
+import { createContext, useEffect, useState, type ReactNode } from 'react'
 import type { StoreRegistry, WasAppConfig } from '../config.js'
 import { createAuthStore, type WasAuthStore } from '../session/authStore.js'
 
@@ -42,6 +42,15 @@ export function WasSessionProvider({
   const [store] = useState<WasAuthStore>(() =>
     createAuthStore({ config, registry })
   )
+  // Tear the live session down on unmount so an abandoned provider never leaves
+  // the expiry-watch interval and the replication loop firing against a store no
+  // one is reading (reliably hit by React StrictMode dev remounts and by tests).
+  // The persisted record survives, so a remount's `restore()` re-opens it.
+  useEffect(() => {
+    return () => {
+      void store.getState().destroy()
+    }
+  }, [store])
   return (
     <WasSessionContext.Provider value={store}>
       {children}

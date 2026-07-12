@@ -14,7 +14,17 @@ const decrypt = async (envelope: Json): Promise<Json> =>
 
 function row(
   payload: { updatedAt: string; deviceId: string } | null,
-  { deleted = false, version = 0 }: { deleted?: boolean; version?: number } = {}
+  {
+    deleted = false,
+    version = 0,
+    metaVersion,
+    custom
+  }: {
+    deleted?: boolean
+    version?: number
+    metaVersion?: number
+    custom?: Json
+  } = {}
 ): WithDeleted<SyncedDoc> {
   const doc: WithDeleted<SyncedDoc> = {
     id: 'r1',
@@ -24,6 +34,12 @@ function row(
   }
   if (payload !== null) {
     doc.data = { jwe: payload } as unknown as Json
+  }
+  if (metaVersion !== undefined) {
+    doc.metaVersion = metaVersion
+  }
+  if (custom !== undefined) {
+    doc.custom = custom
   }
   return doc
 }
@@ -143,6 +159,62 @@ describe('makeLwwConflictHandler', () => {
       assumedMasterState: assumed
     })
     expect(winner).toBe(master)
+  })
+
+  it('lets the real master win for custom on a metadata-only conflict (no data change)', async () => {
+    // Devices A and B both edit only `custom` of the same resource. A's
+    // `/meta` write commits first (metaVersion bumps); B's putMeta 412s, so the
+    // assembled master carries A's committed `custom` with `data` unchanged.
+    // The equal-`data` LWW payloads would tie and keep B's stale `custom`; rule
+    // 2 instead adopts the server-committed metadata so A's edit is not lost.
+    const payload = { updatedAt: 'T', deviceId: 'dA' }
+    const assumed = row(payload, {
+      version: 3,
+      metaVersion: 1,
+      custom: { jwe: 'C0' }
+    })
+    const master = row(payload, {
+      version: 3,
+      metaVersion: 2,
+      custom: { jwe: 'Ca' }
+    })
+    const localEdit = row(payload, {
+      version: 3,
+      metaVersion: 1,
+      custom: { jwe: 'Cb' }
+    })
+    const winner = await handler.resolve({
+      realMasterState: master,
+      newDocumentState: localEdit,
+      assumedMasterState: assumed
+    })
+    expect(winner).toBe(master)
+  })
+
+  it('re-asserts local state on a version-only conflict when custom is also unchanged', async () => {
+    // Both `data` and `custom` match the assumed master (only the revision
+    // moved), so rule 1 fires even though metadata exists: keep the local edit.
+    const payload = { updatedAt: 'T1', deviceId: 'dA' }
+    const assumed = row(payload, {
+      version: 0,
+      metaVersion: 1,
+      custom: { jwe: 'C0' }
+    })
+    const master = row(payload, {
+      version: 1,
+      metaVersion: 1,
+      custom: { jwe: 'C0' }
+    })
+    const edit = row(
+      { updatedAt: 'T2', deviceId: 'dA' },
+      { version: 0, metaVersion: 1, custom: { jwe: 'C0' } }
+    )
+    const winner = await handler.resolve({
+      realMasterState: master,
+      newDocumentState: edit,
+      assumedMasterState: assumed
+    })
+    expect(winner).toBe(edit)
   })
 
   it('re-asserts a local tombstone against a remote tombstone race (both deleted)', async () => {

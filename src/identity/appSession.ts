@@ -22,16 +22,22 @@ export interface AppSessionRecord {
   serverUrl: string
   spaceId: string
   grants: IZcap[]
-  /** ISO timestamp: the earliest expiry across the granted zcaps. */
+  /**
+   * ISO timestamp: the earliest expiry across the granted zcaps.
+   */
   expires: string
 }
 
-/** A restored session: the record plus the separately persisted seed. */
+/**
+ * A restored session: the record plus the separately persisted seed.
+ */
 export interface RestoredAppSession extends AppSessionRecord {
   seed: Uint8Array
 }
 
-/** Whether an ISO `expires` timestamp is in the past (or malformed). */
+/**
+ * Whether an ISO `expires` timestamp is in the past (or malformed).
+ */
 export function isExpired(expires: string, now: Date = new Date()): boolean {
   const at = new Date(expires).getTime()
   return Number.isNaN(at) || at <= now.getTime()

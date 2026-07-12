@@ -47,7 +47,7 @@ import {
   type LoginPhase
 } from '../auth/loginFlow.js'
 import { parseGrants, type ParsedGrants } from '../grants.js'
-import { LocalStore } from '../storage/localStore.js'
+import { LocalStore, dbNameForController } from '../storage/localStore.js'
 import {
   clearLocalStore,
   hasStore,
@@ -60,6 +60,7 @@ import {
   patchFromChange
 } from '../storage/rehydrate.js'
 import { startWasSync } from '../storage/wasSync.js'
+import { errorMessage } from '../sync/index.js'
 import {
   createSyncController,
   type SyncController
@@ -80,26 +81,48 @@ interface ActiveSession {
 
 export interface AuthState {
   status: AuthStatus
-  /** The current login phase, for the login page's progress line. */
+  /**
+   * The current login phase, for the login page's progress line.
+   */
   phase: LoginPhase | null
   error: string | null
   controllerDid: string | null
-  /** ISO expiry of the current grant set (earliest zcap expiry). */
+  /**
+   * ISO expiry of the current grant set (earliest zcap expiry).
+   */
   expires: string | null
-  /** A live 401/403 was seen mid-session: show the reconnect banner. */
+  /**
+   * A live 401/403 was seen mid-session: show the reconnect banner.
+   */
   accessExpired: boolean
   reconnecting: boolean
-  /** Hot restore from the persisted session; falls to `unauthenticated`. */
+  /**
+   * Hot restore from the persisted session; falls to `unauthenticated`.
+   */
   restore: () => Promise<void>
-  /** Full Login With Wallet (first-run or returning). */
+  /**
+   * Full Login With Wallet (first-run or returning).
+   */
   login: () => Promise<void>
-  /** Re-run the grants flow with the existing seed (expired access). */
+  /**
+   * Re-run the grants flow with the existing seed (expired access).
+   */
   reconnect: () => Promise<void>
   logout: () => Promise<void>
   notifyAccessExpired: () => void
+  /**
+   * Tears down the live session (expiry watch, controller, local store) WITHOUT
+   * wiping the persisted session record, and returns to `idle` so a fresh
+   * `restore()` can re-open it. Called from the provider's unmount cleanup so an
+   * unmount (or a React StrictMode dev remount) never orphans the replication
+   * loop or the expiry-watch interval.
+   */
+  destroy: () => Promise<void>
 }
 
-/** The vanilla zustand store returned by {@link createAuthStore}. */
+/**
+ * The vanilla zustand store returned by {@link createAuthStore}.
+ */
 export type WasAuthStore = StoreApi<AuthState>
 
 /**
@@ -159,15 +182,23 @@ export function createAuthStore({
    * TTL, so a short lead time never fires spuriously mid-session.
    */
   const warningMs = config.expiry?.warningMs ?? DEFAULT_EXPIRY_WARNING_MS
-  /** Poll interval for the near-expiry watch (grant expiry is coarse-grained). */
+  /**
+   * Poll interval for the near-expiry watch (grant expiry is coarse-grained).
+   */
   const watchMs = config.expiry?.watchMs ?? DEFAULT_EXPIRY_WATCH_MS
 
   let expiryTimer: ReturnType<typeof setInterval> | undefined
   // The per-session controller: single-use, stopped on logout and replaced on a
   // reconnect (started once per grant set).
   let controller: SyncController | null = null
+  // The in-flight `beginSync` promise (controller.start() awaits network round
+  // trips first). Awaited before teardown so a logout racing the bootstrap
+  // cannot stop the controller before it has finished starting.
+  let pendingSync: Promise<unknown> | null = null
 
-  /** Stops the near-expiry watch (logout / re-grant). */
+  /**
+   * Stops the near-expiry watch (logout / re-grant).
+   */
   function disarmExpiryWatch(): void {
     if (expiryTimer) {
       clearInterval(expiryTimer)
@@ -189,16 +220,6 @@ export function createAuthStore({
     }
     check()
     expiryTimer = setInterval(check, watchMs)
-  }
-
-  /** A stable, RxDB-safe database name per controller DID (FNV-1a hex). */
-  function dbNameForController(controllerDid: string): string {
-    let hash = 0x811c9dc5
-    for (let i = 0; i < controllerDid.length; i++) {
-      hash ^= controllerDid.charCodeAt(i)
-      hash = Math.imul(hash, 0x01000193) >>> 0
-    }
-    return `${dbName}-${hash.toString(16).padStart(8, '0')}`
   }
 
   /**
@@ -228,50 +249,114 @@ export function createAuthStore({
   }
 
   /**
-   * Opens storage + hydrates + starts sync for a validated session, persists it,
-   * and flips the ready gate. Shared by login and restore.
+   * Persists the session record, kicks off background replication, and arms the
+   * near-expiry watch. Shared by the login/restore activation and the reconnect
+   * re-grant paths (identical persist + begin-sync + arm sequence).
+   *
+   * @param options {object}
+   * @param options.seed {Uint8Array}
+   * @param options.identity {IdentityAgents}
+   * @param options.parsed {ParsedGrants}
+   * @param options.grants {IZcap[]}
+   * @param options.expires {string}
+   * @returns {Promise<void>}
    */
-  async function activateSession(session: ActiveSession): Promise<void> {
-    if (!hasStore()) {
-      const local = await LocalStore.init({
-        seed: session.seed,
-        collections: config.collections,
-        dbName: dbNameForController(session.identity.controllerDid),
-        ...(storage && { storage })
-      })
-      setLocalStore(local)
-    }
-    await hydrateAll(registry)
-    useAppReady.getState().setReady()
-
+  async function persistAndStartSync({
+    seed,
+    identity,
+    parsed,
+    grants,
+    expires
+  }: {
+    seed: Uint8Array
+    identity: IdentityAgents
+    parsed: ParsedGrants
+    grants: IZcap[]
+    expires: string
+  }): Promise<void> {
     await persistAppSession({
       session: {
-        seed: session.seed,
-        controllerDid: session.identity.controllerDid,
-        serverUrl: session.parsed.serverUrl,
-        spaceId: session.parsed.spaceId,
-        grants: session.grants,
-        expires: session.expires
+        seed,
+        controllerDid: identity.controllerDid,
+        serverUrl: parsed.serverUrl,
+        spaceId: parsed.spaceId,
+        grants,
+        expires
       },
       store: sessionStore
     })
-
     // Replication starts in the background; a down server never blocks entry.
-    void beginSync({
-      parsed: session.parsed,
-      zcapClient: session.identity.zcapClient
-    }).catch(err => console.warn('WAS sync failed to start:', err))
-
-    armExpiryWatch(session.expires)
+    pendingSync = beginSync({ parsed, zcapClient: identity.zcapClient })
+    void pendingSync.catch(err =>
+      console.warn('WAS sync failed to start:', err)
+    )
+    armExpiryWatch(expires)
   }
 
-  /** Tears down storage + sync + entity stores (logout and re-login paths). */
-  async function deactivateSession(): Promise<void> {
-    disarmExpiryWatch()
+  /**
+   * Awaits any in-flight `beginSync` (so the controller has finished starting)
+   * and then stops and releases the controller. Idempotent.
+   */
+  async function stopController(): Promise<void> {
+    if (pendingSync) {
+      try {
+        await pendingSync
+      } catch {
+        // A failed bootstrap is already logged by the `.catch` on `pendingSync`.
+      }
+      pendingSync = null
+    }
     if (controller) {
       await controller.stop()
       controller = null
     }
+  }
+
+  /**
+   * Opens storage + hydrates + starts sync for a validated session, persists it,
+   * and flips the ready gate. Shared by login and restore. Any failure after the
+   * store is installed tears the store back down (so a later login never reuses a
+   * half-open controller's database) and surfaces the open error before
+   * rethrowing.
+   */
+  async function activateSession(session: ActiveSession): Promise<void> {
+    try {
+      if (!hasStore()) {
+        const local = await LocalStore.init({
+          seed: session.seed,
+          collections: config.collections,
+          dbName: dbNameForController({
+            dbName,
+            controllerDid: session.identity.controllerDid
+          }),
+          ...(storage && { storage })
+        })
+        setLocalStore(local)
+      }
+      await hydrateAll(registry)
+      // Flip the ready gate only once the session is durably persisted.
+      await persistAndStartSync({
+        seed: session.seed,
+        identity: session.identity,
+        parsed: session.parsed,
+        grants: session.grants,
+        expires: session.expires
+      })
+      useAppReady.getState().setReady()
+    } catch (err) {
+      await deactivateSession()
+      const message = errorMessage(err)
+      useAppReady.getState().setError(message)
+      throw err
+    }
+  }
+
+  /**
+   * Tears down storage + sync + entity stores (logout and re-login paths).
+   */
+  async function deactivateSession(): Promise<void> {
+    disarmExpiryWatch()
+    await stopController()
     if (hasStore()) {
       try {
         await requireStore().close()
@@ -323,6 +408,13 @@ export function createAuthStore({
           set({ status: 'unauthenticated' })
           return
         }
+        // Unlike login/reconnect (which run `checkGrants`), a hot restore trusts
+        // the persisted grants; re-check that they still cover every configured
+        // collection so a partially-covered grant set raises the reconnect banner
+        // proactively rather than waiting for a per-collection 403 mid-session.
+        const uncovered = config.collections.filter(
+          collection => parsed.byCollectionId[collection.id] === undefined
+        )
         await activateSession({
           seed: restored.seed,
           identity,
@@ -334,7 +426,8 @@ export function createAuthStore({
           status: 'authenticated',
           controllerDid: identity.controllerDid,
           expires: restored.expires,
-          error: null
+          error: null,
+          accessExpired: uncovered.length > 0
         })
       } catch (err) {
         console.warn('Session restore failed:', err)
@@ -386,36 +479,25 @@ export function createAuthStore({
       }
       set({ reconnecting: true, error: null })
       try {
-        const restored = await restoreAppSession({ store: sessionStore })
-        // The seed survives grant expiry; only the grants need renewing. A
+        // The seed survives grant expiry; only the grants need renewing. Read it
+        // directly (not via `restoreAppSession`, which WIPES an expired record
+        // -- seed included -- exactly in the case reconnect exists for). A
         // missing seed means the session is unrecoverable in place.
-        const seed = restored?.seed
+        const seed = await sessionStore.loadSeed()
         if (!seed) {
           await get().logout()
           return
         }
         const identity = await initAppSession({ seed })
         const checked = await requestGrants({ identity, config: loginConfig })
-        if (controller) {
-          await controller.stop()
-          controller = null
-        }
-        await persistAppSession({
-          session: {
-            seed,
-            controllerDid: identity.controllerDid,
-            serverUrl: checked.parsed.serverUrl,
-            spaceId: checked.parsed.spaceId,
-            grants: checked.grants,
-            expires: checked.expires
-          },
-          store: sessionStore
-        })
-        void beginSync({
+        await stopController()
+        await persistAndStartSync({
+          seed,
+          identity,
           parsed: checked.parsed,
-          zcapClient: identity.zcapClient
-        }).catch(err => console.warn('WAS sync failed to restart:', err))
-        armExpiryWatch(checked.expires)
+          grants: checked.grants,
+          expires: checked.expires
+        })
         set({
           accessExpired: false,
           expires: checked.expires,
@@ -445,6 +527,19 @@ export function createAuthStore({
       if (!get().accessExpired) {
         set({ accessExpired: true })
       }
+    },
+
+    destroy: async () => {
+      await deactivateSession()
+      // Back to `idle` (not `unauthenticated`) and the record left intact: a
+      // StrictMode remount's `restore()` re-opens the same session from disk.
+      set({
+        status: 'idle',
+        phase: null,
+        error: null,
+        accessExpired: false,
+        reconnecting: false
+      })
     }
   }))
 
