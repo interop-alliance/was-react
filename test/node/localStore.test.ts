@@ -136,6 +136,55 @@ describe('LocalStore entity CRUD', () => {
     expect(rows).toHaveLength(0)
   })
 
+  it('upserts: inserts once then updates in place under a stable envelope', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    const note = makeNote('Upserted')
+    // Hydrate first so the index exists (a singleton store hydrates before it
+    // ever writes).
+    await store.listEntities<NoteDoc>(COLLECTION)
+
+    await store.upsertEntity(COLLECTION, note)
+    const first = await rawEnvelope(store)
+
+    const edited: NoteDoc = { ...note, title: 'Upserted again' }
+    await store.upsertEntity(COLLECTION, edited)
+    const second = await rawEnvelope(store)
+
+    // One row, same envelope id (update, not a second insert).
+    expect(second.id).toBe(first.id)
+    expect(second.sequence).toBeGreaterThan(first.sequence)
+    const listed = await store.listEntities<NoteDoc>(COLLECTION)
+    expect(listed).toHaveLength(1)
+    expect(listed[0]!.title).toBe('Upserted again')
+  })
+
+  it('resurrects as a create when the envelope was deleted elsewhere', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    const note = makeNote('Edited after remote delete')
+    await store.insertEntity(COLLECTION, note)
+    const original = await rawEnvelope(store)
+
+    // Simulate a remote tombstone being pulled: the row is removed and the
+    // uuid forgotten from the index (what forgetEnvelope + drop do).
+    await store.deleteEntity(COLLECTION, note.id)
+    expect(await store.listEntities<NoteDoc>(COLLECTION)).toHaveLength(0)
+
+    // A concurrent local edit must not throw; it resurrects the entity.
+    const edited: NoteDoc = {
+      ...note,
+      title: 'Resurrected',
+      updatedAt: new Date().toISOString()
+    }
+    await store.updateEntity(COLLECTION, edited)
+
+    const listed = await store.listEntities<NoteDoc>(COLLECTION)
+    expect(listed).toHaveLength(1)
+    expect(listed[0]!.title).toBe('Resurrected')
+    // A fresh envelope was minted (the old one is gone).
+    const resurrected = await rawEnvelope(store)
+    expect(resurrected.id).not.toBe(original.id)
+  })
+
   it('persists across a store reopen (survives reload)', async () => {
     const dbName = `was-react-test-${++dbCounter}`
     const store = await openStore(dbName)
@@ -148,5 +197,102 @@ describe('LocalStore entity CRUD', () => {
     const listed = await reopened.listEntities<NoteDoc>(COLLECTION)
     expect(listed).toHaveLength(1)
     expect(listed[0]).toEqual(note)
+  })
+})
+
+/**
+ * A singleton payload: one fixed logical id for the whole collection.
+ */
+function makeSingleton(
+  over: Partial<NoteDoc> & Pick<NoteDoc, 'updatedAt' | 'deviceId'>
+): NoteDoc {
+  return {
+    id: '_singleton',
+    title: 'current',
+    done: false,
+    category: 'selection',
+    createdAt: over.updatedAt,
+    ...over
+  }
+}
+
+describe('LocalStore singleton hydration', () => {
+  it('returns null and an empty collection when nothing is stored', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    expect(await store.hydrateSingleton<NoteDoc>(COLLECTION)).toBeNull()
+  })
+
+  it('reconciles duplicate singletons to the LWW winner and tombstones the rest', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    // Two devices each created the singleton before syncing: distinct envelope
+    // rows that both decrypt to `_singleton`.
+    const older = makeSingleton({
+      title: 'older',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      deviceId: 'device-a'
+    })
+    const newer = makeSingleton({
+      title: 'newer',
+      updatedAt: '2026-02-02T00:00:00.000Z',
+      deviceId: 'device-b'
+    })
+    await store.insertEntity(COLLECTION, older)
+    await store.insertEntity(COLLECTION, newer)
+    // Two physical rows, one logical id.
+    expect(await store.rxCollection(COLLECTION).find().exec()).toHaveLength(2)
+
+    const winner = await store.hydrateSingleton<NoteDoc>(COLLECTION)
+    expect(winner).toEqual(newer)
+    // The loser row is tombstoned, so exactly one live row remains.
+    expect(await store.rxCollection(COLLECTION).find().exec()).toHaveLength(1)
+
+    // A subsequent write routes as an in-place update on the surviving row (no
+    // third envelope is minted).
+    const moved: NoteDoc = { ...newer, title: 'moved' }
+    await store.upsertEntity(COLLECTION, moved)
+    expect(await store.rxCollection(COLLECTION).find().exec()).toHaveLength(1)
+    const listed = await store.listEntities<NoteDoc>(COLLECTION)
+    expect(listed).toHaveLength(1)
+    expect(listed[0]!.title).toBe('moved')
+  })
+
+  it('maps the logical id to the surviving envelope after reconciliation', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    const older = makeSingleton({
+      title: 'old',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      deviceId: 'device-a'
+    })
+    const newer = makeSingleton({
+      title: 'new',
+      updatedAt: '2026-02-02T00:00:00.000Z',
+      deviceId: 'device-b'
+    })
+    await store.insertEntity(COLLECTION, older)
+    await store.insertEntity(COLLECTION, newer)
+
+    await store.hydrateSingleton<NoteDoc>(COLLECTION)
+    // The index points at the one live row, so a tombstone for any OTHER
+    // (reconciled-away) envelope can be told apart from a real deletion.
+    const rows = await store.rxCollection(COLLECTION).find().exec()
+    expect(rows).toHaveLength(1)
+    expect(store.envelopeIdFor(COLLECTION, newer.id)).toBe(rows[0]!.id)
+  })
+
+  it('breaks an updatedAt tie by the greater deviceId', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    const at = '2026-03-03T00:00:00.000Z'
+    await store.insertEntity(
+      COLLECTION,
+      makeSingleton({ title: 'a', updatedAt: at, deviceId: 'device-a' })
+    )
+    await store.insertEntity(
+      COLLECTION,
+      makeSingleton({ title: 'z', updatedAt: at, deviceId: 'device-z' })
+    )
+
+    const winner = await store.hydrateSingleton<NoteDoc>(COLLECTION)
+    expect(winner!.deviceId).toBe('device-z')
+    expect(await store.rxCollection(COLLECTION).find().exec()).toHaveLength(1)
   })
 })

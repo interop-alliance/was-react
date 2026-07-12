@@ -140,7 +140,8 @@ export {
   hydrateAll,
   clearAllEntityStores,
   patchFromChange,
-  scheduleRehydrate
+  scheduleRehydrate,
+  cancelScheduledRehydrates
 } from './storage/rehydrate.js'
 export {
   isAuthError,

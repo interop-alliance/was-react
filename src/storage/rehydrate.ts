@@ -10,7 +10,7 @@
  */
 import type { Json } from '../sync/index.js'
 import type { StoreRegistry } from '../config.js'
-import { requireStore } from './storageManager.js'
+import { hasStore, requireStore } from './storageManager.js'
 
 /**
  * Hydrates every registered store from the (already opened) localStore.
@@ -77,6 +77,15 @@ export async function patchFromChange(
     return
   }
   if (deleted) {
+    // Only honor a tombstone for the envelope the entity currently lives in.
+    // A delete of a DIFFERENT envelope that decrypts to the same logical id is
+    // a stale duplicate being cleaned up (a reconciled singleton loser, or the
+    // pre-resurrection row of a locally re-created doc) -- dropping the live
+    // doc for it would undo the reconciliation/resurrection.
+    const mapped = requireStore().envelopeIdFor(collectionKey, payload.id)
+    if (mapped !== undefined && mapped !== row.id) {
+      return
+    }
     requireStore().forgetEnvelope(collectionKey, payload.id)
     entry.drop(payload.id)
   } else {
@@ -113,7 +122,26 @@ export function scheduleRehydrate(
     collectionKey,
     setTimeout(() => {
       rehydrateTimers.delete(collectionKey)
+      // A timer that outlived logout must not touch a torn-down store: hydrate
+      // reaches for `requireStore()`, which throws once the store is cleared.
+      if (!hasStore()) {
+        return
+      }
       void entry.hydrate()
     }, 50)
   )
+}
+
+/**
+ * Cancels every pending debounced re-hydrate. Called on logout so a timer that
+ * fires after the LocalStore is torn down does not reach a `requireStore()` that
+ * throws (an unhandled rejection).
+ *
+ * @returns {void}
+ */
+export function cancelScheduledRehydrates(): void {
+  for (const timer of rehydrateTimers.values()) {
+    clearTimeout(timer)
+  }
+  rehydrateTimers.clear()
 }

@@ -10,12 +10,16 @@ import {
   patchFromChange,
   hydrateAll,
   clearAllEntityStores,
-  scheduleRehydrate
+  scheduleRehydrate,
+  cancelScheduledRehydrates
 } from './rehydrate.js'
 
 // A fake LocalStore: `decryptEnvelope` unwraps `{ jwe: payload }` (mirroring the
 // lww handler test's fake cipher); the envelope index calls just record.
-function makeFakeStore({ failDecrypt = false } = {}): {
+function makeFakeStore({
+  failDecrypt = false,
+  index = {} as Record<string, string>
+} = {}): {
   store: LocalStore
   remembered: Array<[string, string, string]>
   forgotten: Array<[string, string]>
@@ -34,7 +38,8 @@ function makeFakeStore({ failDecrypt = false } = {}): {
     },
     forgetEnvelope: (key: string, uuid: string) => {
       forgotten.push([key, uuid])
-    }
+    },
+    envelopeIdFor: (_key: string, uuid: string) => index[uuid]
   } as unknown as LocalStore
   return { store, remembered, forgotten }
 }
@@ -128,6 +133,37 @@ describe('rehydrate mechanism', () => {
       expect(forgotten).toEqual([['notes', 'note-1']])
     })
 
+    it('ignores a tombstone for a stale duplicate envelope', async () => {
+      // The entity lives in env-live; a tombstone arrives for env-stale (a
+      // reconciled singleton loser or pre-resurrection row that decrypts to
+      // the same logical id). It must not drop the live doc.
+      const { store, forgotten } = makeFakeStore({
+        index: { 'note-1': 'env-live' }
+      })
+      setLocalStore(store)
+      const { registry, calls } = makeRegistry()
+      await patchFromChange(registry, 'notes', {
+        operation: 'DELETE',
+        documentData: { id: 'env-stale', data: envelope({ id: 'note-1' }) }
+      })
+      expect(calls.drop).toEqual([])
+      expect(forgotten).toEqual([])
+    })
+
+    it('honors a tombstone for the live envelope', async () => {
+      const { store, forgotten } = makeFakeStore({
+        index: { 'note-1': 'env-live' }
+      })
+      setLocalStore(store)
+      const { registry, calls } = makeRegistry()
+      await patchFromChange(registry, 'notes', {
+        operation: 'DELETE',
+        documentData: { id: 'env-live', data: envelope({ id: 'note-1' }) }
+      })
+      expect(calls.drop).toEqual(['note-1'])
+      expect(forgotten).toEqual([['notes', 'note-1']])
+    })
+
     it('drops on a soft-delete (_deleted) row', async () => {
       const { store } = makeFakeStore()
       setLocalStore(store)
@@ -194,6 +230,36 @@ describe('rehydrate mechanism', () => {
       const { registry, calls } = makeRegistry()
       scheduleRehydrate(registry, 'unknown')
       vi.advanceTimersByTime(60)
+      expect(calls.hydrate).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a scheduled re-hydrate that outlives the store teardown is a no-op', async () => {
+    vi.useFakeTimers()
+    try {
+      const { store } = makeFakeStore()
+      setLocalStore(store)
+      const { registry, calls } = makeRegistry()
+      scheduleRehydrate(registry, 'notes')
+      clearLocalStore()
+      await vi.advanceTimersByTimeAsync(60)
+      expect(calls.hydrate).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('cancelScheduledRehydrates drops every pending re-hydrate', async () => {
+    vi.useFakeTimers()
+    try {
+      const { store } = makeFakeStore()
+      setLocalStore(store)
+      const { registry, calls } = makeRegistry()
+      scheduleRehydrate(registry, 'notes')
+      cancelScheduledRehydrates()
+      await vi.advanceTimersByTimeAsync(60)
       expect(calls.hydrate).toBe(0)
     } finally {
       vi.useRealTimers()

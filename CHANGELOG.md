@@ -1,5 +1,39 @@
 # @interop/was-react Changelog
 
+## 0.1.4 - TBD
+
+### Added
+
+- `LocalStore.upsertEntity()`: inserts the entity when the collection has no row
+  for its uuid yet, otherwise re-encrypts it in place (the hydration index is
+  the source of truth, so callers need not track an insert-vs-update flag).
+- `LocalStore.hydrateSingleton()`: hydrates a singleton collection (at most one
+  logical entity) and reconciles duplicate rows -- two devices that each created
+  the singleton before syncing -- down to the last-write-wins winner,
+  tombstoning the losers so the space converges on one row.
+- `LocalStore.envelopeIdFor()`: exposes the hydration index's
+  `uuid -> envelopeId` mapping so the sync patch path can tell a tombstone for
+  the live envelope apart from one for a stale duplicate.
+- `cancelScheduledRehydrates()`: drops every pending debounced re-hydrate;
+  called during session teardown so a timer that outlives logout never reaches a
+  torn-down store.
+
+### Fixed
+
+- `LocalStore.updateEntity()` no longer throws when the entity's envelope is
+  gone (a remote tombstone was pulled mid-edit); it resurrects the entity as a
+  fresh create, matching the mutable-head LWW rule (a live local edit beats a
+  remote tombstone).
+- `patchFromChange()` ignores a pulled tombstone whose envelope id differs from
+  the one the entity currently lives in (a reconciled singleton loser or a
+  pre-resurrection row) -- previously such a stale tombstone dropped the live
+  doc; a debounced re-hydrate that fires after teardown is now a no-op.
+
+### Changed
+
+- Performance: hydration and index building decrypt rows concurrently instead of
+  serially (the unlock hot path).
+
 ## 0.1.3 - 2026-07-12
 
 ### Fixed

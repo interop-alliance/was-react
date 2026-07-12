@@ -55,6 +55,7 @@ import {
   setLocalStore
 } from '../storage/storageManager.js'
 import {
+  cancelScheduledRehydrates,
   clearAllEntityStores,
   hydrateAll,
   patchFromChange
@@ -356,6 +357,7 @@ export function createAuthStore({
    */
   async function deactivateSession(): Promise<void> {
     disarmExpiryWatch()
+    cancelScheduledRehydrates()
     await stopController()
     if (hasStore()) {
       try {
