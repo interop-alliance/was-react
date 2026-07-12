@@ -20,17 +20,31 @@
  * `/meta` write to a resource that does not yet exist.
  *
  * RxDB's push contract asks only for *conflicts* back (the current master state
- * of each rejected row); a successful write's new `version` / `metaVersion` is
- * not returned here -- it is picked up on the next pull, where our own write
- * echoes back as a remote change (idempotent, since the bodies are
- * byte-identical). We deliberately do not capture the `204` ETag to short-circuit
- * that echo: doing so would require a side write to the local revision fields
- * from inside the push handler, which risks a re-push loop, for no correctness
- * gain on immutable content-addressed collections.
+ * of each rejected row), so a successful write's new `version` / `metaVersion`
+ * is reported out-of-band: the response ETag of each accepted write is captured
+ * and handed to the optional `onWriteAccepted` callback, which writes the acked
+ * revision back into the local row (see `createWasReplication`). Without that
+ * write-back the local `version` would stay one revision behind the server and
+ * every subsequent conditional write would send a stale `If-Match` and 412. The
+ * write-back only touches the revision fields (never `data` / `updatedAt`), so
+ * the follow-up push cycle it triggers finds nothing changed to write and
+ * settles -- no re-push loop.
  */
 import type { WithDeleted } from 'rxdb/plugins/core'
 import type { Json, MasterState, SyncedDoc, WasSyncPort } from './types.js'
 import { WasSyncConflictError } from './types.js'
+
+/**
+ * The acked server revisions of one row's accepted writes: the new content
+ * `version` (from a `PUT /:id` or `DELETE /:id` response ETag) and/or the new
+ * `metaVersion` (from a `PUT /:id/meta` response ETag). Absent fields mean the
+ * corresponding write did not run or its response carried no ETag.
+ */
+export interface PushWriteAck {
+  id: string
+  version?: number
+  metaVersion?: number
+}
 
 /**
  * Formats a master revision (`version` or `metaVersion`) as the quoted strong
@@ -113,13 +127,15 @@ async function assembleConflict({
 /**
  * Sends one local change to the remote Collection as up to two conditional
  * writes (content, then metadata). Returns the master-state conflict entry on a
- * `412` at either step, or `null` on success.
+ * `412` at either step (with `ack: null`), or the accepted writes' acked
+ * revisions on success (`ack: null` when no response carried a revision).
  *
  * @param options {object}
  * @param options.port {WasSyncPort}
  * @param options.newDocumentState {WithDeleted<SyncedDoc>}
  * @param [options.assumedMasterState] {WithDeleted<SyncedDoc>}
- * @returns {Promise<WithDeleted<SyncedDoc> | null>}
+ * @returns {Promise<{ conflict: WithDeleted<SyncedDoc> | null,
+ *   ack: PushWriteAck | null }>}
  */
 async function pushRow({
   port,
@@ -129,20 +145,28 @@ async function pushRow({
   port: WasSyncPort
   newDocumentState: WithDeleted<SyncedDoc>
   assumedMasterState?: WithDeleted<SyncedDoc>
-}): Promise<WithDeleted<SyncedDoc> | null> {
+}): Promise<{
+  conflict: WithDeleted<SyncedDoc> | null
+  ack: PushWriteAck | null
+}> {
   const { id } = newDocumentState
   const assumedVersion = assumedMasterState?.version
   const isCreate = assumedMasterState === undefined
   try {
+    const ack: PushWriteAck = { id }
+
     if (newDocumentState._deleted) {
       // Delete supersedes any metadata write: drop the content, tombstone wins.
-      await port.deleteContent({
+      const ackedVersion = await port.deleteContent({
         id,
         ...(assumedVersion !== undefined && {
           ifMatch: formatEtag(assumedVersion)
         })
       })
-      return null
+      if (ackedVersion !== undefined) {
+        ack.version = ackedVersion
+      }
+      return { conflict: null, ack: ack.version !== undefined ? ack : null }
     }
 
     // Content half: write on create, or when the content body changed. For a
@@ -151,7 +175,7 @@ async function pushRow({
     const contentChanged =
       isCreate || !bodiesEqual(newDocumentState.data, assumedMasterState?.data)
     if (contentChanged) {
-      await port.putContent({
+      const ackedVersion = await port.putContent({
         id,
         data: newDocumentState.data ?? null,
         ...(isCreate
@@ -160,6 +184,9 @@ async function pushRow({
               ifMatch: formatEtag(assumedVersion)
             })
       })
+      if (ackedVersion !== undefined) {
+        ack.version = ackedVersion
+      }
     }
 
     // Metadata half: write when the resource has metadata and it changed. On a
@@ -170,24 +197,29 @@ async function pushRow({
     )
     if (newDocumentState.custom !== undefined && metadataChanged) {
       const assumedMetaVersion = assumedMasterState?.metaVersion
-      await port.putMeta({
+      const ackedMetaVersion = await port.putMeta({
         id,
         custom: newDocumentState.custom,
         ...(assumedMetaVersion !== undefined
           ? { ifMatch: formatEtag(assumedMetaVersion) }
           : { ifNoneMatch: true })
       })
+      if (ackedMetaVersion !== undefined) {
+        ack.metaVersion = ackedMetaVersion
+      }
     }
 
-    return null
+    const hasAck = ack.version !== undefined || ack.metaVersion !== undefined
+    return { conflict: null, ack: hasAck ? ack : null }
   } catch (err) {
     if (err instanceof WasSyncConflictError) {
-      return assembleConflict({
+      const conflict = await assembleConflict({
         port,
         id,
         fallbackUpdatedAt: newDocumentState.updatedAt,
         fallbackVersion: assumedVersion ?? newDocumentState.version
       })
+      return { conflict, ack: null }
     }
     // Any non-conflict error (network, 5xx, auth) propagates so RxDB retries
     // the whole batch with backoff.
@@ -202,12 +234,21 @@ async function pushRow({
  * Rows are pushed concurrently; if any non-conflict error is thrown the whole
  * batch rejects (RxDB re-sends it later), matching RxDB's all-or-nothing retry.
  *
+ * Each accepted write's acked server revision(s) are handed to
+ * `onWriteAccepted` (when supplied) as soon as that row's writes settle, so the
+ * caller can write the new `version` / `metaVersion` back into the local row
+ * and keep subsequent conditional writes' `If-Match` in step with the server.
+ *
  * @param port {WasSyncPort}
+ * @param [onWriteAccepted] {(ack: PushWriteAck) => Promise<void>}
  * @returns {(rows: Array<{ newDocumentState: WithDeleted<SyncedDoc>,
  *   assumedMasterState?: WithDeleted<SyncedDoc> }>) =>
  *   Promise<WithDeleted<SyncedDoc>[]>}
  */
-export function createPushHandler(port: WasSyncPort) {
+export function createPushHandler(
+  port: WasSyncPort,
+  onWriteAccepted?: (ack: PushWriteAck) => Promise<void>
+) {
   return async function push(
     rows: Array<{
       newDocumentState: WithDeleted<SyncedDoc>
@@ -215,16 +256,22 @@ export function createPushHandler(port: WasSyncPort) {
     }>
   ): Promise<WithDeleted<SyncedDoc>[]> {
     const results = await Promise.all(
-      rows.map(row =>
-        pushRow({
+      rows.map(async row => {
+        const result = await pushRow({
           port,
           newDocumentState: row.newDocumentState,
           assumedMasterState: row.assumedMasterState
         })
+        if (result.ack !== null && onWriteAccepted !== undefined) {
+          await onWriteAccepted(result.ack)
+        }
+        return result
+      })
+    )
+    return results
+      .map(result => result.conflict)
+      .filter(
+        (conflict): conflict is WithDeleted<SyncedDoc> => conflict !== null
       )
-    )
-    return results.filter(
-      (conflict): conflict is WithDeleted<SyncedDoc> => conflict !== null
-    )
   }
 }

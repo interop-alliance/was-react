@@ -122,54 +122,62 @@ export interface WasSyncPort {
   /**
    * Conditionally writes the content body verbatim (`PUT /:id`). Pass
    * `ifNoneMatch: true` for a create-if-absent, or `ifMatch` (a quoted ETag over
-   * the content `version`) for an update-if-unchanged.
+   * the content `version`) for an update-if-unchanged. Returns the new content
+   * `version` parsed from the response ETag (the acked master revision), or
+   * `undefined` when the server does not supply one.
    *
    * @param options {object}
    * @param options.id {string}
    * @param options.data {Json}
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {boolean}
-   * @returns {Promise<void>}
+   * @returns {Promise<number | undefined>}
    */
   putContent(options: {
     id: string
     data: Json
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<void>
+  }): Promise<number | undefined>
 
   /**
    * Conditionally deletes a resource (writes a tombstone; `DELETE /:id`). Pass
    * `ifMatch` (a quoted ETag over the content `version`) to delete only if
-   * unchanged.
+   * unchanged. Returns the tombstone `version` parsed from the response ETag
+   * when the server supplies one (the reference server does not).
    *
    * @param options {object}
    * @param options.id {string}
    * @param [options.ifMatch] {string}
-   * @returns {Promise<void>}
+   * @returns {Promise<number | undefined>}
    */
-  deleteContent(options: { id: string; ifMatch?: string }): Promise<void>
+  deleteContent(options: {
+    id: string
+    ifMatch?: string
+  }): Promise<number | undefined>
 
   /**
    * Conditionally writes the metadata body verbatim (`PUT /:id/meta`, body
    * `{ custom }`). Pass `ifNoneMatch: true` when the resource has no metadata
    * yet, or `ifMatch` (a quoted ETag over `metaVersion`) for an
    * update-if-unchanged. The resource must already exist (the server does not
-   * create a resource from a `/meta` write).
+   * create a resource from a `/meta` write). Returns the new `metaVersion`
+   * parsed from the response ETag, or `undefined` when the server does not
+   * supply one.
    *
    * @param options {object}
    * @param options.id {string}
    * @param options.custom {Json}
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {boolean}
-   * @returns {Promise<void>}
+   * @returns {Promise<number | undefined>}
    */
   putMeta(options: {
     id: string
     custom: Json
     ifMatch?: string
     ifNoneMatch?: boolean
-  }): Promise<void>
+  }): Promise<number | undefined>
 
   /**
    * Re-reads a single resource's current master state (content + metadata) for

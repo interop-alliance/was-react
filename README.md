@@ -110,6 +110,7 @@ export interface Note {
   body: string
   createdAt: string
   updatedAt: string
+  deviceId: string
 }
 
 export const useNotes = createEntityStore<Note>('notes')
@@ -172,6 +173,7 @@ export function LoginPage() {
 
 ```tsx
 import { uuidv7 } from 'uuidv7'
+import { getDeviceId } from '@interop/was-react'
 import { useNotes } from './stores.js'
 
 export function Notes() {
@@ -185,7 +187,8 @@ export function Notes() {
       title: 'Untitled',
       body: '',
       createdAt: now,
-      updatedAt: now
+      updatedAt: now,
+      deviceId: getDeviceId()
     })
   }
 
@@ -201,6 +204,11 @@ export function Notes() {
   )
 }
 ```
+
+Entity payloads MUST carry `updatedAt` and `deviceId` (from `getDeviceId()`),
+stamped on EVERY insert and update: they are the last-write-wins pair that
+settles concurrent multi-device edits of the same entity. A payload without them
+loses every sync conflict.
 
 The MUI entry supplies a router gate and status UI on top of this; see
 [Entry points](#entry-points).
