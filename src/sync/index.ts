@@ -18,14 +18,16 @@ export {
 } from './pushWrites.js'
 export {
   WasSyncConflictError,
+  WasSyncAuthError,
   type Json,
   type SyncCheckpoint,
   type WireDoc,
   type SyncedDoc,
   type MasterState,
+  type WasSyncBasePort,
   type WasSyncPort
 } from './types.js'
-export { createWasSyncPort } from './wasSyncPort.js'
+export { createWasSyncPort, errorStatus, errorMessage } from './wasSyncPort.js'
 export { withFeedMasterRead } from './feedMasterPort.js'
 export {
   createDocCipher,

@@ -15,6 +15,7 @@
  * (`SeedCredentialConfig`) so different apps hold sibling credential types on
  * the same pattern.
  */
+import { base64urlnopad } from '@scure/base'
 import * as vc from '@interop/vc'
 import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import type {
@@ -36,7 +37,9 @@ export interface SeedCredentialConfig {
   vocabBase: string
 }
 
-/** A parsed and structurally validated seed credential. */
+/**
+ * A parsed and structurally validated seed credential.
+ */
 export interface ParsedSeedCredential {
   seed: Uint8Array
   controllerDid: string
@@ -59,25 +62,18 @@ function seedContext({ credentialType, vocabBase }: SeedCredentialConfig): {
   }
 }
 
-/** Encodes bytes as base64url (no padding), browser- and Node-safe. */
+/**
+ * Encodes bytes as base64url (no padding), browser- and Node-safe.
+ */
 export function bytesToBase64url(bytes: Uint8Array): string {
-  let binary = ''
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  return base64urlnopad.encode(bytes)
 }
 
-/** Decodes base64url text back into bytes. */
+/**
+ * Decodes base64url text back into bytes.
+ */
 export function base64urlToBytes(text: string): Uint8Array {
-  const base64 = text.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = base64 + '='.repeat((4 - (base64.length % 4)) % 4)
-  const binary = atob(padded)
-  const bytes = new Uint8Array(binary.length)
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i)
-  }
-  return bytes
+  return base64urlnopad.decode(text)
 }
 
 /**

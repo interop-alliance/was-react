@@ -13,7 +13,9 @@
  */
 import { securityLoader } from '@interop/security-document-loader'
 
-/** The envelope shape returned for every resolved URL. */
+/**
+ * The envelope shape returned for every resolved URL.
+ */
 export type DocumentLoader = (url: string) => Promise<{
   contextUrl: string | null
   document: unknown
@@ -22,7 +24,9 @@ export type DocumentLoader = (url: string) => Promise<{
 
 const baseLoader = securityLoader({ fetchRemoteContexts: true }).build()
 
-/** Per-suite context for a dereferenced verification-method node. */
+/**
+ * Per-suite context for a dereferenced verification-method node.
+ */
 const CONTEXT_BY_KEY_TYPE: Record<string, string> = {
   Ed25519VerificationKey2020:
     'https://w3id.org/security/suites/ed25519-2020/v1',
@@ -36,7 +40,9 @@ interface DidDocumentNode {
   [key: string]: unknown
 }
 
-/** Dereferences a `#fragment` subnode the way did-web-resolver's getNode does. */
+/**
+ * Dereferences a `#fragment` subnode the way did-web-resolver's getNode does.
+ */
 function nodeOf(didDocument: DidDocumentNode, id: string): DidDocumentNode {
   const methods = (didDocument.verificationMethod ?? []) as DidDocumentNode[]
   let match = methods.find(vm => vm?.id === id)

@@ -133,6 +133,7 @@ export { createEntityStore, type EntityStore } from './storage/entityStore.js'
 export { WasRemoteStore, type MarkerResult } from './storage/wasRemoteStore.js'
 export {
   useSyncStatusStore,
+  deriveSyncRollup,
   type SyncStatus
 } from './storage/syncStatusStore.js'
 export {

@@ -35,7 +35,9 @@ import { parseGrants, type ParsedGrants } from '../grants.js'
 import { earliestExpiry, isExpired } from '../identity/appSession.js'
 import { RW_ACTIONS } from './loginRequest.js'
 
-/** One proof object on a VP (possibly one of several). */
+/**
+ * One proof object on a VP (possibly one of several).
+ */
 interface VpProof {
   type?: string
   proofPurpose?: string
@@ -101,7 +103,9 @@ export async function verifyLoginPresentation({
   }
 }
 
-/** Extracts the delegated zcaps from a wallet response VP (`zcap` array). */
+/**
+ * Extracts the delegated zcaps from a wallet response VP (`zcap` array).
+ */
 export function grantsOf(presentation: IVerifiablePresentation): IZcap[] {
   const zcap = (presentation as { zcap?: unknown }).zcap
   if (!Array.isArray(zcap)) {
@@ -110,15 +114,21 @@ export function grantsOf(presentation: IVerifiablePresentation): IZcap[] {
   return zcap as IZcap[]
 }
 
-/** A validated grant set: parsed topology plus the earliest expiry. */
+/**
+ * A validated grant set: parsed topology plus the earliest expiry.
+ */
 export interface CheckedGrants {
   parsed: ParsedGrants
   grants: IZcap[]
-  /** ISO timestamp: the earliest expiry across the grants. */
+  /**
+   * ISO timestamp: the earliest expiry across the grants.
+   */
   expires: string
 }
 
-/** The actions a grant allows, normalized to an array. */
+/**
+ * The actions a grant allows, normalized to an array.
+ */
 function actionsOf(zcap: IZcap): string[] {
   const allowed = (zcap as { allowedAction?: string | string[] }).allowedAction
   return Array.isArray(allowed) ? allowed : allowed ? [allowed] : []

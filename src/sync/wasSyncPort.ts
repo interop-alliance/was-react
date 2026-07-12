@@ -3,8 +3,11 @@
  */
 /**
  * The app-side seam between the generic sync adapter and `@interop/was-client`.
- * Implements the `WasSyncPort` interface for one remote WAS Collection using the
- * raw, signed `was.request()` escape hatch.
+ * Implements the `WasSyncBasePort` interface (query + conditional writes) for one
+ * remote WAS Collection using the raw, signed `was.request()` escape hatch. The
+ * 412 conflict re-read (`get`) is supplied separately by `withFeedMasterRead`,
+ * which resolves the master state from the changes-feed body -- origin-
+ * independent, unlike a cross-origin `GET` ETag header.
  *
  * Using `request()` (rather than the `Resource` / `Collection` handles) is
  * deliberate: it moves the stored body VERBATIM, bypassing the encryption codec.
@@ -20,26 +23,27 @@
  * for plaintext and encrypted resources alike -- so there is no plaintext-vs-
  * encrypted fork here.
  */
-import type { WasClient } from '@interop/was-client'
+import { readEtag, writeHeaders, type WasClient } from '@interop/was-client'
 import type { IZcap } from '@interop/data-integrity-core'
 import {
+  WasSyncAuthError,
   WasSyncConflictError,
-  type Json,
-  type MasterState,
   type SyncCheckpoint,
-  type WasSyncPort,
+  type WasSyncBasePort,
   type WireDoc
 } from './types.js'
 
 /**
  * Extracts an HTTP status from a raw ky/ezcap error. `was.request()` rejects on
  * any non-2xx with `err.status` set (see `@interop/http-client`'s error
- * normaliser); this reads it defensively from either location.
+ * normaliser); this reads it defensively from either location. Shared with the
+ * remote store's marker PUT and the dev-grant provisioner, which need the raw
+ * status for diagnostics rather than the mapped sync error.
  *
  * @param err {unknown}
  * @returns {number | undefined}
  */
-function errorStatus(err: unknown): number | undefined {
+export function errorStatus(err: unknown): number | undefined {
   return (
     (err as { status?: number }).status ??
     (err as { response?: { status?: number } }).response?.status
@@ -47,14 +51,48 @@ function errorStatus(err: unknown): number | undefined {
 }
 
 /**
- * Parses a quoted strong ETag (`"3"`) into its numeric revision, or `undefined`
- * when the header is absent (the resource has no such revision yet).
+ * Normalizes an unknown caught error into a display string: the `Error`'s
+ * `message` when it is one, else its `String(...)` coercion. Shared by the
+ * remote store's marker PUT and the session activation error path.
  *
- * @param etag {string | null}
+ * @param err {unknown}
+ * @returns {string}
+ */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Maps a raw `was.request()` rejection to the sync layer's typed errors: `412`
+ * to {@link WasSyncConflictError} (a lost-update conflict) and `401` / `403` to
+ * {@link WasSyncAuthError} (expired/revoked storage access). Every other error
+ * is returned unchanged so RxDB's retry/backoff handles it. Returns the error to
+ * throw (the caller re-throws) rather than throwing itself.
+ *
+ * @param err {unknown}
+ * @returns {unknown}
+ */
+function toPortError(err: unknown): unknown {
+  const status = errorStatus(err)
+  if (status === 412) {
+    return new WasSyncConflictError()
+  }
+  if (status === 401 || status === 403) {
+    return new WasSyncAuthError(status)
+  }
+  return err
+}
+
+/**
+ * Parses a quoted strong ETag (`"3"`, as read by `readEtag`) into its numeric
+ * revision, or `undefined` when the header was absent (the resource has no such
+ * revision yet).
+ *
+ * @param etag {string | undefined}
  * @returns {number | undefined}
  */
-function parseEtag(etag: string | null): number | undefined {
-  if (!etag) {
+function parseEtag(etag: string | undefined): number | undefined {
+  if (etag === undefined) {
     return undefined
   }
   const revision = Number(etag.replace(/"/g, ''))
@@ -72,7 +110,7 @@ function parseEtag(etag: string | null): number | undefined {
  * @param [options.capability] {IZcap}   the delegated session capability for
  *   this collection (a restored `delegated` tier session); absent in the full
  *   tier, where requests invoke root capabilities
- * @returns {WasSyncPort}
+ * @returns {WasSyncBasePort}
  */
 export function createWasSyncPort({
   was,
@@ -84,67 +122,54 @@ export function createWasSyncPort({
   spaceId: string
   collectionId: string
   capability?: IZcap
-}): WasSyncPort {
+}): WasSyncBasePort {
   const collectionPath = `/space/${spaceId}/${collectionId}`
   const resourcePath = (id: string) =>
     `${collectionPath}/${encodeURIComponent(id)}`
 
   /**
-   * Builds the conditional-write headers from the port's precondition options.
-   */
-  const writeHeaders = ({
-    ifMatch,
-    ifNoneMatch
-  }: {
-    ifMatch?: string
-    ifNoneMatch?: boolean
-  }): Record<string, string> | undefined => {
-    const headers: Record<string, string> = {}
-    if (ifMatch !== undefined) {
-      headers['if-match'] = ifMatch
-    }
-    if (ifNoneMatch) {
-      headers['if-none-match'] = '*'
-    }
-    return Object.keys(headers).length > 0 ? headers : undefined
-  }
-
-  /**
    * Runs a conditional write, mapping the server's `412 precondition-failed`
-   * into the core's `WasSyncConflictError` and letting all else propagate.
+   * into the core's `WasSyncConflictError` and a `401` / `403` into
+   * `WasSyncAuthError` (see {@link toPortError}), and letting all else propagate.
    * Returns the accepted write's new revision parsed from the response ETag
    * (`version` for content writes, `metaVersion` for `/meta` writes), or
    * `undefined` when the response carries no ETag.
    */
   const conditionalWrite = async (
-    run: () => Promise<{ headers: { get(name: string): string | null } }>
+    // Typed off readEtag's parameter (was-client's HttpResponse) so the type
+    // needn't be imported from @interop/http-client, which is not a direct
+    // dependency here.
+    run: () => Promise<Parameters<typeof readEtag>[0]>
   ): Promise<number | undefined> => {
     try {
       const response = await run()
-      return parseEtag(response.headers.get('etag'))
+      return parseEtag(readEtag(response))
     } catch (err) {
-      if (errorStatus(err) === 412) {
-        throw new WasSyncConflictError()
-      }
-      throw err
+      throw toPortError(err)
     }
   }
 
   return {
     async query({ checkpoint, limit }) {
-      const response = await was.request({
-        capability,
-        path: `${collectionPath}/query`,
-        method: 'POST',
-        json: {
-          profile: 'changes',
-          ...(checkpoint !== undefined && { checkpoint }),
-          limit
+      try {
+        const response = await was.request({
+          capability,
+          path: `${collectionPath}/query`,
+          method: 'POST',
+          json: {
+            profile: 'changes',
+            ...(checkpoint !== undefined && { checkpoint }),
+            limit
+          }
+        })
+        return response.data as {
+          documents: WireDoc[]
+          checkpoint: SyncCheckpoint | null
         }
-      })
-      return response.data as {
-        documents: WireDoc[]
-        checkpoint: SyncCheckpoint | null
+      } catch (err) {
+        // Map a pull-path 401/403 to WasSyncAuthError too, so expired access is
+        // recognised whether it surfaces on the pull or the push side.
+        throw toPortError(err)
       }
     },
 
@@ -155,7 +180,7 @@ export function createWasSyncPort({
           path: resourcePath(id),
           method: 'PUT',
           json: data as object,
-          headers: writeHeaders({ ifMatch, ifNoneMatch })
+          headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
       )
     },
@@ -166,7 +191,7 @@ export function createWasSyncPort({
           capability,
           path: resourcePath(id),
           method: 'DELETE',
-          headers: writeHeaders({ ifMatch })
+          headers: writeHeaders({ precondition: { ifMatch } })
         })
       )
     },
@@ -178,68 +203,9 @@ export function createWasSyncPort({
           path: `${resourcePath(id)}/meta`,
           method: 'PUT',
           json: { custom },
-          headers: writeHeaders({ ifMatch, ifNoneMatch })
+          headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
       )
-    },
-
-    async get({ id }): Promise<MasterState | null> {
-      // Content re-read: raw GET returns the stored body verbatim (no decrypt)
-      // and the content `version` in the ETag. A 404 means the resource is gone
-      // (or tombstoned) -- report absent so the core synthesizes a tombstone.
-      let contentResponse
-      try {
-        contentResponse = await was.request({
-          capability,
-          path: resourcePath(id),
-          method: 'GET'
-        })
-      } catch (err) {
-        if (errorStatus(err) === 404) {
-          return null
-        }
-        throw err
-      }
-
-      const master: MasterState = {
-        version: parseEtag(contentResponse.headers.get('etag')) ?? 0,
-        // Filled from the `/meta` body's server-managed `updatedAt` below; the
-        // change feed remains the authority on ordering, so this only feeds the
-        // one-off conflict entry and is corrected on the next pull.
-        updatedAt: '',
-        deleted: false,
-        data: contentResponse.data as Json
-      }
-
-      // Metadata re-read: the `/meta` body carries the server-managed
-      // `updatedAt` plus the user-writable `custom` (opaque), and its own
-      // `metaVersion` ETag (absent until metadata has been written).
-      try {
-        const metaResponse = await was.request({
-          capability,
-          path: `${resourcePath(id)}/meta`,
-          method: 'GET'
-        })
-        const metaBody = metaResponse.data as
-          { updatedAt?: string; custom?: Json } | undefined
-        if (metaBody?.updatedAt) {
-          master.updatedAt = metaBody.updatedAt
-        }
-        const metaVersion = parseEtag(metaResponse.headers.get('etag'))
-        if (metaVersion !== undefined) {
-          master.metaVersion = metaVersion
-        }
-        if (metaBody?.custom !== undefined) {
-          master.custom = metaBody.custom
-        }
-      } catch (err) {
-        // Metadata is optional; only a hard error (not 404) should propagate.
-        if (errorStatus(err) !== 404) {
-          throw err
-        }
-      }
-
-      return master
     }
   }
 }

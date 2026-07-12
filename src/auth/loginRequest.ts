@@ -22,13 +22,19 @@ import type {
   IVPRDetails
 } from './walletRequestTypes.js'
 
-/** Default read/write actions requested on each app collection. */
+/**
+ * Default read/write actions requested on each app collection.
+ */
 export const RW_ACTIONS = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
 
-/** The referenceId of the read-only whole-space grant. */
+/**
+ * The referenceId of the read-only whole-space grant.
+ */
 export const SPACE_READ_REFERENCE_ID = 'space-read'
 
-/** A fresh nonce for a VPR challenge. */
+/**
+ * A fresh nonce for a VPR challenge.
+ */
 export function newChallenge(): string {
   return crypto.randomUUID()
 }

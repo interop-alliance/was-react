@@ -15,17 +15,29 @@ const SESSION_STORE = 'session'
 const SEED_RECORD = 'seed'
 const SESSION_RECORD = 'record'
 
-/** The bound seed-store operations returned by `createSeedStore`. */
+/**
+ * The bound seed-store operations returned by `createSeedStore`.
+ */
 export interface SeedStore {
-  /** Persists the 32-byte master seed. */
+  /**
+   * Persists the 32-byte master seed.
+   */
   saveSeed(seed: Uint8Array): Promise<void>
-  /** Loads the persisted master seed, or `null`. */
+  /**
+   * Loads the persisted master seed, or `null`.
+   */
   loadSeed(): Promise<Uint8Array | null>
-  /** Persists an opaque session record (see `appSession.ts`). */
+  /**
+   * Persists an opaque session record (see `appSession.ts`).
+   */
   saveRecord(record: unknown): Promise<void>
-  /** Loads the persisted session record, or `null`. */
+  /**
+   * Loads the persisted session record, or `null`.
+   */
   loadRecord(): Promise<unknown | null>
-  /** Wipes the seed and the session record (logout). */
+  /**
+   * Wipes the seed and the session record (logout).
+   */
   clearSeedStore(): Promise<void>
 }
 

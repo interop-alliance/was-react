@@ -92,18 +92,23 @@ export interface MasterState {
 }
 
 /**
- * The injected WAS-access seam. An adapter (the app-side `wasSyncPort.ts`)
- * implements this over `@interop/was-client`; the core module depends only on
- * this interface, never on `was-client` itself. Every method moves the stored
- * body verbatim -- no codec, no key handling -- so the same port works for
- * plaintext and encrypted collections alike.
+ * The write/query half of the injected WAS-access seam. An adapter (the app-side
+ * `createWasSyncPort`) implements this over `@interop/was-client`; the core
+ * module depends only on this interface, never on `was-client` itself. Every
+ * method moves the stored body verbatim -- no codec, no key handling -- so the
+ * same port works for plaintext and encrypted collections alike.
  *
  * `putContent` / `deleteContent` / `putMeta` MUST throw
  * {@link WasSyncConflictError} when the server rejects a conditional write with
  * `412 precondition-failed`, and let every other error propagate so RxDB's
  * retry/backoff handles it.
+ *
+ * The 412 conflict re-read (`get`) is deliberately NOT part of this base:
+ * `createWasSyncPort` returns a `WasSyncBasePort`, and `withFeedMasterRead`
+ * supplies a `get` that resolves the master state from the changes-feed body
+ * (origin-independent) to produce a full {@link WasSyncPort}.
  */
-export interface WasSyncPort {
+export interface WasSyncBasePort {
   /**
    * Pulls one page of the `changes` feed. Omit `checkpoint` for the first page.
    * Returns the page's `documents` and its resume `checkpoint`, or
@@ -178,11 +183,21 @@ export interface WasSyncPort {
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<number | undefined>
+}
 
+/**
+ * The full sync port the core consumes: a {@link WasSyncBasePort}'s write/query
+ * methods plus the `get` used by the 412 conflict assembler. The push handler
+ * and `createWasReplication` require this full port; build one by wrapping a
+ * base port with `withFeedMasterRead`, which supplies `get`.
+ */
+export interface WasSyncPort extends WasSyncBasePort {
   /**
    * Re-reads a single resource's current master state (content + metadata) for
    * the 412 conflict assembler. Returns `null` when the resource is genuinely
-   * absent (a delete/delete race).
+   * absent (a delete/delete race); throws a retryable error when the master
+   * cannot be resolved (e.g. a feed re-read that exhausts its scan budget), so
+   * the replication cycle retries rather than fabricating a false tombstone.
    *
    * @param options {object}
    * @param options.id {string}
@@ -202,5 +217,23 @@ export class WasSyncConflictError extends Error {
   constructor(message = 'WAS conditional write precondition failed.') {
     super(message)
     this.name = 'WasSyncConflictError'
+  }
+}
+
+/**
+ * Thrown by a {@link WasSyncPort} implementation when a request is rejected with
+ * `401 unauthorized` or `403 forbidden` -- the storage-access-expired/revoked
+ * signal. Mapping the raw HTTP status to a typed error at the port boundary (the
+ * same way `412` becomes {@link WasSyncConflictError}) lets the sync controller
+ * recognise expired access with an `instanceof` check rather than re-extracting
+ * status codes from a wrapped RxDB error graph. The offending HTTP status is
+ * kept on `status` for diagnostics.
+ */
+export class WasSyncAuthError extends Error {
+  readonly status: number
+  constructor(status: number) {
+    super(`WAS storage access denied (HTTP ${status}).`)
+    this.name = 'WasSyncAuthError'
+    this.status = status
   }
 }

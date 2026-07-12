@@ -15,6 +15,7 @@
  * mismatch aborts (a grant set spanning two spaces is never expected and would
  * silently split writes).
  */
+import { parseSpaceTarget } from '@interop/was-client'
 import type { IZcap } from '@interop/data-integrity-core'
 
 /**
@@ -25,7 +26,9 @@ import type { IZcap } from '@interop/data-integrity-core'
 export interface ParsedGrants {
   serverUrl: string
   spaceId: string
-  /** Keyed by WAS collection id (e.g. `action-items`). */
+  /**
+   * Keyed by WAS collection id (e.g. `action-items`).
+   */
   byCollectionId: Record<string, IZcap>
 }
 
@@ -42,7 +45,10 @@ interface ParsedTarget {
 /**
  * Parses a single `invocationTarget` URL into its WAS components. `serverUrl` is
  * the bare origin (`protocol//host`) with no trailing slash, matching the shape
- * the reference server validates `SERVER_URL` into.
+ * the reference server validates `SERVER_URL` into; the path grammar itself is
+ * owned by `@interop/was-client`'s `parseSpaceTarget`. A resource-depth target
+ * still contributes its collection; a reserved sub-endpoint target (e.g.
+ * `/space/:id/policy`) contributes only its server and space.
  *
  * @param target {string}   an absolute WAS URL
  * @returns {ParsedTarget}
@@ -56,17 +62,17 @@ export function parseInvocationTarget(target: string): ParsedTarget {
       `Grant invocationTarget is not an absolute URL: "${target}".`
     )
   }
-  const segments = url.pathname.split('/').filter(Boolean)
-  const [root, spaceId, collectionId] = segments
-  if (root !== 'space' || !spaceId) {
+  const serverUrl = `${url.protocol}//${url.host}`
+  const parsed = parseSpaceTarget({ serverUrl, target })
+  if (parsed === null) {
     throw new Error(
       `Grant invocationTarget is not a WAS space URL: "${target}".`
     )
   }
   return {
-    serverUrl: `${url.protocol}//${url.host}`,
-    spaceId,
-    ...(collectionId !== undefined && { collectionId })
+    serverUrl,
+    spaceId: parsed.spaceId,
+    ...('collectionId' in parsed && { collectionId: parsed.collectionId })
   }
 }
 

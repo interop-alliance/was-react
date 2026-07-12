@@ -11,7 +11,11 @@ import { useStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { WasSessionContext } from './WasSessionProvider.js'
 import type { WasAuthStore } from '../session/authStore.js'
-import { useSyncStatusStore } from '../storage/syncStatusStore.js'
+import {
+  useSyncStatusStore,
+  deriveSyncRollup,
+  type SyncRollup
+} from '../storage/syncStatusStore.js'
 
 export { useAppReady } from '../session/appReadyStore.js'
 
@@ -118,13 +122,17 @@ export function useReconnect(): {
   return { accessExpired, reconnecting, reconnect }
 }
 
-/** The aggregate replication rollup: no sync running, or error > syncing > synced. */
-export type SyncRollup = 'offline' | 'error' | 'syncing' | 'synced'
+/**
+ * The aggregate replication rollup: no sync running, or error > syncing >
+ * synced. Re-exported from the sync-status store, where the derivation lives.
+ */
+export type { SyncRollup }
 
 /**
- * The aggregate sync status over the per-collection replication statuses. With
- * no replication running (offline / local-only) it reports `offline`; otherwise
- * it rolls the collection states up to error > syncing > synced.
+ * The aggregate sync status over the per-collection replication statuses. A thin
+ * subscription over the sync-status store: it reads the collection statuses and
+ * defers the offline / error > syncing > synced precedence to
+ * {@link deriveSyncRollup}.
  *
  * @returns {{ state: SyncRollup, label: string, title: string }}
  */
@@ -136,31 +144,5 @@ export function useSyncStatus(): {
   const values = useSyncStatusStore(
     useShallow(state => Object.values(state.statuses))
   )
-
-  if (values.length === 0) {
-    return {
-      state: 'offline',
-      label: 'Offline',
-      title: 'Local-only mode -- no storage sync running'
-    }
-  }
-  if (values.includes('error')) {
-    return {
-      state: 'error',
-      label: 'Sync error',
-      title: 'A collection failed to sync; retrying'
-    }
-  }
-  if (values.includes('syncing') || values.includes('idle')) {
-    return {
-      state: 'syncing',
-      label: 'Syncing',
-      title: 'Replicating with your wallet storage'
-    }
-  }
-  return {
-    state: 'synced',
-    label: 'Synced',
-    title: 'All collections replicated'
-  }
+  return deriveSyncRollup(values)
 }

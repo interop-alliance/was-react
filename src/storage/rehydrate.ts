@@ -85,7 +85,9 @@ export async function patchFromChange(
   }
 }
 
-/** Per-collection debounce timers coalescing a pull burst into one hydrate. */
+/**
+ * Per-collection debounce timers coalescing a pull burst into one hydrate.
+ */
 const rehydrateTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 /**

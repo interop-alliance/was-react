@@ -17,6 +17,7 @@
 import { parseArgs } from 'node:util'
 import { argv } from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { base64urlnopad, hex } from '@scure/base'
 import { provisionDevGrants } from './provisionDevGrants.js'
 
 const USAGE = `Usage: was-provision-dev-grants [options]
@@ -43,14 +44,10 @@ Optional:
 export function parseSeed(input: string): Uint8Array {
   const value = input.trim()
   if (/^[0-9a-fA-F]+$/.test(value) && value.length % 2 === 0) {
-    const bytes = new Uint8Array(value.length / 2)
-    for (let index = 0; index < bytes.length; index++) {
-      bytes[index] = parseInt(value.slice(index * 2, index * 2 + 2), 16)
-    }
-    return bytes
+    // hex.decode requires lowercase, even-length input.
+    return hex.decode(value.toLowerCase())
   }
-  const base64 = value.replace(/-/g, '+').replace(/_/g, '/')
-  return new Uint8Array(Buffer.from(base64, 'base64'))
+  return base64urlnopad.decode(value)
 }
 
 /**
