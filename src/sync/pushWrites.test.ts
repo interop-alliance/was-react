@@ -8,7 +8,11 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { WithDeleted } from 'rxdb/plugins/core'
-import { createPushHandler, formatEtag } from './pushWrites.js'
+import {
+  createPushHandler,
+  formatEtag,
+  type PushWriteAck
+} from './pushWrites.js'
 import {
   WasSyncConflictError,
   type MasterState,
@@ -35,20 +39,34 @@ type WriteCall =
 
 /**
  * A fake port that records every write, optionally throws a conflict for a
- * chosen (kind,id), and serves a scripted `get` master state for the re-read.
+ * chosen (kind,id), serves a scripted `get` master state for the re-read, and
+ * acks writes like a versioning server: each accepted content write returns the
+ * next content version, each accepted meta write the next metaVersion (starting
+ * at 1, like the reference server's create). `ackWrites: false` models a server
+ * that exposes no ETag on write responses (e.g. cross-origin without
+ * `Access-Control-Expose-Headers`).
  */
 function fakePushPort(
   options: {
     conflictOn?: { kind: WriteCall['kind']; id: string }
     master?: MasterState | null
+    ackWrites?: boolean
   } = {}
 ): WasSyncPort & { writes: WriteCall[]; getCalls: string[] } {
+  const ackWrites = options.ackWrites ?? true
   const writes: WriteCall[] = []
   const getCalls: string[] = []
+  const versions = new Map<string, number>()
+  const metaVersions = new Map<string, number>()
   const maybeConflict = (kind: WriteCall['kind'], id: string) => {
     if (options.conflictOn?.kind === kind && options.conflictOn.id === id) {
       throw new WasSyncConflictError()
     }
+  }
+  const bump = (revisions: Map<string, number>, id: string) => {
+    const next = (revisions.get(id) ?? 0) + 1
+    revisions.set(id, next)
+    return ackWrites ? next : undefined
   }
   return {
     writes,
@@ -59,14 +77,19 @@ function fakePushPort(
     async putContent({ id, data, ifMatch, ifNoneMatch }) {
       writes.push({ kind: 'putContent', id, data, ifMatch, ifNoneMatch })
       maybeConflict('putContent', id)
+      return bump(versions, id)
     },
     async deleteContent({ id, ifMatch }) {
       writes.push({ kind: 'deleteContent', id, ifMatch })
       maybeConflict('deleteContent', id)
+      // Like the reference server: a DELETE 204 carries no ETag.
+      bump(versions, id)
+      return undefined
     },
     async putMeta({ id, custom, ifMatch, ifNoneMatch }) {
       writes.push({ kind: 'putMeta', id, custom, ifMatch, ifNoneMatch })
       maybeConflict('putMeta', id)
+      return bump(metaVersions, id)
     },
     async get({ id }) {
       getCalls.push(id)
@@ -346,5 +369,126 @@ describe('createPushHandler conflicts', () => {
 
     expect(conflicts).toHaveLength(1)
     expect(conflicts[0]!.id).toBe('bad')
+  })
+})
+
+describe('createPushHandler write acks', () => {
+  it('reports the acked content version on a create', async () => {
+    const port = fakePushPort()
+    const acks: PushWriteAck[] = []
+    const push = createPushHandler(port, async ack => {
+      acks.push(ack)
+    })
+
+    const conflicts = await push([
+      { newDocumentState: newDoc({ id: 'r1', data: { a: 1 } }) }
+    ])
+
+    expect(conflicts).toEqual([])
+    expect(acks).toEqual([{ id: 'r1', version: 1 }])
+  })
+
+  it('uses the acked version on the next update push (no 412 in steady state)', async () => {
+    const port = fakePushPort()
+    const acks: PushWriteAck[] = []
+    const push = createPushHandler(port, async ack => {
+      acks.push(ack)
+    })
+
+    // Create: server acks version 1; the caller writes it back into the row,
+    // so the next push's assumed master carries version 1.
+    await push([{ newDocumentState: newDoc({ id: 'r1', data: { a: 1 } }) }])
+    expect(acks).toEqual([{ id: 'r1', version: 1 }])
+
+    // Steady-state update: If-Match uses the acked version, no conflict.
+    const conflicts = await push([
+      {
+        assumedMasterState: newDoc({ id: 'r1', version: 1, data: { a: 1 } }),
+        newDocumentState: newDoc({ id: 'r1', version: 1, data: { a: 2 } })
+      }
+    ])
+
+    expect(conflicts).toEqual([])
+    expect(port.writes[1]).toEqual({
+      kind: 'putContent',
+      id: 'r1',
+      data: { a: 2 },
+      ifMatch: formatEtag(1)
+    })
+    expect(acks[1]).toEqual({ id: 'r1', version: 2 })
+  })
+
+  it('reports the acked metaVersion on a metadata write', async () => {
+    const port = fakePushPort()
+    const acks: PushWriteAck[] = []
+    const push = createPushHandler(port, async ack => {
+      acks.push(ack)
+    })
+
+    await push([
+      {
+        assumedMasterState: newDoc({ version: 1, data: { a: 1 } }),
+        newDocumentState: newDoc({
+          version: 1,
+          data: { a: 1 },
+          custom: { jwe: 'x' }
+        })
+      }
+    ])
+
+    expect(acks).toEqual([{ id: 'r1', metaVersion: 1 }])
+  })
+
+  it('does not report an ack for a delete whose response carries no ETag', async () => {
+    const port = fakePushPort()
+    const acks: PushWriteAck[] = []
+    const push = createPushHandler(port, async ack => {
+      acks.push(ack)
+    })
+
+    const conflicts = await push([
+      {
+        assumedMasterState: newDoc({ version: 1, data: { a: 1 } }),
+        newDocumentState: newDoc({ version: 1, _deleted: true })
+      }
+    ])
+
+    expect(conflicts).toEqual([])
+    expect(acks).toEqual([])
+  })
+
+  it('does not report an ack when the server exposes no write ETags', async () => {
+    const port = fakePushPort({ ackWrites: false })
+    const acks: PushWriteAck[] = []
+    const push = createPushHandler(port, async ack => {
+      acks.push(ack)
+    })
+
+    await push([{ newDocumentState: newDoc({ id: 'r1', data: { a: 1 } }) }])
+
+    expect(acks).toEqual([])
+  })
+
+  it('does not report an ack for a rejected write', async () => {
+    const port = fakePushPort({
+      conflictOn: { kind: 'putContent', id: 'r1' },
+      master: {
+        version: 2,
+        updatedAt: '2026-02-02T00:00:00Z',
+        deleted: false,
+        data: { a: 9 }
+      }
+    })
+    const acks: PushWriteAck[] = []
+    const push = createPushHandler(port, async ack => {
+      acks.push(ack)
+    })
+
+    const conflicts = await push([
+      { newDocumentState: newDoc({ id: 'r1', data: { a: 1 } }) }
+    ])
+
+    expect(conflicts).toHaveLength(1)
+    expect(acks).toEqual([])
   })
 })

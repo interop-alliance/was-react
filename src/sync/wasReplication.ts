@@ -20,7 +20,46 @@ import {
 import type { RxCollection } from 'rxdb/plugins/core'
 import type { SyncCheckpoint, SyncedDoc, WasSyncPort } from './types.js'
 import { createPullHandler } from './changesQuery.js'
-import { createPushHandler } from './pushWrites.js'
+import { createPushHandler, type PushWriteAck } from './pushWrites.js'
+
+/**
+ * Builds the push write-back: patches an accepted write's acked server
+ * revision(s) (`version` / `metaVersion`) into the local row so the next
+ * conditional write's `If-Match` matches the server. Skips rows that are gone
+ * or already current (a tombstoned row is invisible to `findOne` and needs no
+ * write-back -- nothing further is pushed for a deleted id). Failures are
+ * swallowed: the write itself succeeded, and a missed write-back only means
+ * the acked revision is adopted from the change feed's echo on a later pull.
+ *
+ * @param rxCollection {RxCollection<SyncedDoc>}
+ * @returns {(ack: PushWriteAck) => Promise<void>}
+ */
+function createAckWriteBack(rxCollection: RxCollection<SyncedDoc>) {
+  return async function writeBack(ack: PushWriteAck): Promise<void> {
+    try {
+      const doc = await rxCollection.findOne(ack.id).exec()
+      if (doc === null) {
+        return
+      }
+      const patch: Partial<SyncedDoc> = {}
+      if (ack.version !== undefined && doc.get('version') !== ack.version) {
+        patch.version = ack.version
+      }
+      if (
+        ack.metaVersion !== undefined &&
+        doc.get('metaVersion') !== ack.metaVersion
+      ) {
+        patch.metaVersion = ack.metaVersion
+      }
+      if (Object.keys(patch).length > 0) {
+        await doc.incrementalPatch(patch)
+      }
+    } catch {
+      // Best-effort: the server write was accepted; the revision echo on the
+      // next pull corrects the row if this local patch could not be applied.
+    }
+  }
+}
 
 /**
  * Starts (or configures) replication of one RxDB collection against a remote WAS
@@ -71,7 +110,7 @@ export function createWasReplication({
       batchSize
     },
     push: {
-      handler: createPushHandler(wasPort),
+      handler: createPushHandler(wasPort, createAckWriteBack(rxCollection)),
       batchSize
     }
   })

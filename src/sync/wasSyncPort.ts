@@ -112,12 +112,16 @@ export function createWasSyncPort({
   /**
    * Runs a conditional write, mapping the server's `412 precondition-failed`
    * into the core's `WasSyncConflictError` and letting all else propagate.
+   * Returns the accepted write's new revision parsed from the response ETag
+   * (`version` for content writes, `metaVersion` for `/meta` writes), or
+   * `undefined` when the response carries no ETag.
    */
   const conditionalWrite = async (
-    run: () => Promise<unknown>
-  ): Promise<void> => {
+    run: () => Promise<{ headers: { get(name: string): string | null } }>
+  ): Promise<number | undefined> => {
     try {
-      await run()
+      const response = await run()
+      return parseEtag(response.headers.get('etag'))
     } catch (err) {
       if (errorStatus(err) === 412) {
         throw new WasSyncConflictError()
@@ -145,7 +149,7 @@ export function createWasSyncPort({
     },
 
     async putContent({ id, data, ifMatch, ifNoneMatch }) {
-      await conditionalWrite(() =>
+      return conditionalWrite(() =>
         was.request({
           capability,
           path: resourcePath(id),
@@ -157,7 +161,7 @@ export function createWasSyncPort({
     },
 
     async deleteContent({ id, ifMatch }) {
-      await conditionalWrite(() =>
+      return conditionalWrite(() =>
         was.request({
           capability,
           path: resourcePath(id),
@@ -168,7 +172,7 @@ export function createWasSyncPort({
     },
 
     async putMeta({ id, custom, ifMatch, ifNoneMatch }) {
-      await conditionalWrite(() =>
+      return conditionalWrite(() =>
         was.request({
           capability,
           path: `${resourcePath(id)}/meta`,
