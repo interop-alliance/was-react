@@ -186,14 +186,26 @@ export function createWasSyncPort({
     },
 
     async deleteContent({ id, ifMatch }) {
-      return conditionalWrite(() =>
-        was.request({
-          capability,
-          path: resourcePath(id),
-          method: 'DELETE',
-          headers: writeHeaders({ precondition: { ifMatch } })
-        })
-      )
+      try {
+        return await conditionalWrite(() =>
+          was.request({
+            capability,
+            path: resourcePath(id),
+            method: 'DELETE',
+            headers: writeHeaders({ precondition: { ifMatch } })
+          })
+        )
+      } catch (err) {
+        // A 404 means the resource is already absent -- the row was created
+        // and deleted locally before ever being pushed, or another device
+        // deleted it first. Either way the tombstone's goal state holds, so
+        // report success (no acked revision) instead of rejecting the batch,
+        // which RxDB would otherwise retry forever.
+        if (errorStatus(err) === 404) {
+          return undefined
+        }
+        throw err
+      }
     },
 
     async putMeta({ id, custom, ifMatch, ifNoneMatch }) {
