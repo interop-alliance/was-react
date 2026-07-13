@@ -63,6 +63,18 @@ describe('createWasSyncPort error mapping', () => {
     )
   })
 
+  it('treats a 404 on delete as success (resource already gone)', async () => {
+    const port = makePort(404)
+    await expect(port.deleteContent({ id: 'a' })).resolves.toBeUndefined()
+  })
+
+  it('still propagates a 404 on a content write', async () => {
+    const port = makePort(404)
+    await expect(
+      port.putContent({ id: 'a', data: { x: 1 } })
+    ).rejects.toMatchObject({ status: 404 })
+  })
+
   it('passes a non-mapped status (500) through unchanged', async () => {
     const port = makePort(500)
     await expect(port.query({ limit: 10 })).rejects.not.toBeInstanceOf(

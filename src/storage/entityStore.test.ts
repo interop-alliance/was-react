@@ -88,6 +88,56 @@ describe('createEntityStore', () => {
     unsubscribe()
   })
 
+  it('discards a stale patch that loses LWW to the held doc', async () => {
+    interface LwwNote extends Note {
+      updatedAt: string
+      deviceId: string
+    }
+    const store = createEntityStore<LwwNote>('notes')
+    const newer = {
+      id: 'a',
+      text: 'newer',
+      updatedAt: '2026-07-12T10:00:05Z',
+      deviceId: 'device-1'
+    }
+    const older = {
+      id: 'a',
+      text: 'older',
+      updatedAt: '2026-07-12T10:00:00Z',
+      deviceId: 'device-2'
+    }
+
+    // Out-of-order decrypts within one burst: the older payload arrives last.
+    store.getState().patch(newer)
+    store.getState().patch(older)
+    await flushMicrotasks()
+    expect(store.getState().byId.get('a')).toEqual(newer)
+
+    // A stale pull echo across bursts must not clobber the held doc either.
+    store.getState().patch(older)
+    await flushMicrotasks()
+    expect(store.getState().byId.get('a')).toEqual(newer)
+
+    // A genuinely newer payload still replaces it.
+    const newest = {
+      ...newer,
+      text: 'newest',
+      updatedAt: '2026-07-12T10:00:10Z'
+    }
+    store.getState().patch(newest)
+    await flushMicrotasks()
+    expect(store.getState().byId.get('a')).toEqual(newest)
+  })
+
+  it('patches docs without LWW fields blindly (last patch wins)', async () => {
+    const store = createEntityStore<Note>('notes')
+    store.getState().patch({ id: 'a', text: 'first' })
+    await flushMicrotasks()
+    store.getState().patch({ id: 'a', text: 'second' })
+    await flushMicrotasks()
+    expect(store.getState().byId.get('a')).toEqual({ id: 'a', text: 'second' })
+  })
+
   it('replaceAll resets the Map and discards a buffered pull burst', async () => {
     const store = createEntityStore<Note>('notes')
     store.getState().patch({ id: 'stale-1', text: 'stale' })
@@ -99,7 +149,6 @@ describe('createEntityStore', () => {
     await flushMicrotasks()
 
     expect(store.getState().byId.size).toBe(0)
-    expect(store.getState().hydrated).toBe(true)
 
     store.getState().replaceAll([{ id: 'fresh', text: 'fresh' }])
     expect(store.getState().byId.get('fresh')).toEqual({

@@ -1,5 +1,26 @@
 # @interop/was-react Changelog
 
+## 0.1.5 - TBD
+
+### Fixed
+
+- Push path: a `404` on `DELETE` is now treated as success (the resource is
+  already absent -- a row created and deleted locally before its first push, or
+  deleted remotely first). Previously the 404 rejected the whole push batch,
+  which RxDB retried indefinitely, permanently wedging that collection's push
+  queue on a phantom tombstone.
+- Entity stores: the remote patch path now applies the last-write-wins guard
+  before upserting. Patch events decrypt asynchronously, so two events for the
+  same doc could apply out of order (or a stale pull echo could trail a newer
+  optimistic local write) and leave stale content in the UI; a stale incoming
+  payload is now discarded. Docs without the LWW fields (`updatedAt`/`deviceId`)
+  keep the previous last-patch-wins behavior.
+
+### Removed
+
+- `EntityStore.hydrated`: the flag was written but never read by any consumer.
+  Reintroduce it if a UI ever needs a per-collection "hydration done" signal.
+
 ## 0.1.4 - 2026-07-12
 
 ### Added

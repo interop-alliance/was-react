@@ -19,13 +19,33 @@
  */
 import { create, type UseBoundStore, type StoreApi } from 'zustand'
 import { requireStore } from './storageManager.js'
+import { remotePayloadWins } from '../sync/lww.js'
+
+/**
+ * Reads the LWW fields off a doc when it carries them. The store is generic
+ * over `{ id: string }`, so docs without `updatedAt`/`deviceId` are legal;
+ * for those the patch path falls back to blind last-patch-wins.
+ *
+ * @param doc {unknown}
+ * @returns {{ updatedAt: string, deviceId: string } | null}
+ */
+function lwwFields(
+  doc: unknown
+): { updatedAt: string; deviceId: string } | null {
+  const { updatedAt, deviceId } = doc as {
+    updatedAt?: unknown
+    deviceId?: unknown
+  }
+  return typeof updatedAt === 'string' && typeof deviceId === 'string'
+    ? { updatedAt, deviceId }
+    : null
+}
 
 export interface EntityStore<T extends { id: string }> {
   /**
    * Decrypted payloads keyed by logical uuid.
    */
   byId: Map<string, T>
-  hydrated: boolean
   /**
    * Decrypt every live row of the collection into the Map.
    */
@@ -53,7 +73,9 @@ export interface EntityStore<T extends { id: string }> {
    * Upsert one already-decrypted doc into the Map WITHOUT persisting (the sync
    * stream owns the persisted row already). Used for per-doc reactive patching
    * of pulled/conflict-resolved remote changes; coalesced into one store update
-   * per pull burst (see the reactivity note above).
+   * per pull burst (see the reactivity note above). When both the incoming and
+   * the held doc carry the LWW fields (`updatedAt` + `deviceId`), a stale
+   * incoming doc is discarded rather than clobbering the newer held one.
    */
   patch: (doc: T) => void
   /**
@@ -97,6 +119,17 @@ export function createEntityStore<T extends { id: string }>(
         const byId = new Map(state.byId)
         for (const op of ops) {
           if (op.type === 'upsert') {
+            // LWW guard: `patch` events decrypt asynchronously, so two events
+            // for the same doc can arrive out of order, and a pull echo can
+            // trail a newer optimistic local write. When both payloads carry
+            // the LWW fields, a stale incoming doc must not clobber the newer
+            // held one.
+            const held = byId.get(op.doc.id)
+            const incoming = lwwFields(op.doc)
+            const current = held === undefined ? null : lwwFields(held)
+            if (incoming && current && !remotePayloadWins(incoming, current)) {
+              continue
+            }
             byId.set(op.doc.id, op.doc)
             changed = true
           } else if (byId.delete(op.uuid)) {
@@ -121,10 +154,9 @@ export function createEntityStore<T extends { id: string }>(
 
     return {
       byId: new Map<string, T>(),
-      hydrated: false,
       hydrate: async () => {
         const docs = await requireStore().listEntities<T>(collectionKey)
-        set({ byId: new Map(docs.map(d => [d.id, d])), hydrated: true })
+        set({ byId: new Map(docs.map(d => [d.id, d])) })
       },
       insert: async doc => {
         await requireStore().insertEntity(collectionKey, doc)
@@ -152,7 +184,7 @@ export function createEntityStore<T extends { id: string }>(
       },
       replaceAll: docs => {
         pending.length = 0
-        set({ byId: new Map(docs.map(doc => [doc.id, doc])), hydrated: true })
+        set({ byId: new Map(docs.map(doc => [doc.id, doc])) })
       },
       patch: doc => {
         pending.push({ type: 'upsert', doc })

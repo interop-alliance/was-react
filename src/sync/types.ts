@@ -149,7 +149,11 @@ export interface WasSyncBasePort {
    * Conditionally deletes a resource (writes a tombstone; `DELETE /:id`). Pass
    * `ifMatch` (a quoted ETag over the content `version`) to delete only if
    * unchanged. Returns the tombstone `version` parsed from the response ETag
-   * when the server supplies one (the reference server does not).
+   * when the server supplies one (the reference server does not). MUST treat a
+   * `404` as success (resolve `undefined`): the resource is already absent --
+   * a row deleted locally before its first push, or deleted remotely first --
+   * so the tombstone's goal state holds; rejecting would wedge the push batch
+   * in RxDB's retry loop.
    *
    * @param options {object}
    * @param options.id {string}
