@@ -9,3 +9,5 @@
 export { ProtectedRoute } from './ProtectedRoute.js'
 export { ReconnectBanner } from './ReconnectBanner.js'
 export { SyncStatusChip } from './SyncStatusChip.js'
+export { LogoutDialog } from './LogoutDialog.js'
+export { ClearDataDialog } from './ClearDataDialog.js'

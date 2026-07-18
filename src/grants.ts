@@ -33,22 +33,24 @@ export interface ParsedGrants {
 }
 
 /**
- * One grant's target, split into server origin + space + collection. A space- or
- * collection-scoped target may omit `collectionId`.
+ * One grant's target, split into server origin + space + collection. Every
+ * routed grant is collection-scoped, so `collectionId` is always present.
  */
 interface ParsedTarget {
   serverUrl: string
   spaceId: string
-  collectionId?: string
+  collectionId: string
 }
 
 /**
  * Parses a single `invocationTarget` URL into its WAS components. `serverUrl` is
  * the bare origin (`protocol//host`) with no trailing slash, matching the shape
  * the reference server validates `SERVER_URL` into; the path grammar itself is
- * owned by `@interop/was-client`'s `parseSpaceTarget`. A resource-depth target
- * still contributes its collection; a reserved sub-endpoint target (e.g.
- * `/space/:id/policy`) contributes only its server and space.
+ * owned by `@interop/was-client`'s `parseSpaceTarget`. A collection- or
+ * resource-depth target contributes its collection; a space-scoped or reserved
+ * sub-endpoint target (e.g. bare `/space/:id` or `/space/:id/policy`) carries no
+ * collection and is rejected -- login only ever requests collection-scoped
+ * capabilities.
  *
  * @param target {string}   an absolute WAS URL
  * @returns {ParsedTarget}
@@ -69,10 +71,15 @@ export function parseInvocationTarget(target: string): ParsedTarget {
       `Grant invocationTarget is not a WAS space URL: "${target}".`
     )
   }
+  if (!('collectionId' in parsed)) {
+    throw new Error(
+      `Grant invocationTarget is not collection-scoped: "${target}".`
+    )
+  }
   return {
     serverUrl,
     spaceId: parsed.spaceId,
-    ...('collectionId' in parsed && { collectionId: parsed.collectionId })
+    collectionId: parsed.collectionId
   }
 }
 
@@ -94,8 +101,8 @@ function invocationTargetOf(zcap: IZcap): string {
 /**
  * Parses a delegated grant set into the sync topology. Asserts a single server
  * origin and a single space across every grant, and routes each collection-scoped
- * grant to its WAS collection id. A space-scoped grant (no collection segment)
- * still contributes its server/space but is not added to the routing table.
+ * grant to its WAS collection id. Every grant must be collection-scoped; a
+ * space-scoped grant (no collection segment) is rejected.
  *
  * @param zcaps {IZcap[]}   the delegated capabilities
  * @returns {ParsedGrants}
@@ -124,9 +131,7 @@ export function parseGrants(zcaps: IZcap[]): ParsedGrants {
         `Grants span two spaces: "${spaceId}" vs "${parsed.spaceId}".`
       )
     }
-    if (parsed.collectionId !== undefined) {
-      byCollectionId[parsed.collectionId] = zcap
-    }
+    byCollectionId[parsed.collectionId] = zcap
   }
 
   return {

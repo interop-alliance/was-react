@@ -2,19 +2,18 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Session-flow tests for the auth store that drive a real seed-derived identity
- * and a real (fake-indexeddb) LocalStore open, but stub the network edges:
- * `startWasSync` is mocked to a no-op (no live replication / no `window`/`fetch`
- * dependency) and `requestGrants` is mocked per-test. Covers:
+ * Connected-session tests for the four-state machine: a real seed-derived
+ * identity and a real (fake-indexeddb) LocalStore open, with the network edges
+ * stubbed (`startWasSync` a no-op, `requestGrants` mocked per test). Covers:
  *
- * - a failed activation tears the local store back down and surfaces the open
- *   error (so a later login never reuses a half-open controller's database);
- * - `reconnect()` keeps the seed (and the session) when the persisted record has
- *   expired, instead of wiping it and logging out;
- * - `restore()` with a grant set that does not cover every configured collection
- *   raises the reconnect banner proactively;
+ * - a failed connected activation falls back to a usable `local` replica (never
+ *   dead-ends) and surfaces the open error;
+ * - `reconnect()` keeps the seed (and stays in `reconnect`) when the re-grant
+ *   fails, instead of wiping the seed and logging out;
+ * - `boot()` with a grant set that does not cover every configured collection
+ *   lands `reconnect` (the proactive banner);
  * - `destroy()` tears the session down WITHOUT wiping the persisted record, so a
- *   fresh `restore()` re-opens it.
+ *   fresh `boot()` re-opens it `connected`.
  *
  * @vitest-environment node
  */
@@ -36,14 +35,11 @@ import {
   restoreAppSession
 } from '../../src/identity/appSession.js'
 import { requestGrants } from '../../src/auth/loginFlow.js'
-import { useAppReady } from '../../src/session/appReadyStore.js'
 import { hasStore } from '../../src/storage/storageManager.js'
 import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
-// Replace the live replication bootstrap with an inert resolver: the auth-store
-// logic under test (activate / persist / begin-sync tracking / teardown) runs
-// without opening any network or `window`-backed replication machinery.
+// Replace the live replication bootstrap with an inert resolver.
 vi.mock('../../src/storage/wasSync.js', () => ({
   startWasSync: vi.fn(async () => ({}))
 }))
@@ -112,22 +108,23 @@ afterEach(async () => {
   while (liveStores.length > 0) {
     await liveStores.pop()!.getState().destroy()
   }
-  useAppReady.getState().reset()
   useSyncStatusStore.getState().reset()
   vi.restoreAllMocks()
 })
 
 /**
- * Persists a valid, matching session and drives `restore()` to `authenticated`.
+ * Persists a valid, matching session and drives `boot()` to `connected`.
  */
-async function authenticatedStore({
+async function connectedStore({
   config,
   seedStore,
+  registry: reg = registry,
   grants = noteGrants(),
   expires = futureIso(FAR_FUTURE_MS)
 }: {
   config: WasAppConfig
   seedStore: SeedStore
+  registry?: StoreRegistry
   grants?: IZcap[]
   expires?: string
 }): Promise<{ store: WasAuthStore; seed: Uint8Array }> {
@@ -144,14 +141,14 @@ async function authenticatedStore({
     },
     store: seedStore
   })
-  const store = createAuthStore({ config, registry, seedStore })
+  const store = createAuthStore({ config, registry: reg, seedStore })
   liveStores.push(store)
-  await store.getState().restore()
+  await store.getState().boot()
   return { store, seed }
 }
 
-describe('activateSession teardown on failure', () => {
-  it('tears the store down and surfaces the open error when hydrate fails', async () => {
+describe('activateConnected fallback on failure', () => {
+  it('falls back to a usable local replica and surfaces the open error', async () => {
     const seed = crypto.getRandomValues(new Uint8Array(32))
     const identity = await initAppSession({ seed })
     const seedStore = newSeedStore()
@@ -167,10 +164,16 @@ describe('activateSession teardown on failure', () => {
       store: seedStore
     })
 
-    const failingRegistry: StoreRegistry = {
+    // Hydrate throws on the FIRST call (the connected open) and succeeds after,
+    // so the connected activation fails but the local fallback opens cleanly.
+    let hydrateCalls = 0
+    const flakyRegistry: StoreRegistry = {
       notes: {
         hydrate: async () => {
-          throw new Error('hydrate boom')
+          hydrateCalls++
+          if (hydrateCalls === 1) {
+            throw new Error('hydrate boom')
+          }
         },
         upsert: () => {},
         drop: () => {},
@@ -179,28 +182,32 @@ describe('activateSession teardown on failure', () => {
     }
     const store = createAuthStore({
       config: baseConfig([{ key: 'notes', id: 'notes' }]),
-      registry: failingRegistry,
+      registry: flakyRegistry,
       seedStore
     })
     liveStores.push(store)
 
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    await store.getState().restore()
+    await store.getState().boot()
 
-    expect(store.getState().status).toBe('unauthenticated')
-    // The store was closed + cleared, not left installed for a later login.
-    expect(hasStore()).toBe(false)
-    // The open failure is surfaced on the ready gate (ProtectedRoute's branch).
-    expect(useAppReady.getState().error).toBeTruthy()
+    // The connected activation failed, but the app never dead-ends: it lands in
+    // a usable `local` replica with the open error surfaced.
+    expect(store.getState().status).toBe('local')
+    expect(hasStore()).toBe(true)
+    expect(store.getState().error).toBeTruthy()
   })
 })
 
-describe('reconnect() with an expired record', () => {
-  it('keeps the seed and stays authenticated instead of logging out', async () => {
+describe('reconnect() with a failing re-grant', () => {
+  it('keeps the seed and stays in reconnect instead of logging out', async () => {
     const config = baseConfig([{ key: 'notes', id: 'notes' }])
     const seedStore = newSeedStore()
-    const { store, seed } = await authenticatedStore({ config, seedStore })
-    expect(store.getState().status).toBe('authenticated')
+    const { store, seed } = await connectedStore({ config, seedStore })
+    expect(store.getState().status).toBe('connected')
+
+    // A live 401/403 (or near-expiry) moves the session to `reconnect`.
+    store.getState().notifyAccessExpired()
+    expect(store.getState().status).toBe('reconnect')
 
     // Model the exact bug: the persisted record is now past its expiry (only
     // the grants need renewing; the seed survives).
@@ -224,54 +231,54 @@ describe('reconnect() with an expired record', () => {
     await store.getState().reconnect()
 
     // The seed survived (old code wiped it via restoreAppSession) and the
-    // session was not torn down to `unauthenticated`.
+    // session was not torn down to `local`.
     expect(await seedStore.loadSeed()).not.toBeNull()
-    expect(store.getState().status).toBe('authenticated')
+    expect(store.getState().status).toBe('reconnect')
     expect(store.getState().reconnecting).toBe(false)
   })
 })
 
-describe('restore() grant coverage', () => {
-  it('raises the reconnect banner when a configured collection is uncovered', async () => {
+describe('boot() grant coverage', () => {
+  it('lands reconnect when a configured collection is uncovered', async () => {
     // Two configured collections, but the grant set only covers `notes`.
     const config = baseConfig([
       { key: 'notes', id: 'notes' },
       { key: 'tasks', id: 'tasks' }
     ])
     const seedStore = newSeedStore()
-    const { store } = await authenticatedStore({ config, seedStore })
+    const { store } = await connectedStore({ config, seedStore })
 
-    expect(store.getState().status).toBe('authenticated')
+    expect(store.getState().status).toBe('reconnect')
     expect(store.getState().accessExpired).toBe(true)
   })
 
-  it('does not raise the banner when every collection is covered', async () => {
+  it('lands connected when every collection is covered', async () => {
     const config = baseConfig([{ key: 'notes', id: 'notes' }])
     const seedStore = newSeedStore()
-    const { store } = await authenticatedStore({ config, seedStore })
+    const { store } = await connectedStore({ config, seedStore })
 
-    expect(store.getState().status).toBe('authenticated')
+    expect(store.getState().status).toBe('connected')
     expect(store.getState().accessExpired).toBe(false)
   })
 })
 
 describe('destroy()', () => {
-  it('tears the session down without wiping the record and allows re-restore', async () => {
+  it('tears the session down without wiping the record and allows a re-boot', async () => {
     const config = baseConfig([{ key: 'notes', id: 'notes' }])
     const seedStore = newSeedStore()
-    const { store } = await authenticatedStore({ config, seedStore })
-    expect(store.getState().status).toBe('authenticated')
+    const { store } = await connectedStore({ config, seedStore })
+    expect(store.getState().status).toBe('connected')
     expect(hasStore()).toBe(true)
 
     await store.getState().destroy()
 
-    // Torn down and returned to `idle` (not `unauthenticated`).
-    expect(store.getState().status).toBe('idle')
+    // Torn down and returned to `boot` (not `local`).
+    expect(store.getState().status).toBe('boot')
     expect(hasStore()).toBe(false)
-    // The persisted record survives, so a StrictMode remount can restore.
+    // The persisted record survives, so a StrictMode remount can re-boot.
     expect(await restoreAppSession({ store: seedStore })).not.toBeNull()
 
-    await store.getState().restore()
-    expect(store.getState().status).toBe('authenticated')
+    await store.getState().boot()
+    expect(store.getState().status).toBe('connected')
   })
 })

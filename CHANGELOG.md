@@ -1,5 +1,60 @@
 # @interop/was-react Changelog
 
+## 0.1.6 - TBD
+
+### Added
+
+- Local-first onboarding: with no wallet session, the store now opens an
+  encrypted anonymous-seed replica (persisted in `<dbName>-anon`, same
+  per-collection key derivation as a connected replica), so an app is fully
+  usable before or without connecting a wallet. New `WasAppConfig.onboarding`
+  (`'local-first' | 'login-gated'`, default `'login-gated'`, the historical gate
+  behavior) and `WasAppConfig.seedLocal` (one-time dev-fixtures hook for a
+  brand-new anonymous replica).
+- `clearLocalData` action (+ `useClearData` hook): deletes the local replica and
+  mints a fresh anonymous seed/DID and replica. Backed by the new
+  `LocalStore.remove()`.
+- `connectWithGrants({ seed, grants })`: non-CHAPI connect from an explicit
+  seed + grant set (dev/test and provisioned-grants paths), driving the same
+  connected-state replication path as wallet login.
+- New `./mui` dialogs `LogoutDialog` (log out keeping vs erasing local data) and
+  `ClearDataDialog` (confirm-and-wipe for local mode).
+
+### Changed
+
+- Breaking: the session store is now a four-state machine, `SessionStatus`
+  (`'boot' | 'local' | 'connected' | 'reconnect'`), replacing `AuthStatus` with
+  no back-compat alias. `restore()` is renamed `boot()`; a restore hit lands
+  `connected`, a miss or error falls to `local` (never a dead login screen), and
+  both finish opening + hydrating the replica before leaving `'boot'`.
+- Breaking: `logout()` now takes `{ wipe?: boolean }` (default keeps the local
+  replica) and lands in a fresh anonymous `local` state instead of navigating to
+  a login screen.
+- Breaking hook shapes: `useSession()` adds `onboarding` and `authenticating`;
+  `useLogin()` returns `{ login, authenticating, phase, error, status }`;
+  `useLogout()` returns `(options?: { wipe?: boolean }) => Promise<void>`.
+- `ProtectedRoute` is now a thin switch over `onboarding` + `status`; boot is
+  kicked off by `WasSessionProvider` on mount. Its fatal-error alert is scoped
+  to boot/storage failures, so a failed or cancelled wallet login no longer
+  blanks a local-first app.
+- Breaking: `parseGrants` requires every delegated grant to be collection-scoped
+  (space-scoped targets are rejected), and `ParsedTarget.collectionId` is now
+  required.
+
+### Removed
+
+- Breaking (privacy): the automatic read-only whole-space capability query in
+  the wallet login request. Apps now request only collection-scoped
+  capabilities; no runtime code ever invoked the space grant. The
+  `SPACE_READ_REFERENCE_ID` export is gone with it.
+- Breaking: `useAppReady` -- "app ready" is now simply `status !== 'boot'`.
+
+### Migration
+
+- No persisted-session back-compat: sessions that fail to restore (including
+  older ones carrying a space-read grant) silently land in `local`, or on the
+  login path in a login-gated app.
+
 ## 0.1.5 - 2026-07-12
 
 ### Fixed

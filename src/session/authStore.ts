@@ -2,17 +2,24 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The wallet-mode auth store (zustand): owns the session lifecycle -- hot
- * restore (zero popups), Login With Wallet, logout, and the expired-access
- * reconnect -- plus the open/hydrate/sync ordering.
+ * The session auth store (zustand): a four-state machine
+ * (`boot` | `local` | `connected` | `reconnect`) that owns the whole session
+ * lifecycle -- boot (hot restore or fall to an anonymous local replica), Login
+ * With Wallet, the non-CHAPI `connectWithGrants` path, logout, clear-data, and
+ * the expired-access reconnect -- plus the open/hydrate/sync ordering.
  *
- * On a successful login/restore it opens the encrypted {@link LocalStore} from
- * the session seed (a per-controller database name, so two wallet users on one
- * browser never collide), hydrates the entity stores, flips the shared
- * `useAppReady` gate, and starts WAS replication from the granted zcaps.
+ * `boot` attempts a zero-popup session restore. A restore hit opens the
+ * encrypted {@link LocalStore} under the session seed, hydrates the entity
+ * stores, starts WAS replication, and lands `connected`. A restore miss (or any
+ * error) opens the store under a persisted ANONYMOUS seed instead and lands
+ * `local`: a fully usable, encrypted, local-only replica with no remote. Both
+ * successors finish open+hydrate before leaving `boot`, so "app ready" is simply
+ * `status !== 'boot'`.
  *
- * `status` is the router gate: `ProtectedRoute` waits for the restore attempt to
- * settle before deciding between the app and the login page.
+ * Login (or `connectWithGrants`) tears the anonymous replica down and opens the
+ * connected replica under the wallet-derived seed. Logout returns to a fresh
+ * `local` (optionally wiping the connected replica); `clearLocalData` mints a
+ * brand-new anonymous seed and replica.
  *
  * The library cannot bind a module-level store to app config, so this is a
  * FACTORY: {@link createAuthStore} captures the app's {@link WasAppConfig} and
@@ -26,6 +33,7 @@ import {
   DEFAULT_DB_NAME,
   DEFAULT_EXPIRY_WARNING_MS,
   DEFAULT_EXPIRY_WATCH_MS,
+  DEFAULT_ONBOARDING,
   type StoreRegistry,
   type WasAppConfig
 } from '../config.js'
@@ -37,7 +45,8 @@ import {
   clearAppSession,
   persistAppSession,
   restoreAppSession,
-  isNearExpiry
+  isNearExpiry,
+  earliestExpiry
 } from '../identity/appSession.js'
 import {
   loginWithWallet,
@@ -67,10 +76,18 @@ import {
   type SyncController
 } from '../storage/syncController.js'
 import { useSyncStatusStore } from '../storage/syncStatusStore.js'
-import { useAppReady } from './appReadyStore.js'
 
-export type AuthStatus =
-  'idle' | 'restoring' | 'unauthenticated' | 'authenticating' | 'authenticated'
+/**
+ * The four session states:
+ * - `boot`: attempting hot restore; both successors open + hydrate before this
+ *   status is left.
+ * - `local`: an encrypted anonymous-seed replica, no remote (the pre-connection
+ *   product state; tier-1 apps may stay here indefinitely).
+ * - `connected`: a wallet-derived identity, parsed grants, replication.
+ * - `reconnect`: connected but access expired/revoked; the replica stays usable,
+ *   remote invocations paused until re-login.
+ */
+export type SessionStatus = 'boot' | 'local' | 'connected' | 'reconnect'
 
 interface ActiveSession {
   seed: Uint8Array
@@ -81,7 +98,18 @@ interface ActiveSession {
 }
 
 export interface AuthState {
-  status: AuthStatus
+  status: SessionStatus
+  /**
+   * The app's onboarding mode. Read by `ProtectedRoute` to decide whether to
+   * render the app or redirect to login while in `local`; never affects the
+   * store's own transitions.
+   */
+  onboarding: 'local-first' | 'login-gated'
+  /**
+   * A Login With Wallet flow is in flight (the transient the login page's busy
+   * state keys off; distinct from the `status`, which stays `local` throughout).
+   */
+  authenticating: boolean
   /**
    * The current login phase, for the login page's progress line.
    */
@@ -89,32 +117,64 @@ export interface AuthState {
   error: string | null
   controllerDid: string | null
   /**
-   * ISO expiry of the current grant set (earliest zcap expiry).
+   * ISO expiry of the current grant set (earliest zcap expiry); `null` in
+   * `local` (no grants).
    */
   expires: string | null
   /**
-   * A live 401/403 was seen mid-session: show the reconnect banner.
+   * A live 401/403 was seen mid-session (or a proactive near-expiry): show the
+   * reconnect banner. Always true iff `status === 'reconnect'`.
    */
   accessExpired: boolean
   reconnecting: boolean
   /**
-   * Hot restore from the persisted session; falls to `unauthenticated`.
+   * Attempt a zero-popup hot restore; a restore hit lands `connected`, any
+   * miss/error falls to `local` (a fresh anonymous replica), never a dead login
+   * screen. No-op once the status has left `boot`.
    */
-  restore: () => Promise<void>
+  boot: () => Promise<void>
   /**
-   * Full Login With Wallet (first-run or returning).
+   * Full Login With Wallet (first-run or returning). On success tears down the
+   * anonymous replica and opens the connected one.
    */
   login: () => Promise<void>
+  /**
+   * Non-CHAPI connect from an explicit seed + grants (dev/test and provisioned
+   * grants). Tears down the current replica and opens the connected one.
+   *
+   * @param options {object}
+   * @param options.seed {Uint8Array}
+   * @param options.grants {IZcap[]}
+   * @returns {Promise<void>}
+   */
+  connectWithGrants: (options: {
+    seed: Uint8Array
+    grants: IZcap[]
+  }) => Promise<void>
   /**
    * Re-run the grants flow with the existing seed (expired access).
    */
   reconnect: () => Promise<void>
-  logout: () => Promise<void>
+  /**
+   * Detach the wallet and return to a fresh `local` replica. `wipe` deletes the
+   * connected replica's database; otherwise it is kept on the device.
+   *
+   * @param [options] {object}
+   * @param [options.wipe] {boolean}
+   * @returns {Promise<void>}
+   */
+  logout: (options?: { wipe?: boolean }) => Promise<void>
+  /**
+   * Delete the local replica, discard the anonymous seed, and mint a fresh
+   * anonymous seed/DID + replica. The shared reset primitive behind the
+   * `local`-mode "Clear data" button.
+   */
+  clearLocalData: () => Promise<void>
   notifyAccessExpired: () => void
   /**
-   * Tears down the live session (expiry watch, controller, local store) WITHOUT
-   * wiping the persisted session record, and returns to `idle` so a fresh
-   * `restore()` can re-open it. Called from the provider's unmount cleanup so an
+   * Tears down the live replica (expiry watch, controller, local store) WITHOUT
+   * wiping the persisted session record, and returns to `boot` so a fresh
+   * `boot()` can re-open it. Called from the provider's unmount cleanup so an
    * unmount (or a React StrictMode dev remount) never orphans the replication
    * loop or the expiry-watch interval.
    */
@@ -127,7 +187,13 @@ export interface AuthState {
 export type WasAuthStore = StoreApi<AuthState>
 
 /**
- * Builds the wallet-mode auth store bound to an app's config and store registry.
+ * A nominal far-future expiry (ms) for grants minted without one (dev/test).
+ * Well past the near-expiry warning, so the watch never fires against them.
+ */
+const FAR_FUTURE_EXPIRY_MS = 100 * 365 * 24 * 60 * 60 * 1000
+
+/**
+ * Builds the session auth store bound to an app's config and store registry.
  * Call once (the React provider does) and share the returned store through
  * context; the hooks read it via `useStore`.
  *
@@ -153,8 +219,13 @@ export function createAuthStore({
   storage?: RxStorage<unknown, unknown>
 }): WasAuthStore {
   const dbName = config.dbName ?? DEFAULT_DB_NAME
+  const onboarding = config.onboarding ?? DEFAULT_ONBOARDING
   const sessionStore =
     seedStore ?? createSeedStore({ dbName: `${dbName}-session` })
+  // The anonymous-seed persistence for `local` mode: only a raw 32-byte seed,
+  // no session record, in its own IndexedDB so it never collides with the
+  // wallet session or a connected replica.
+  const anonStore = createSeedStore({ dbName: `${dbName}-anon` })
   const documentLoader = createDocumentLoader(
     config.wasServerUrl !== undefined
       ? { wasServerUrl: config.wasServerUrl }
@@ -251,7 +322,7 @@ export function createAuthStore({
 
   /**
    * Persists the session record, kicks off background replication, and arms the
-   * near-expiry watch. Shared by the login/restore activation and the reconnect
+   * near-expiry watch. Shared by the connected activation and the reconnect
    * re-grant paths (identical persist + begin-sync + arm sequence).
    *
    * @param options {object}
@@ -314,28 +385,90 @@ export function createAuthStore({
   }
 
   /**
-   * Opens storage + hydrates + starts sync for a validated session, persists it,
-   * and flips the ready gate. Shared by login and restore. Any failure after the
-   * store is installed tears the store back down (so a later login never reuses a
-   * half-open controller's database) and surfaces the open error before
-   * rethrowing.
+   * Opens the encrypted replica under `seed` (a per-controller database name),
+   * installs it as the process-wide store, and hydrates every entity store.
+   * Shared by `openLocal` and the connected activation.
+   *
+   * @param options {object}
+   * @param options.seed {Uint8Array}
+   * @param options.controllerDid {string}
+   * @returns {Promise<void>}
    */
-  async function activateSession(session: ActiveSession): Promise<void> {
+  async function openAndHydrate({
+    seed,
+    controllerDid
+  }: {
+    seed: Uint8Array
+    controllerDid: string
+  }): Promise<void> {
+    const local = await LocalStore.init({
+      seed,
+      collections: config.collections,
+      dbName: dbNameForController({ dbName, controllerDid }),
+      ...(storage && { storage })
+    })
+    setLocalStore(local)
+    await hydrateAll(registry)
+  }
+
+  /**
+   * Loads the persisted anonymous seed, minting and persisting a fresh random
+   * one on first use. `created` is true only when a new seed was generated (the
+   * signal for the one-time `seedLocal` fixtures hook).
+   *
+   * @returns {Promise<{ seed: Uint8Array, created: boolean }>}
+   */
+  async function loadOrCreateAnonSeed(): Promise<{
+    seed: Uint8Array
+    created: boolean
+  }> {
+    const existing = await anonStore.loadSeed()
+    if (existing) {
+      return { seed: existing, created: false }
+    }
+    const seed = crypto.getRandomValues(new Uint8Array(32))
+    await anonStore.saveSeed(seed)
+    return { seed, created: true }
+  }
+
+  /**
+   * Opens (or re-opens) the anonymous local replica and lands `local`. Seeds
+   * dev fixtures only when the anonymous seed was just minted (so they run once
+   * per fresh replica, never on reload).
+   *
+   * @returns {Promise<void>}
+   */
+  async function openLocal(): Promise<void> {
+    const { seed, created } = await loadOrCreateAnonSeed()
+    const identity = await initAppSession({ seed })
+    await openAndHydrate({ seed, controllerDid: identity.controllerDid })
+    if (created && config.seedLocal) {
+      await config.seedLocal()
+    }
+    store.setState({
+      status: 'local',
+      controllerDid: identity.controllerDid,
+      expires: null,
+      accessExpired: false,
+      error: null
+    })
+  }
+
+  /**
+   * Opens the connected replica under the session seed, hydrates, persists the
+   * session, and starts sync. On any failure the store is torn back down and the
+   * anonymous local replica re-opened (so the app never dead-ends), then the
+   * error is surfaced and rethrown for the caller to finalize.
+   *
+   * @param session {ActiveSession}
+   * @returns {Promise<void>}
+   */
+  async function activateConnected(session: ActiveSession): Promise<void> {
     try {
-      if (!hasStore()) {
-        const local = await LocalStore.init({
-          seed: session.seed,
-          collections: config.collections,
-          dbName: dbNameForController({
-            dbName,
-            controllerDid: session.identity.controllerDid
-          }),
-          ...(storage && { storage })
-        })
-        setLocalStore(local)
-      }
-      await hydrateAll(registry)
-      // Flip the ready gate only once the session is durably persisted.
+      await openAndHydrate({
+        seed: session.seed,
+        controllerDid: session.identity.controllerDid
+      })
       await persistAndStartSync({
         seed: session.seed,
         identity: session.identity,
@@ -343,19 +476,22 @@ export function createAuthStore({
         grants: session.grants,
         expires: session.expires
       })
-      useAppReady.getState().setReady()
     } catch (err) {
-      await deactivateSession()
-      const message = errorMessage(err)
-      useAppReady.getState().setError(message)
+      await deactivateStore()
+      await openLocal()
+      store.setState({ error: errorMessage(err) })
       throw err
     }
   }
 
   /**
-   * Tears down storage + sync + entity stores (logout and re-login paths).
+   * Tears down the live replica + sync + entity stores WITHOUT touching either
+   * persisted seed (the anonymous seed and the session record survive). Closes
+   * the database; use {@link resetToFreshLocal} to delete it.
+   *
+   * @returns {Promise<void>}
    */
-  async function deactivateSession(): Promise<void> {
+  async function deactivateStore(): Promise<void> {
     disarmExpiryWatch()
     cancelScheduledRehydrates()
     await stopController()
@@ -369,13 +505,68 @@ export function createAuthStore({
     }
     clearAllEntityStores(registry)
     useSyncStatusStore.getState().reset()
-    useAppReady.getState().reset()
+  }
+
+  /**
+   * Tears the current replica down and re-opens a fresh `local` replica. `wipe`
+   * (via `deleteDb`) deletes the current database rather than closing it (the
+   * logout-wipe and clear-data paths); `discardAnonSeed` drops the persisted
+   * anonymous seed BEFORE the re-open so `openLocal` mints a brand-new anonymous
+   * seed/DID + database (the clear-data path).
+   *
+   * @param options {object}
+   * @param options.deleteDb {boolean}
+   * @param [options.discardAnonSeed] {boolean}
+   * @returns {Promise<void>}
+   */
+  async function resetToFreshLocal({
+    deleteDb,
+    discardAnonSeed = false
+  }: {
+    deleteDb: boolean
+    discardAnonSeed?: boolean
+  }): Promise<void> {
+    disarmExpiryWatch()
+    cancelScheduledRehydrates()
+    await stopController()
+    if (hasStore()) {
+      try {
+        if (deleteDb) {
+          await requireStore().remove()
+        } else {
+          await requireStore().close()
+        }
+      } catch (err) {
+        console.warn('Error tearing down the local store:', err)
+      }
+      clearLocalStore()
+    }
+    clearAllEntityStores(registry)
+    useSyncStatusStore.getState().reset()
+    if (discardAnonSeed) {
+      await anonStore.clearSeedStore()
+    }
+    await openLocal()
+  }
+
+  /**
+   * The step-3 adoption seam: called from `login()` after the wallet returns
+   * identity + grants and before the connected replica opens. In step 2 it only
+   * tears the anonymous replica down; the anonymous seed and its IndexedDB are
+   * left intact (not migrated, not deleted) so a later step can adopt them.
+   *
+   * @returns {Promise<void>}
+   */
+  async function adoptLocalIntoConnected(): Promise<void> {
+    await deactivateStore()
   }
 
   // Declared last so `prefer-const` is satisfied; the lifecycle closures above
   // only dereference `store` at call time, by which point it is assigned.
   const store: WasAuthStore = createStore<AuthState>()((set, get) => ({
-    status: 'idle',
+    status: 'boot',
+    onboarding,
+    authenticating: false,
     phase: null,
     error: null,
     controllerDid: null,
@@ -383,22 +574,21 @@ export function createAuthStore({
     accessExpired: false,
     reconnecting: false,
 
-    restore: async () => {
-      if (get().status !== 'idle') {
+    boot: async () => {
+      if (get().status !== 'boot') {
         return
       }
-      set({ status: 'restoring' })
       try {
         const restored = await restoreAppSession({ store: sessionStore })
         if (!restored) {
-          set({ status: 'unauthenticated' })
+          await openLocal()
           return
         }
         const identity = await initAppSession({ seed: restored.seed })
         if (identity.controllerDid !== restored.controllerDid) {
-          // A corrupt record; treat as logged out.
+          // A corrupt record; treat as logged out and fall to local.
           await clearAppSession({ store: sessionStore })
-          set({ status: 'unauthenticated' })
+          await openLocal()
           return
         }
         const parsed = parseGrants(restored.grants)
@@ -407,17 +597,17 @@ export function createAuthStore({
           parsed.serverUrl !== config.wasServerUrl
         ) {
           await clearAppSession({ store: sessionStore })
-          set({ status: 'unauthenticated' })
+          await openLocal()
           return
         }
         // Unlike login/reconnect (which run `checkGrants`), a hot restore trusts
         // the persisted grants; re-check that they still cover every configured
-        // collection so a partially-covered grant set raises the reconnect banner
-        // proactively rather than waiting for a per-collection 403 mid-session.
+        // collection so a partially-covered grant set raises the reconnect
+        // banner proactively rather than waiting for a per-collection 403.
         const uncovered = config.collections.filter(
           collection => parsed.byCollectionId[collection.id] === undefined
         )
-        await activateSession({
+        await activateConnected({
           seed: restored.seed,
           identity,
           parsed,
@@ -425,30 +615,46 @@ export function createAuthStore({
           expires: restored.expires
         })
         set({
-          status: 'authenticated',
+          status: uncovered.length > 0 ? 'reconnect' : 'connected',
           controllerDid: identity.controllerDid,
           expires: restored.expires,
           error: null,
           accessExpired: uncovered.length > 0
         })
       } catch (err) {
-        console.warn('Session restore failed:', err)
-        set({ status: 'unauthenticated' })
+        console.warn('Session boot failed:', err)
+        // `activateConnected` already re-opens local on its own failure; only
+        // open local here for an earlier failure that never reached it.
+        if (get().status === 'boot') {
+          try {
+            await openLocal()
+          } catch (localErr) {
+            // Even the anonymous local replica could not be opened: a genuine
+            // storage failure, the only case that leaves `status` at `boot`
+            // with an `error`. Surfacing it here (rather than a login/reconnect
+            // failure, which only ever sets `error` after `status` has left
+            // `boot`) is what lets `ProtectedRoute` scope its fatal alert to
+            // boot/storage failures alone.
+            set({ error: errorMessage(localErr) })
+          }
+        }
       }
     },
 
     login: async () => {
-      const { status } = get()
-      if (status === 'authenticating' || status === 'authenticated') {
+      if (get().authenticating || get().status === 'connected') {
         return
       }
-      set({ status: 'authenticating', error: null, phase: 'probing' })
+      set({ authenticating: true, error: null, phase: 'probing' })
       try {
         const outcome = await loginWithWallet({
           config: loginConfig,
           onPhase: phase => set({ phase })
         })
-        await activateSession({
+        // The wallet succeeded: only now tear down the anonymous replica (a
+        // cancel above leaves `local` intact).
+        await adoptLocalIntoConnected()
+        await activateConnected({
           seed: outcome.seed,
           identity: outcome.identity,
           parsed: outcome.parsed,
@@ -456,7 +662,8 @@ export function createAuthStore({
           expires: outcome.expires
         })
         set({
-          status: 'authenticated',
+          status: 'connected',
+          authenticating: false,
           controllerDid: outcome.identity.controllerDid,
           expires: outcome.expires,
           phase: null,
@@ -470,13 +677,30 @@ export function createAuthStore({
             : err instanceof Error
               ? `Login failed: ${err.message}`
               : 'Login failed.'
-        set({ status: 'unauthenticated', phase: null, error: message })
+        set({ authenticating: false, phase: null, error: message })
       }
+    },
+
+    connectWithGrants: async ({ seed, grants }) => {
+      const identity = await initAppSession({ seed })
+      const parsed = parseGrants(grants)
+      const expires =
+        earliestExpiry(grants) ??
+        new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
+      await deactivateStore()
+      await activateConnected({ seed, identity, parsed, grants, expires })
+      set({
+        status: 'connected',
+        controllerDid: identity.controllerDid,
+        expires,
+        error: null,
+        accessExpired: false
+      })
     },
 
     reconnect: async () => {
       const { reconnecting, status } = get()
-      if (reconnecting || status !== 'authenticated') {
+      if (reconnecting || status !== 'reconnect') {
         return
       }
       set({ reconnecting: true, error: null })
@@ -501,6 +725,7 @@ export function createAuthStore({
           expires: checked.expires
         })
         set({
+          status: 'connected',
           accessExpired: false,
           expires: checked.expires,
           reconnecting: false
@@ -511,34 +736,36 @@ export function createAuthStore({
       }
     },
 
-    logout: async () => {
-      await deactivateSession()
+    logout: async ({ wipe = false } = {}) => {
+      await resetToFreshLocal({ deleteDb: wipe })
       await clearAppSession({ store: sessionStore })
-      set({
-        status: 'unauthenticated',
-        phase: null,
-        error: null,
-        controllerDid: null,
-        expires: null,
-        accessExpired: false,
-        reconnecting: false
-      })
+      // `resetToFreshLocal` already landed `local` (fresh anon replica); clear
+      // the remaining transients.
+      set({ phase: null, reconnecting: false })
+    },
+
+    clearLocalData: async () => {
+      await resetToFreshLocal({ deleteDb: true, discardAnonSeed: true })
+      set({ phase: null, reconnecting: false })
     },
 
     notifyAccessExpired: () => {
-      if (!get().accessExpired) {
-        set({ accessExpired: true })
+      if (get().status === 'connected') {
+        set({ status: 'reconnect', accessExpired: true })
       }
     },
 
     destroy: async () => {
-      await deactivateSession()
-      // Back to `idle` (not `unauthenticated`) and the record left intact: a
-      // StrictMode remount's `restore()` re-opens the same session from disk.
+      await deactivateStore()
+      // Back to `boot` (not `local`) and both persisted seeds left intact: a
+      // StrictMode remount's `boot()` re-opens the same session (or local).
       set({
-        status: 'idle',
+        status: 'boot',
+        authenticating: false,
         phase: null,
         error: null,
+        controllerDid: null,
+        expires: null,
         accessExpired: false,
         reconnecting: false
       })

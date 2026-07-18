@@ -101,6 +101,23 @@ export interface WasAppConfig {
    */
   collections: WasCollectionConfig[]
   /**
+   * How the router treats the pre-connection `local` state. `'local-first'`
+   * renders the app immediately over the anonymous replica (connecting a wallet
+   * is a bonus); `'login-gated'` redirects to the login path until a wallet is
+   * connected. Only affects `ProtectedRoute` rendering, never the store's
+   * transitions (boot always opens a replica). Defaults to
+   * {@link DEFAULT_ONBOARDING}.
+   */
+  onboarding?: 'local-first' | 'login-gated'
+  /**
+   * Optional dev-fixtures hook, called once -- and only when a brand-new
+   * anonymous replica is first created (never on reload, since the anon seed
+   * persists). Fixtures write through the app's own entity stores, so apps gate
+   * this on dev themselves (e.g. `seedLocal: import.meta.env.DEV ? seed :
+   * undefined`) to keep fixtures out of production local-first apps.
+   */
+  seedLocal?: () => Promise<void>
+  /**
    * The seed-credential type name + vocabulary namespace.
    */
   credential: SeedCredentialConfig
@@ -161,6 +178,12 @@ export type StoreRegistry = Record<string, StoreRegistryEntry>
  * Default base name for the local RxDB database + session IndexedDB naming.
  */
 export const DEFAULT_DB_NAME = 'was-react'
+
+/**
+ * Default onboarding mode: `'login-gated'`, preserving the historical
+ * gate-on-connected behavior for apps that do not opt into local-first.
+ */
+export const DEFAULT_ONBOARDING = 'login-gated'
 
 /**
  * Default `localStorage` key prefix (e.g. `was-react:deviceId`).

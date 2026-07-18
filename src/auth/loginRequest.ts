@@ -9,9 +9,8 @@
  *    master seed on a new device.
  * 2. The grants request: DIDAuthentication + AuthorizationCapabilityQuery with
  *    one capabilityQuery per collection (descriptor-object targets, which the
- *    wallet resolves against the user's one Space and auto-provisions) plus a
- *    read-only whole-space grant. The wallet force-caps whole-space grants to
- *    GET/HEAD, so read-only is all that is ever requested there.
+ *    wallet resolves against the user's one Space and auto-provisions). Only
+ *    collection-scoped capabilities are requested -- no whole-space grant.
  *
  * `domain` must host-match the CHAPI requesting origin or the wallet refuses
  * to sign; `challenge` must be fresh per request (echoed into the DIDAuth
@@ -26,11 +25,6 @@ import type {
  * Default read/write actions requested on each app collection.
  */
 export const RW_ACTIONS = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
-
-/**
- * The referenceId of the read-only whole-space grant.
- */
-export const SPACE_READ_REFERENCE_ID = 'space-read'
 
 /**
  * A fresh nonce for a VPR challenge.
@@ -81,8 +75,8 @@ export function buildSeedProbeVpr({
 
 /**
  * VPR #2: DIDAuthentication + AuthorizationCapabilityQuery -- one read/write
- * capabilityQuery per app collection (delegated to `controllerDid`), plus a
- * read-only whole-space grant.
+ * capabilityQuery per app collection (delegated to `controllerDid`). Only
+ * collection-scoped capabilities are requested.
  *
  * @param options {object}
  * @param options.challenge {string}
@@ -116,13 +110,6 @@ export function buildGrantsVpr({
     allowedAction: actions,
     invocationTarget: { type: 'urn:was:collection', name: id }
   }))
-  capabilityQuery.push({
-    referenceId: SPACE_READ_REFERENCE_ID,
-    reason: 'Read your storage space description.',
-    controller: controllerDid,
-    allowedAction: ['GET', 'HEAD'],
-    invocationTarget: { type: 'urn:was:space' }
-  })
   return {
     query: [
       {

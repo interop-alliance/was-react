@@ -51,11 +51,15 @@ test('the mui subpath imports and exposes its components', async ({ page }) => {
     return {
       ProtectedRoute: typeof mod.ProtectedRoute,
       ReconnectBanner: typeof mod.ReconnectBanner,
-      SyncStatusChip: typeof mod.SyncStatusChip
+      SyncStatusChip: typeof mod.SyncStatusChip,
+      LogoutDialog: typeof mod.LogoutDialog,
+      ClearDataDialog: typeof mod.ClearDataDialog
     }
   }, '/src/mui/index.ts')
 
   expect(exports.ProtectedRoute).toBe('function')
   expect(exports.ReconnectBanner).toBe('function')
   expect(exports.SyncStatusChip).toBe('function')
+  expect(exports.LogoutDialog).toBe('function')
+  expect(exports.ClearDataDialog).toBe('function')
 })

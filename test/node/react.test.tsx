@@ -42,9 +42,11 @@ afterEach(() => {
 })
 
 describe('WasSessionProvider + useSession', () => {
-  it('exposes the initial (idle) session state', () => {
+  it('exposes the initial (boot) session state', () => {
     const { result } = renderHook(() => useSession(), { wrapper })
-    expect(result.current.status).toBe('idle')
+    expect(result.current.status).toBe('boot')
+    expect(result.current.onboarding).toBe('login-gated')
+    expect(result.current.authenticating).toBe(false)
     expect(result.current.phase).toBeNull()
     expect(result.current.error).toBeNull()
     expect(result.current.controllerDid).toBeNull()
@@ -56,10 +58,12 @@ describe('WasSessionProvider + useSession', () => {
   it('provides a store with the lifecycle actions', () => {
     const { result } = renderHook(() => useAuthStore(), { wrapper })
     const state = result.current.getState()
-    expect(typeof state.restore).toBe('function')
+    expect(typeof state.boot).toBe('function')
     expect(typeof state.login).toBe('function')
+    expect(typeof state.connectWithGrants).toBe('function')
     expect(typeof state.logout).toBe('function')
     expect(typeof state.reconnect).toBe('function')
+    expect(typeof state.clearLocalData).toBe('function')
   })
 })
 

@@ -12,8 +12,8 @@ export {
   useSession,
   useLogin,
   useLogout,
+  useClearData,
   useReconnect,
   useSyncStatus,
-  useAppReady,
   type SyncRollup
 } from './hooks.js'
