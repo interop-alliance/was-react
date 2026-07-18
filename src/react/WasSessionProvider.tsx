@@ -42,11 +42,15 @@ export function WasSessionProvider({
   const [store] = useState<WasAuthStore>(() =>
     createAuthStore({ config, registry })
   )
-  // Tear the live session down on unmount so an abandoned provider never leaves
-  // the expiry-watch interval and the replication loop firing against a store no
-  // one is reading (reliably hit by React StrictMode dev remounts and by tests).
-  // The persisted record survives, so a remount's `restore()` re-opens it.
+  // Kick off boot on mount (so a local-first app that never renders
+  // `ProtectedRoute` still boots), and tear the live session down on unmount so
+  // an abandoned provider never leaves the expiry-watch interval and the
+  // replication loop firing against a store no one is reading (reliably hit by
+  // React StrictMode dev remounts and by tests). `destroy()` returns the store
+  // to `boot` with both persisted seeds intact, so a StrictMode remount's
+  // `boot()` re-opens the same session (or fresh local).
   useEffect(() => {
+    void store.getState().boot()
     return () => {
       void store.getState().destroy()
     }

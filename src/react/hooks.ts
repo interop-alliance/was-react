@@ -17,8 +17,6 @@ import {
   type SyncRollup
 } from '../storage/syncStatusStore.js'
 
-export { useAppReady } from '../session/appReadyStore.js'
-
 /**
  * The bound auth store from the nearest {@link WasSessionProvider}. Throws a
  * helpful error when used outside a provider.
@@ -44,6 +42,8 @@ export function useAuthStore(): WasAuthStore {
  */
 export function useSession(): {
   status: ReturnType<WasAuthStore['getState']>['status']
+  onboarding: ReturnType<WasAuthStore['getState']>['onboarding']
+  authenticating: boolean
   phase: ReturnType<WasAuthStore['getState']>['phase']
   error: string | null
   controllerDid: string | null
@@ -56,6 +56,8 @@ export function useSession(): {
     store,
     useShallow(state => ({
       status: state.status,
+      onboarding: state.onboarding,
+      authenticating: state.authenticating,
       phase: state.phase,
       error: state.error,
       controllerDid: state.controllerDid,
@@ -67,37 +69,54 @@ export function useSession(): {
 }
 
 /**
- * The login action plus the state the login page renders (status/phase/error).
+ * The login action plus the state the login page renders. `authenticating` is
+ * the in-flight flag (the `status` stays `local` during login); `status` is
+ * exposed so a login page can redirect once it reads `connected`.
  *
  * @returns {object}
  */
 export function useLogin(): {
   login: () => Promise<void>
+  authenticating: boolean
   status: ReturnType<WasAuthStore['getState']>['status']
   phase: ReturnType<WasAuthStore['getState']>['phase']
   error: string | null
 } {
   const store = useAuthStore()
   const login = useStore(store, state => state.login)
-  const { status, phase, error } = useStore(
+  const { authenticating, status, phase, error } = useStore(
     store,
     useShallow(state => ({
+      authenticating: state.authenticating,
       status: state.status,
       phase: state.phase,
       error: state.error
     }))
   )
-  return { login, status, phase, error }
+  return { login, authenticating, status, phase, error }
 }
 
 /**
- * The logout action.
+ * The logout action; accepts `{ wipe }` to delete the connected replica rather
+ * than keep it on the device.
+ *
+ * @returns {(options?: { wipe?: boolean }) => Promise<void>}
+ */
+export function useLogout(): (options?: { wipe?: boolean }) => Promise<void> {
+  const store = useAuthStore()
+  return useStore(store, state => state.logout)
+}
+
+/**
+ * The clear-data action: deletes the local replica, discards the anonymous
+ * seed, and mints a fresh anonymous seed/DID + replica (the `local`-mode
+ * "Clear data" affordance).
  *
  * @returns {() => Promise<void>}
  */
-export function useLogout(): () => Promise<void> {
+export function useClearData(): () => Promise<void> {
   const store = useAuthStore()
-  return useStore(store, state => state.logout)
+  return useStore(store, state => state.clearLocalData)
 }
 
 /**

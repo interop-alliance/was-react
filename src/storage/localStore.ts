@@ -490,4 +490,14 @@ export class LocalStore {
   async close(): Promise<void> {
     await this._db.close()
   }
+
+  /**
+   * Removes the database and all its data (the clear-data / logout-wipe path).
+   * Unlike {@link close}, this deletes the underlying Dexie/IndexedDB store.
+   *
+   * @returns {Promise<void>}
+   */
+  async remove(): Promise<void> {
+    await this._db.remove()
+  }
 }

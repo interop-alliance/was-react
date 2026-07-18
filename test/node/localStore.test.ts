@@ -198,6 +198,21 @@ describe('LocalStore entity CRUD', () => {
     expect(listed).toHaveLength(1)
     expect(listed[0]).toEqual(note)
   })
+
+  it('remove() deletes the database: a re-init opens empty', async () => {
+    const dbName = `was-react-test-${++dbCounter}`
+    const store = await openStore(dbName)
+    await store.insertEntity(COLLECTION, makeNote('Doomed note'))
+    expect(await store.listEntities<NoteDoc>(COLLECTION)).toHaveLength(1)
+
+    await store.remove()
+    openStores.pop()
+
+    // Re-init under the same name sees a fresh, empty database (remove deleted
+    // the underlying store, unlike close which keeps the data).
+    const reopened = await openStore(dbName)
+    expect(await reopened.listEntities<NoteDoc>(COLLECTION)).toHaveLength(0)
+  })
 })
 
 /**

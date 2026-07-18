@@ -79,7 +79,6 @@ export {
 } from './auth/chapi.js'
 export {
   RW_ACTIONS,
-  SPACE_READ_REFERENCE_ID,
   newChallenge,
   buildSeedProbeVpr,
   buildGrantsVpr
@@ -150,11 +149,10 @@ export {
 } from './storage/syncController.js'
 export { startWasSync } from './storage/wasSync.js'
 
-// Session lifecycle: the wallet-mode auth store factory + the app-ready gate.
+// Session lifecycle: the session auth store factory (the four-state machine).
 export {
   createAuthStore,
-  useAppReady,
-  type AuthStatus,
+  type SessionStatus,
   type AuthState,
   type WasAuthStore
 } from './session/index.js'
@@ -167,6 +165,7 @@ export {
   useSession,
   useLogin,
   useLogout,
+  useClearData,
   useReconnect,
   useSyncStatus,
   type SyncRollup

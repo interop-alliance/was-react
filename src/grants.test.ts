@@ -33,11 +33,20 @@ describe('parseInvocationTarget', () => {
     })
   })
 
-  it('tolerates a trailing slash and omits collection on a space target', () => {
-    const parsed = parseInvocationTarget('https://was.example/space/s1/')
+  it('tolerates a trailing slash on a collection target', () => {
+    const parsed = parseInvocationTarget('https://was.example/space/s1/notes/')
     expect(parsed.serverUrl).toBe('https://was.example')
     expect(parsed.spaceId).toBe('s1')
-    expect(parsed.collectionId).toBeUndefined()
+    expect(parsed.collectionId).toBe('notes')
+  })
+
+  it('rejects a space-scoped target (no collection)', () => {
+    expect(() =>
+      parseInvocationTarget('https://was.example/space/s1/')
+    ).toThrow(/not collection-scoped/)
+    expect(() => parseInvocationTarget('https://was.example/space/s1')).toThrow(
+      /not collection-scoped/
+    )
   })
 
   it('rejects a non-WAS URL', () => {
@@ -65,13 +74,13 @@ describe('parseGrants', () => {
     )
   })
 
-  it('includes a space-scoped grant in topology but not routing', () => {
-    const parsed = parseGrants([
-      grant('http://localhost:3002/space/abc/'),
-      grant('http://localhost:3002/space/abc/goals')
-    ])
-    expect(parsed.spaceId).toBe('abc')
-    expect(Object.keys(parsed.byCollectionId)).toEqual(['goals'])
+  it('rejects a space-scoped grant (no collection segment)', () => {
+    expect(() =>
+      parseGrants([
+        grant('http://localhost:3002/space/abc/'),
+        grant('http://localhost:3002/space/abc/goals')
+      ])
+    ).toThrow(/not collection-scoped/)
   })
 
   it('rejects grants spanning two servers', () => {

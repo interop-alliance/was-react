@@ -104,12 +104,10 @@ function grantFor({
 }
 
 /**
- * The full wallet-shaped grant set: RW collection grants + space read.
+ * The full wallet-shaped grant set: one RW collection grant per collection.
  */
 function fullGrantSet(): IZcap[] {
-  const grants = TEST_COLLECTIONS.map(id => grantFor({ collectionId: id }))
-  grants.push(grantFor({ actions: ['GET', 'HEAD'] }))
-  return grants
+  return TEST_COLLECTIONS.map(id => grantFor({ collectionId: id }))
 }
 
 /**
@@ -171,7 +169,7 @@ describe('verifyLoginPresentation', () => {
         documentLoader
       })
     ).resolves.toBeUndefined()
-    expect(grantsOf(presentation)).toHaveLength(TEST_COLLECTIONS.length + 1)
+    expect(grantsOf(presentation)).toHaveLength(TEST_COLLECTIONS.length)
   })
 
   it('rejects a challenge mismatch', async () => {
@@ -277,7 +275,6 @@ describe('checkGrants', () => {
     const grants = TEST_COLLECTIONS.map((id, index) =>
       grantFor({ collectionId: id, expires: index === 0 ? soon : later })
     )
-    grants.push(grantFor({ actions: ['GET', 'HEAD'], expires: later }))
     const checked = checkGrants({
       grants,
       controllerDid: appDid,
