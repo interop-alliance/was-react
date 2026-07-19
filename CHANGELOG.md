@@ -1,6 +1,6 @@
 # @interop/was-react Changelog
 
-## 0.1.8 - TBD
+## 0.1.8 - 2026-07-19
 
 ### Added
 
