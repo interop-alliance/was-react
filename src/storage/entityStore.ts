@@ -39,6 +39,13 @@ export interface EntityStore<T extends { id: string }> {
    */
   update: (doc: T) => Promise<void>
   /**
+   * Encrypt+insert the doc when its uuid is new, otherwise re-encrypt it in
+   * place (insert-or-update routed by the hydration index), then set it in the
+   * Map. The verb for callers that do not track an insert-vs-update flag of
+   * their own (e.g. a singleton document).
+   */
+  upsert: (doc: T) => Promise<void>
+  /**
    * Tombstone a doc, then drop it from the Map.
    */
   remove: (uuid: string) => Promise<void>
@@ -148,6 +155,14 @@ export function createEntityStore<T extends { id: string }>(
       },
       update: async doc => {
         await requireStore().updateEntity(collectionKey, doc)
+        set(state => {
+          const byId = new Map(state.byId)
+          byId.set(doc.id, doc)
+          return { byId }
+        })
+      },
+      upsert: async doc => {
+        await requireStore().upsertEntity(collectionKey, doc)
         set(state => {
           const byId = new Map(state.byId)
           byId.set(doc.id, doc)

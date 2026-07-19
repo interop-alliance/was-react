@@ -169,5 +169,9 @@ export {
   useHasLocalData,
   useReconnect,
   useSyncStatus,
-  type SyncRollup
+  type SyncRollup,
+  defineDocumentApp,
+  DOCUMENT_COLLECTION_KEY,
+  DOCUMENT_EXPORT_FORMAT,
+  type DocumentApp
 } from './react/index.js'

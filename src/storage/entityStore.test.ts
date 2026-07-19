@@ -176,4 +176,27 @@ describe('createEntityStore', () => {
     })
     expect(inserted).toEqual([['notes', { id: 'local-1', text: 'hi' }]])
   })
+
+  it('upsert persists through upsertEntity and sets the doc immediately', async () => {
+    const upserted: Array<[string, Note]> = []
+    const store = createEntityStore<Note>('notes')
+    setLocalStore({
+      upsertEntity: async (key: string, doc: Note) => {
+        upserted.push([key, doc])
+      }
+    } as unknown as LocalStore)
+
+    await store.getState().upsert({ id: 'solo', text: 'v1' })
+    await store.getState().upsert({ id: 'solo', text: 'v2' })
+
+    expect(store.getState().byId.get('solo')).toEqual({
+      id: 'solo',
+      text: 'v2'
+    })
+    expect(store.getState().byId.size).toBe(1)
+    expect(upserted).toEqual([
+      ['notes', { id: 'solo', text: 'v1' }],
+      ['notes', { id: 'solo', text: 'v2' }]
+    ])
+  })
 })

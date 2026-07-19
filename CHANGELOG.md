@@ -1,5 +1,27 @@
 # @interop/was-react Changelog
 
+## 0.1.8 - TBD
+
+### Added
+
+- `defineDocumentApp()` + `useDocument()`: the "one sandbox document" facade.
+  `defineDocumentApp<T>({ appName, appOrigin, document: { collectionId, initial }, credential, ... })`
+  builds the complete wiring for an app whose entire model is a single key-value
+  document (an Excalidraw-style editor, a game save file): a one-collection
+  local-first `WasAppConfig`, the singleton-document store registry, and a typed
+  `useDocument` hook returning
+  `{ doc, update, status, sync, exportFile, importFile, connect, disconnect, connecting, error }`.
+  The facade owns the LWW stamping (app data is wrapped beside
+  `updatedAt`/`deviceId`, so app fields can never collide with them), hydrates
+  through `LocalStore.hydrateSingleton` (duplicate singleton envelopes reconcile
+  to the LWW winner), serializes tagged `was-document/v1` export files, and
+  wires `connect()` to the wallet login -- the config registers exactly one
+  collection, so the consent screen shows a single legible request and the
+  adopt-on-login merge carries the local document into it.
+- `EntityStore.upsert(doc)`: persisting insert-or-update over
+  `LocalStore.upsertEntity`, for callers that do not track an insert-vs-update
+  flag of their own (e.g. a singleton document).
+
 ## 0.1.7 - 2026-07-19
 
 ### Added

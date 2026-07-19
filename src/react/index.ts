@@ -18,3 +18,9 @@ export {
   useSyncStatus,
   type SyncRollup
 } from './hooks.js'
+export {
+  defineDocumentApp,
+  DOCUMENT_COLLECTION_KEY,
+  DOCUMENT_EXPORT_FORMAT,
+  type DocumentApp
+} from './documentApp.js'
