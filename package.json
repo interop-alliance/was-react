@@ -111,6 +111,7 @@
     "typescript-eslint": "^8.59.4",
     "vite": "^8.0.14",
     "vitest": "^4.1.7",
+    "was-teaching-server": "0.9.1",
     "zustand": "^5.0.12"
   },
   "publishConfig": {

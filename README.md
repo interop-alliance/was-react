@@ -98,6 +98,24 @@ interoperable apps). `credential` names the self-issued seed credential the
 first-run flow mints. All other fields (`mediatorBase`, `dbName`,
 `storageKeyPrefix`, `sync`, `expiry`) are optional with documented defaults.
 
+A collection may also declare `visibility: 'public'`
+(`{ key: 'posts', id: 'microblog-posts', visibility: 'public' }`); the default
+is `'private'`. A public collection is world-readable and therefore PLAINTEXT:
+no per-collection key is derived, payloads are stored as-is locally and
+remotely, and the stored resource id is the payload's own logical `id`, so a
+public document keeps a stable, shareable resource URL across edits. Be aware
+that everything in a public payload is world-readable -- including the LWW
+bookkeeping fields `updatedAt` and `deviceId` (`deviceId` is a random
+per-install identifier, but still a linkability handle across a user's public
+documents). Changing a collection's visibility after first use is a
+data-migration event, not a config tweak: rows written in the other mode stop
+being readable. A registry that maps one WAS collection id to both visibilities
+is rejected at store open. Two payload constraints on public collections: a
+top-level object-valued `jwe` field is reserved (the read path uses it to
+recognize a stray encrypted envelope and refuses the row), and payloads should
+carry the `updatedAt` / `deviceId` LWW fields like any other collection --
+without them a concurrent multi-device edit falls back to server-wins.
+
 ### 2. Entity stores and the registry
 
 ```ts
@@ -292,11 +310,13 @@ Hooks:
   row is `{ id, updatedAt, version, data }`, where `data` is an EDV envelope
   `{ id, sequence, jwe }`. The app reads exclusively from the in-memory entity
   stores hydrated from this replica, so it works fully offline.
-- **Envelope encryption.** Each collection is encrypted with its own X25519
-  key-agreement key, HKDF-derived from the master seed with the label
+- **Envelope encryption.** Each private collection is encrypted with its own
+  X25519 key-agreement key, HKDF-derived from the master seed with the label
   `kak:v1:<collectionId>` (`deriveCollectionKeys`). HKDF one-wayness means a
   shared per-collection key exposes nothing about the master seed or the sibling
-  collections. The WAS server never sees plaintext.
+  collections. The WAS server never sees plaintext. A collection declared
+  `visibility: 'public'` opts out entirely: payloads are stored plaintext (no
+  key derivation, no envelope) behind the same storage seam.
 - **Replication.** A per-session `SyncController` runs RxDB replication per
   collection over a `WasSyncPort` (signed requests authorized by the granted
   zcaps). Pull is driven by the WAS `changes` feed; a low-frequency periodic

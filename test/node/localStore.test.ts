@@ -5,7 +5,9 @@
  * Round-trip tests for the local encrypted store: real per-collection X25519
  * keys drive the was-client EDV codec end to end through RxDB (Dexie storage on
  * fake-indexeddb). Asserts create / list / in-place update (envelope id stable,
- * sequence advances) / delete, and that the at-rest row is ciphertext only.
+ * sequence advances) / delete, and that the at-rest row is ciphertext only. A
+ * second block covers PUBLIC (plaintext) collections: payloads stored as-is
+ * under their own logical id, alongside a private collection in the same store.
  *
  * @vitest-environment node
  */
@@ -17,6 +19,13 @@ import type { WasCollectionConfig } from '../../src/config.js'
 // A neutral test collection registry (not any app's real collections).
 const COLLECTIONS: WasCollectionConfig[] = [{ key: 'notes', id: 'notes' }]
 const COLLECTION = 'notes'
+
+// A mixed registry: the private collection above plus a public (plaintext) one.
+const MIXED: WasCollectionConfig[] = [
+  { key: 'notes', id: 'notes' },
+  { key: 'posts', id: 'microblog-posts', visibility: 'public' }
+]
+const PUBLIC_COLLECTION = 'posts'
 
 // A fixed 32-byte master seed drives deterministic per-collection key derivation.
 const SEED = new Uint8Array(32).map((_, index) => (index * 7 + 3) & 0xff)
@@ -34,10 +43,13 @@ interface NoteDoc {
 let dbCounter = 0
 const openStores: LocalStore[] = []
 
-async function openStore(dbName: string): Promise<LocalStore> {
+async function openStore(
+  dbName: string,
+  collections: WasCollectionConfig[] = COLLECTIONS
+): Promise<LocalStore> {
   const store = await LocalStore.init({
     seed: SEED,
-    collections: COLLECTIONS,
+    collections,
     dbName
   })
   openStores.push(store)
@@ -309,5 +321,102 @@ describe('LocalStore singleton hydration', () => {
     const winner = await store.hydrateSingleton<NoteDoc>(COLLECTION)
     expect(winner!.deviceId).toBe('device-z')
     expect(await store.rxCollection(COLLECTION).find().exec()).toHaveLength(1)
+  })
+})
+
+describe('LocalStore public (plaintext) collections', () => {
+  it('stores the payload as-is under its own logical id', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
+    const post = makeNote('World-readable post')
+
+    await store.insertEntity(PUBLIC_COLLECTION, post)
+
+    const rows = await store.rxCollection(PUBLIC_COLLECTION).find().exec()
+    expect(rows).toHaveLength(1)
+    const row = rows[0]!.toMutableJSON()
+    // One id plane: the row (WAS resource) id IS the payload uuid.
+    expect(row.id).toBe(post.id)
+    // The stored body is the payload verbatim -- no envelope, no ciphertext.
+    expect(row.data).toEqual(post)
+
+    const listed = await store.listEntities<NoteDoc>(PUBLIC_COLLECTION)
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toEqual(post)
+  })
+
+  it('updates in place under the same row id', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
+    const post = makeNote('First revision')
+    await store.insertEntity(PUBLIC_COLLECTION, post)
+
+    const edited: NoteDoc = {
+      ...post,
+      title: 'Second revision',
+      updatedAt: new Date().toISOString()
+    }
+    await store.updateEntity(PUBLIC_COLLECTION, edited)
+
+    const rows = await store.rxCollection(PUBLIC_COLLECTION).find().exec()
+    expect(rows).toHaveLength(1)
+    const row = rows[0]!.toMutableJSON()
+    // The resource URL stays stable across edits (same row id).
+    expect(row.id).toBe(post.id)
+    expect(row.data).toEqual(edited)
+  })
+
+  it('tombstones on delete and upserts without a prior hydrate', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
+    const post = makeNote('Short-lived')
+    await store.upsertEntity(PUBLIC_COLLECTION, post)
+    expect(await store.listEntities<NoteDoc>(PUBLIC_COLLECTION)).toHaveLength(1)
+
+    await store.deleteEntity(PUBLIC_COLLECTION, post.id)
+    expect(await store.listEntities<NoteDoc>(PUBLIC_COLLECTION)).toHaveLength(0)
+  })
+
+  it('keeps the private collection encrypted in the same store', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
+    const secret = makeNote('secret-note-body')
+    await store.insertEntity(COLLECTION, secret)
+
+    const rows = await store.rxCollection(COLLECTION).find().exec()
+    expect(rows).toHaveLength(1)
+    const row = rows[0]!.toMutableJSON()
+    // The private collection still stores an EDV envelope under a random id.
+    expect(row.id).not.toBe(secret.id)
+    expect(JSON.stringify(row.data)).not.toContain('secret-note-body')
+
+    const listed = await store.listEntities<NoteDoc>(COLLECTION)
+    expect(listed).toHaveLength(1)
+    expect(listed[0]).toEqual(secret)
+  })
+
+  it('refuses to read an EDV envelope out of a public collection', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
+    // Simulate a visibility misconfiguration: a ciphertext row (e.g. written
+    // while the collection was private) sitting in a now-public collection.
+    await store.rxCollection(PUBLIC_COLLECTION).insert({
+      id: 'stray-envelope',
+      updatedAt: new Date().toISOString(),
+      version: 0,
+      data: { id: 'stray-envelope', sequence: 0, jwe: { protected: 'x' } }
+    })
+
+    await expect(
+      store.listEntities<NoteDoc>(PUBLIC_COLLECTION)
+    ).rejects.toThrow(/public \(plaintext\)/)
+  })
+
+  it('rejects a registry mapping one WAS id to both visibilities', async () => {
+    await expect(
+      LocalStore.init({
+        seed: SEED,
+        collections: [
+          { key: 'a', id: 'shared' },
+          { key: 'b', id: 'shared', visibility: 'public' }
+        ],
+        dbName: `was-react-test-${++dbCounter}`
+      })
+    ).rejects.toThrow(/encrypted and public/)
   })
 })

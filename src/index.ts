@@ -19,6 +19,7 @@ export {
   DEFAULT_EXPIRY_WARNING_MS,
   DEFAULT_EXPIRY_WATCH_MS,
   collectionKeyForId,
+  validateCollections,
   type WasCollectionConfig,
   type WasSyncConfig,
   type WasExpiryConfig,

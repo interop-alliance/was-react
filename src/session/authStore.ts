@@ -348,6 +348,7 @@ export function createAuthStore({
     return startWasSync({
       parsed,
       zcapClient,
+      collections: config.collections,
       localStore: requireStore(),
       syncController: controller,
       onRemoteChange: (key, event) =>
