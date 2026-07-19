@@ -36,6 +36,19 @@ export interface WasCollectionConfig {
    * WAS collection id (the unprefixed, cross-app generic name).
    */
   id: string
+  /**
+   * Who can read the collection. `'private'` (the default) is the encrypted
+   * mode: payloads are stored as EDV envelopes locally and remotely. `'public'`
+   * declares a world-readable collection (the wallet provisions it with a
+   * public-read policy); public implies PLAINTEXT -- payloads are stored as-is,
+   * with no per-collection cipher, and the LWW bookkeeping fields (`updatedAt`,
+   * `deviceId`) are world-readable alongside the content (`deviceId` is a
+   * random per-device identifier, but still a linkability handle across a
+   * user's public documents). Changing a collection's visibility after first
+   * use is a data-migration event, not a config tweak: existing rows keep
+   * their stored form and stop being readable by the other mode.
+   */
+  visibility?: 'private' | 'public'
 }
 
 /**
@@ -207,6 +220,38 @@ export const DEFAULT_EXPIRY_WARNING_MS = 60 * 60 * 1000
  * Default near-expiry watch poll interval (ms): 1 minute.
  */
 export const DEFAULT_EXPIRY_WATCH_MS = 60 * 1000
+
+/**
+ * Validates a collection registry, fail-closed. Rejects an unknown `visibility`
+ * value (a config written against a future library version must not silently
+ * fall back to either mode) and the encrypted-but-public combination: the same
+ * WAS collection id registered under conflicting visibilities, which would
+ * treat one server-side collection as both encrypted (private) and plaintext
+ * (public). Called by the storage layer before any replica is opened.
+ *
+ * @param collections {WasCollectionConfig[]}   the collection registry
+ * @returns {void}
+ */
+export function validateCollections(collections: WasCollectionConfig[]): void {
+  const visibilityById = new Map<string, 'private' | 'public'>()
+  for (const { key, id, visibility } of collections) {
+    const effective = visibility ?? 'private'
+    if (effective !== 'private' && effective !== 'public') {
+      throw new Error(
+        `Collection "${key}" has unknown visibility "${String(visibility)}" ` +
+          `(expected 'private' or 'public').`
+      )
+    }
+    const prior = visibilityById.get(id)
+    if (prior !== undefined && prior !== effective) {
+      throw new Error(
+        `Collection id "${id}" is registered as both '${prior}' and ` +
+          `'${effective}': a collection cannot be encrypted and public at once.`
+      )
+    }
+    visibilityById.set(id, effective)
+  }
+}
 
 /**
  * Resolves a localStore/RxDB collection `key` from its WAS collection `id`.

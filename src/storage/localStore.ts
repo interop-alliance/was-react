@@ -2,19 +2,23 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * LocalStore: the always-on local encrypted replica. A GENERIC per-entity
- * envelope store over an app's registered collections. Owns one RxDB
- * (Dexie/IndexedDB) database holding one collection per entity on the shared
- * `syncedDocSchema()`; every at-rest row is `{ id, updatedAt, version, data }`
- * where `data` is the EDV envelope `{ id, sequence, jwe }` -- the server never
- * sees plaintext.
+ * LocalStore: the always-on local replica. A GENERIC per-entity envelope store
+ * over an app's registered collections. Owns one RxDB (Dexie/IndexedDB)
+ * database holding one collection per entity on the shared `syncedDocSchema()`;
+ * every at-rest row is `{ id, updatedAt, version, data }`. On a PRIVATE
+ * (default) collection `data` is the EDV envelope `{ id, sequence, jwe }` --
+ * the server never sees plaintext. On a PUBLIC collection `data` is the
+ * plaintext payload as-is, behind the same {@link DocCipher} seam (a
+ * pass-through codec), so everything below this paragraph applies to both.
  *
  * Two id planes: the logical entity `uuid` lives INSIDE the encrypted payload;
  * the RxDB primary key is the opaque random EDV envelope id. An in-memory
  * `uuid -> envelopeId` index (built during hydration) routes updates/deletes.
- * Two timestamp planes: the row-level `updatedAt` is only the sync checkpoint;
- * the payload's own `createdAt` / `updatedAt` (inside the ciphertext) drive
- * domain sorting and LWW.
+ * (On a public collection the planes coincide -- the row id IS the payload
+ * uuid, giving a public document a stable, shareable resource URL -- and the
+ * index degenerates to identity.) Two timestamp planes: the row-level
+ * `updatedAt` is only the sync checkpoint; the payload's own `createdAt` /
+ * `updatedAt` (inside the ciphertext) drive domain sorting and LWW.
  *
  * Writes: create mints a fresh random envelope; update re-encrypts under the
  * SAME envelope id with `sequence`+1 (the mutable-head model); delete is an RxDB
@@ -28,10 +32,15 @@ import {
   type RxStorage
 } from 'rxdb/plugins/core'
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie'
-import { DEFAULT_DB_NAME, type WasCollectionConfig } from '../config.js'
+import {
+  DEFAULT_DB_NAME,
+  validateCollections,
+  type WasCollectionConfig
+} from '../config.js'
 import {
   syncedDocSchema,
   createDocCipher,
+  createPlaintextDocCodec,
   makeLwwConflictHandler,
   remotePayloadWins,
   type Json,
@@ -70,8 +79,9 @@ export function dbNameForController({
 }
 
 /**
- * The local encrypted store. Construct via {@link LocalStore.init}, which
- * derives the per-collection ciphers from the master seed and opens RxDB.
+ * The local store. Construct via {@link LocalStore.init}, which derives the
+ * per-collection ciphers from the master seed (private collections) or wires
+ * the pass-through plaintext codec (public collections) and opens RxDB.
  */
 export class LocalStore {
   private _db: RxDatabase
@@ -96,8 +106,10 @@ export class LocalStore {
   }
 
   /**
-   * Opens (or creates) the encrypted store: derives a per-collection KAK + cipher
-   * from the master seed and opens one RxDB collection per entity.
+   * Opens (or creates) the store: derives a per-collection KAK + cipher from
+   * the master seed for each PRIVATE collection (a PUBLIC collection skips key
+   * derivation entirely and gets the pass-through plaintext codec) and opens
+   * one RxDB collection per entity.
    *
    * @param options {object}
    * @param options.seed {Uint8Array}   the 32-byte master seed
@@ -119,8 +131,15 @@ export class LocalStore {
     storage?: RxStorage<unknown, unknown>
     dbName?: string
   }): Promise<LocalStore> {
+    validateCollections(collections)
     const ciphers: Record<string, DocCipher> = {}
-    for (const { key, id } of collections) {
+    for (const { key, id, visibility } of collections) {
+      // A public collection is stored plaintext: no key derivation, no EDV
+      // cipher -- just the pass-through codec behind the same seam.
+      if (visibility === 'public') {
+        ciphers[key] = createPlaintextDocCodec({ collectionId: id })
+        continue
+      }
       const { keyAgreementKey, keyResolver } = await deriveCollectionKeys({
         seed,
         collectionId: id
@@ -144,6 +163,8 @@ export class LocalStore {
     // a 412 push conflict (concurrent multi-device edit of the same mutable
     // head) is settled by decrypting both sides and comparing payload
     // `updatedAt` (deviceId tiebreak) rather than RxDB's default master-wins.
+    // On a public collection the codec is pass-through, so the handler reads
+    // those fields directly off the plaintext payload.
     const collectionsConfig = Object.fromEntries(
       collections.map(({ key }) => {
         const cipher = ciphers[key]

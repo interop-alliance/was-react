@@ -1,5 +1,31 @@
 # @interop/was-react Changelog
 
+## 0.1.9 - TBD
+
+### Added
+
+- Public (plaintext) collections: `WasCollectionConfig` grows an optional
+  `visibility` field (`'private'` default | `'public'`). A public collection is
+  world-readable and therefore plaintext -- `LocalStore` skips per-collection
+  key derivation and stores payloads as-is through a pass-through codec
+  (`createPlaintextDocCodec`), the stored resource id is the payload's own
+  logical `id` (a stable, shareable resource URL across edits), and the
+  encryption-marker PUT is skipped for it during sync bootstrap. Reading an EDV
+  envelope out of a public collection fails with a descriptive error instead of
+  mis-indexing it.
+- `validateCollections()`: fail-closed registry validation (unknown `visibility`
+  values; the same WAS collection id registered as both private and public), run
+  automatically by `LocalStore.init`.
+- End-to-end plaintext sync coverage against an in-process `was-teaching-server`
+  (push verbatim public payloads + encrypted private envelopes, marker skip,
+  pull into a fresh replica).
+
+### Changed
+
+- `startWasSync` now requires the app's collection registry (`collections`), and
+  `WasRemoteStore.fromGrants` accepts an optional one, so the sync bootstrap
+  knows which collections are public. `MarkerResult` gains a `skipped` flag.
+
 ## 0.1.8 - 2026-07-19
 
 ### Added

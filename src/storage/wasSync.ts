@@ -13,6 +13,7 @@
 import type { ZcapClient } from '@interop/ezcap'
 import type { RxChangeEvent } from 'rxdb/plugins/core'
 import type { SyncedDoc } from '../sync/index.js'
+import type { WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
 import { WasRemoteStore } from './wasRemoteStore.js'
 import type { LocalStore } from './localStore.js'
@@ -24,6 +25,8 @@ import type { SyncController } from './syncController.js'
  * @param options {object}
  * @param options.parsed {ParsedGrants}
  * @param options.zcapClient {ZcapClient}   invocation signer = grants' controller
+ * @param options.collections {WasCollectionConfig[]}   the collection registry;
+ *   public (plaintext) collections are never marked encrypted
  * @param options.localStore {LocalStore}   the opened local encrypted replica
  * @param options.syncController {SyncController}   a fresh per-session controller
  * @param options.onRemoteChange {(collectionKey, event) => void}   per-doc
@@ -35,6 +38,7 @@ import type { SyncController } from './syncController.js'
 export async function startWasSync({
   parsed,
   zcapClient,
+  collections,
   localStore,
   syncController,
   onRemoteChange,
@@ -42,6 +46,7 @@ export async function startWasSync({
 }: {
   parsed: ParsedGrants
   zcapClient: ZcapClient
+  collections: WasCollectionConfig[]
   localStore: LocalStore
   syncController: SyncController
   onRemoteChange: (
@@ -50,10 +55,15 @@ export async function startWasSync({
   ) => void
   onAuthError?: () => void
 }): Promise<WasRemoteStore> {
-  const remoteStore = WasRemoteStore.fromGrants({ parsed, zcapClient })
+  const remoteStore = WasRemoteStore.fromGrants({
+    parsed,
+    zcapClient,
+    collections
+  })
 
   // Best-effort encryption marker; non-fatal either way (envelopes replicate
-  // into an unmarked collection just the same).
+  // into an unmarked collection just the same). Public collections are skipped
+  // inside markCollectionEncrypted (reported ok + skipped).
   await Promise.all(
     Object.keys(parsed.byCollectionId).map(async collectionId => {
       const result = await remoteStore.markCollectionEncrypted(collectionId)

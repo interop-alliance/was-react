@@ -7,3 +7,4 @@ minimumReleaseAgeExclude:
   - '@interop/storage-core@0.3.4'
   - '@interop/was-client@0.14.5'
   - '@interop/x25519-key-agreement-key@5.2.0'
+  - was-teaching-server@0.9.1

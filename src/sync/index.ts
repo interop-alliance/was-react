@@ -31,6 +31,7 @@ export { createWasSyncPort, errorStatus, errorMessage } from './wasSyncPort.js'
 export { withFeedMasterRead } from './feedMasterPort.js'
 export {
   createDocCipher,
+  createPlaintextDocCodec,
   isEncryptedEnvelope,
   type DocCipher
 } from './docCipher.js'

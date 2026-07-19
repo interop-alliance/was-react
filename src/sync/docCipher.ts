@@ -10,6 +10,10 @@
  * document under its EXISTING id, advancing the envelope `sequence` from the
  * prior envelope. `decrypt` reverses it. The sync layer moves the envelope
  * verbatim; it never touches these keys.
+ *
+ * A PUBLIC (plaintext) collection uses {@link createPlaintextDocCodec} instead:
+ * the same {@link DocCipher} seam with pass-through implementations, so the
+ * storage layer above needs no encrypted-vs-plaintext fork.
  */
 import type {
   IKeyAgreementKey,
@@ -48,6 +52,60 @@ export function isEncryptedEnvelope(data: Json | undefined): boolean {
   }
   const jwe = (data as { jwe?: unknown }).jwe
   return jwe !== null && typeof jwe === 'object'
+}
+
+/**
+ * Builds the pass-through codec for a PUBLIC (plaintext) collection: payloads
+ * are stored as-is, and the stored resource id IS the payload's logical `id`
+ * (uuid). With nothing to hide there is no reason for a second, opaque id
+ * plane, and a public document then keeps a stable, shareable resource URL
+ * across edits. `decrypt` refuses an EDV envelope (via
+ * {@link isEncryptedEnvelope}) rather than mis-reading its random envelope id
+ * as a logical uuid -- a public collection holding ciphertext rows is a
+ * visibility misconfiguration, surfaced as a read error instead of silent
+ * garbage.
+ *
+ * @param options {object}
+ * @param options.collectionId {string}   labels errors only
+ * @returns {DocCipher}
+ */
+export function createPlaintextDocCodec({
+  collectionId
+}: {
+  collectionId: string
+}): DocCipher {
+  const payloadId = (data: Json): string => {
+    const id = (data as { id?: unknown } | null)?.id
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new Error(
+        `Plaintext write to collection "${collectionId}" carries no string "id".`
+      )
+    }
+    return id
+  }
+  const assertPlaintext = (body: Json): Json => {
+    if (isEncryptedEnvelope(body)) {
+      throw new Error(
+        `Collection "${collectionId}" is public (plaintext) but the stored ` +
+          `row is an EDV envelope.`
+      )
+    }
+    return body
+  }
+
+  return {
+    async encrypt({ data }: { data: Json }) {
+      return { id: payloadId(data), envelope: data }
+    },
+
+    async encryptUpdate({ id, data }: { id: string; data: Json }) {
+      return { id, envelope: data }
+    },
+
+    async decrypt({ envelope }: { envelope: Json }) {
+      return assertPlaintext(envelope)
+    }
+  }
 }
 
 /**
