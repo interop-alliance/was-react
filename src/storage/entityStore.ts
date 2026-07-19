@@ -19,27 +19,7 @@
  */
 import { create, type UseBoundStore, type StoreApi } from 'zustand'
 import { requireStore } from './storageManager.js'
-import { remotePayloadWins } from '../sync/lww.js'
-
-/**
- * Reads the LWW fields off a doc when it carries them. The store is generic
- * over `{ id: string }`, so docs without `updatedAt`/`deviceId` are legal;
- * for those the patch path falls back to blind last-patch-wins.
- *
- * @param doc {unknown}
- * @returns {{ updatedAt: string, deviceId: string } | null}
- */
-function lwwFields(
-  doc: unknown
-): { updatedAt: string; deviceId: string } | null {
-  const { updatedAt, deviceId } = doc as {
-    updatedAt?: unknown
-    deviceId?: unknown
-  }
-  return typeof updatedAt === 'string' && typeof deviceId === 'string'
-    ? { updatedAt, deviceId }
-    : null
-}
+import { lwwFields, remotePayloadWins } from '../sync/lww.js'
 
 export interface EntityStore<T extends { id: string }> {
   /**

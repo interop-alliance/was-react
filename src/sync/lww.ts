@@ -29,3 +29,23 @@ export function remotePayloadWins(
   }
   return remote.deviceId > local.deviceId
 }
+
+/**
+ * Reads the LWW fields off a doc when it carries them. Storage payloads are
+ * generic over `{ id: string }`, so docs without `updatedAt`/`deviceId` are
+ * legal; callers fall back to their own rule for those.
+ *
+ * @param doc {unknown}
+ * @returns {{ updatedAt: string, deviceId: string } | null}
+ */
+export function lwwFields(
+  doc: unknown
+): { updatedAt: string; deviceId: string } | null {
+  const { updatedAt, deviceId } = doc as {
+    updatedAt?: unknown
+    deviceId?: unknown
+  }
+  return typeof updatedAt === 'string' && typeof deviceId === 'string'
+    ? { updatedAt, deviceId }
+    : null
+}

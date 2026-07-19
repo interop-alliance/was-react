@@ -71,12 +71,14 @@ export function useSession(): {
 /**
  * The login action plus the state the login page renders. `authenticating` is
  * the in-flight flag (the `status` stays `local` during login); `status` is
- * exposed so a login page can redirect once it reads `connected`.
+ * exposed so a login page can redirect once it reads `connected`. `login`
+ * accepts `{ adopt }` -- `'merge'` (default) migrates data created in `local`
+ * into the connected replica, `'leave'` sets it aside untouched.
  *
  * @returns {object}
  */
 export function useLogin(): {
-  login: () => Promise<void>
+  login: (options?: { adopt?: 'merge' | 'leave' }) => Promise<void>
   authenticating: boolean
   status: ReturnType<WasAuthStore['getState']>['status']
   phase: ReturnType<WasAuthStore['getState']>['phase']
@@ -117,6 +119,19 @@ export function useLogout(): (options?: { wipe?: boolean }) => Promise<void> {
 export function useClearData(): () => Promise<void> {
   const store = useAuthStore()
   return useStore(store, state => state.clearLocalData)
+}
+
+/**
+ * Whether the anonymous `local` replica currently holds any documents -- the
+ * check a login affordance runs at decision time (e.g. on the login button
+ * click) to choose between opening the adoption dialog and calling `login()`
+ * directly. Returns the async check, not a subscription.
+ *
+ * @returns {() => Promise<boolean>}
+ */
+export function useHasLocalData(): () => Promise<boolean> {
+  const store = useAuthStore()
+  return useStore(store, state => state.hasLocalData)
 }
 
 /**

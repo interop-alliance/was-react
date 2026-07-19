@@ -35,4 +35,4 @@ export {
   type DocCipher
 } from './docCipher.js'
 export { makeLwwConflictHandler } from './lwwConflictHandler.js'
-export { remotePayloadWins } from './lww.js'
+export { lwwFields, remotePayloadWins } from './lww.js'

@@ -166,6 +166,7 @@ export {
   useLogin,
   useLogout,
   useClearData,
+  useHasLocalData,
   useReconnect,
   useSyncStatus,
   type SyncRollup

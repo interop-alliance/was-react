@@ -22,6 +22,7 @@
  */
 import {
   createRxDatabase,
+  removeRxDatabase,
   type RxCollection,
   type RxDatabase,
   type RxStorage
@@ -225,7 +226,10 @@ export class LocalStore {
    * @param payload {EntityPayload} the plaintext entity (carries its own uuid)
    * @returns {Promise<void>}
    */
-  async insertEntity(key: string, payload: EntityPayload): Promise<void> {
+  async insertEntity<T extends EntityPayload>(
+    key: string,
+    payload: T
+  ): Promise<void> {
     const cipher = this._cipher(key)
     const { id: envelopeId, envelope } = await cipher.encrypt({
       data: payload as Json
@@ -249,7 +253,10 @@ export class LocalStore {
    * @param payload {EntityPayload}
    * @returns {Promise<void>}
    */
-  async updateEntity(key: string, payload: EntityPayload): Promise<void> {
+  async updateEntity<T extends EntityPayload>(
+    key: string,
+    payload: T
+  ): Promise<void> {
     const index = await this._ensureIndex(key)
     const envelopeId = index.get(payload.id)
     // The entity's envelope may be gone -- another device deleted it and the
@@ -296,7 +303,10 @@ export class LocalStore {
    * @param payload {EntityPayload}
    * @returns {Promise<void>}
    */
-  async upsertEntity(key: string, payload: EntityPayload): Promise<void> {
+  async upsertEntity<T extends EntityPayload>(
+    key: string,
+    payload: T
+  ): Promise<void> {
     const index = await this._ensureIndex(key)
     if (index.has(payload.id)) {
       await this.updateEntity(key, payload)
@@ -323,6 +333,19 @@ export class LocalStore {
       await doc.remove()
     }
     index.delete(uuid)
+  }
+
+  /**
+   * The number of live (non-tombstoned) rows in a collection, without
+   * decrypting any of them (e.g. the "is there anything to adopt?" check
+   * behind a pre-login adoption prompt).
+   *
+   * @param key {string}
+   * @returns {Promise<number>}
+   */
+  async countEntities(key: string): Promise<number> {
+    const docs = await this._collection(key).find().exec()
+    return docs.length
   }
 
   /**
@@ -499,5 +522,25 @@ export class LocalStore {
    */
   async remove(): Promise<void> {
     await this._db.remove()
+  }
+
+  /**
+   * Deletes a database and all its data by name, without opening it (the
+   * post-adoption cleanup of a replica that is already closed).
+   *
+   * @param options {object}
+   * @param options.dbName {string}   the full per-controller database name
+   * @param [options.storage] {RxStorage<unknown, unknown>}   defaults to
+   *   Dexie/IndexedDB; must match the storage the database was created with
+   * @returns {Promise<void>}
+   */
+  static async removeDatabase({
+    dbName,
+    storage
+  }: {
+    dbName: string
+    storage?: RxStorage<unknown, unknown>
+  }): Promise<void> {
+    await removeRxDatabase(dbName, storage ?? getRxStorageDexie())
   }
 }

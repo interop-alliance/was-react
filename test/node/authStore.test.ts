@@ -39,6 +39,10 @@ import {
   LoginCancelledError
 } from '../../src/auth/loginFlow.js'
 import { hasStore, requireStore } from '../../src/storage/storageManager.js'
+import {
+  LocalStore,
+  dbNameForController
+} from '../../src/storage/localStore.js'
 import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
@@ -100,13 +104,43 @@ function noteGrants(): IZcap[] {
 // Track created stores so their expiry-watch intervals never outlive a test.
 const liveStores: WasAuthStore[] = []
 
+// Probe replicas opened directly to inspect a torn-down anonymous database.
+const probeStores: LocalStore[] = []
+
 function makeStore(config: WasAppConfig, seedStore: SeedStore): WasAuthStore {
   const store = createAuthStore({ config, registry, seedStore })
   liveStores.push(store)
   return store
 }
 
+/**
+ * Opens a fresh handle on the per-controller database `seed`/`controllerDid`
+ * back for direct inspection (a probe of a replica the store has torn down).
+ * Opening a deleted database RE-CREATES it empty, which is exactly what makes
+ * "the anon database was deleted" assertable: reopen and expect zero rows.
+ */
+async function reopenReplica({
+  config,
+  seed,
+  controllerDid
+}: {
+  config: WasAppConfig
+  seed: Uint8Array
+  controllerDid: string
+}): Promise<LocalStore> {
+  const store = await LocalStore.init({
+    seed,
+    collections: config.collections,
+    dbName: dbNameForController({ dbName: config.dbName!, controllerDid })
+  })
+  probeStores.push(store)
+  return store
+}
+
 afterEach(async () => {
+  while (probeStores.length > 0) {
+    await probeStores.pop()!.remove()
+  }
   while (liveStores.length > 0) {
     await liveStores.pop()!.getState().destroy()
   }
@@ -245,7 +279,7 @@ describe('login()', () => {
     expect(store.getState().status).toBe('connected')
     expect(store.getState().authenticating).toBe(false)
     expect(store.getState().controllerDid).toBe(identity.controllerDid)
-    // The anon seed is set aside, not deleted (the step-3 adoption seam).
+    // Nothing to adopt (the local replica is empty), so the anon seed survives.
     expect(await anon.loadSeed()).toEqual(anonSeed)
   })
 
@@ -302,6 +336,250 @@ describe('logout()', () => {
     expect(store.getState().status).toBe('local')
     expect(removeSpy).toHaveBeenCalledTimes(1)
     expect(await seedStore.loadSeed()).toBeNull()
+  })
+})
+
+/**
+ * Arms the wallet mock to succeed with a fresh identity + grants (distinct from
+ * the anonymous one), returning the connected controller DID it will land on.
+ */
+async function mockWalletLogin(): Promise<{ controllerDid: string }> {
+  const walletSeed = crypto.getRandomValues(new Uint8Array(32))
+  const identity = await initAppSession({ seed: walletSeed })
+  const grants = noteGrants()
+  loginWithWalletMock.mockResolvedValue({
+    seed: walletSeed,
+    identity,
+    grants,
+    parsed: parseGrants(grants),
+    expires: futureIso(FAR_FUTURE_MS),
+    firstRun: false
+  })
+  return { controllerDid: identity.controllerDid }
+}
+
+describe('adoption', () => {
+  it('merges anonymous docs into the connected replica and deletes the anon replica', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+    const anon = createSeedStore({ dbName: `${config.dbName}-anon` })
+    const anonSeed = await anon.loadSeed()
+    const anonDid = store.getState().controllerDid!
+    // Two docs, deliberately WITHOUT LWW fields, so adoption must stamp them.
+    const first = { id: crypto.randomUUID(), title: 'first' }
+    const second = { id: crypto.randomUUID(), title: 'second' }
+    await requireStore().insertEntity('notes', first)
+    await requireStore().insertEntity('notes', second)
+
+    await mockWalletLogin()
+    await store.getState().login()
+
+    expect(store.getState().status).toBe('connected')
+    // The connected replica now carries the adopted docs, each stamped with
+    // non-empty LWW fields at adoption time.
+    const adopted = await requireStore().listEntities<{
+      id: string
+      title: string
+      updatedAt: string
+      deviceId: string
+    }>('notes')
+    expect(adopted.map(doc => doc.title).sort()).toEqual(['first', 'second'])
+    for (const doc of adopted) {
+      expect(typeof doc.updatedAt).toBe('string')
+      expect(doc.updatedAt.length).toBeGreaterThan(0)
+      expect(typeof doc.deviceId).toBe('string')
+      expect(doc.deviceId.length).toBeGreaterThan(0)
+    }
+    // The anon seed is gone and its database was deleted (a reopen is empty).
+    expect(await anon.loadSeed()).toBeNull()
+    const reopened = await reopenReplica({
+      config,
+      seed: anonSeed!,
+      controllerDid: anonDid
+    })
+    expect(await reopened.listEntities('notes')).toHaveLength(0)
+  })
+
+  it('leaves the anon replica intact under adopt "leave"', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+    const anon = createSeedStore({ dbName: `${config.dbName}-anon` })
+    const anonSeed = await anon.loadSeed()
+    const anonDid = store.getState().controllerDid!
+    const note = { id: crypto.randomUUID(), title: 'kept-local' }
+    await requireStore().insertEntity('notes', note)
+
+    await mockWalletLogin()
+    await store.getState().login({ adopt: 'leave' })
+
+    expect(store.getState().status).toBe('connected')
+    // The connected replica never saw the local doc.
+    expect(await requireStore().listEntities('notes')).toHaveLength(0)
+    // The anon seed survives, and its database still holds the original doc.
+    expect(await anon.loadSeed()).toEqual(anonSeed)
+    const reopened = await reopenReplica({
+      config,
+      seed: anonSeed!,
+      controllerDid: anonDid
+    })
+    const kept = await reopened.listEntities<{ id: string; title: string }>(
+      'notes'
+    )
+    expect(kept).toHaveLength(1)
+    expect(kept[0]!.title).toBe('kept-local')
+  })
+
+  it('leaves the anon seed intact when the local replica is empty', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+    const anon = createSeedStore({ dbName: `${config.dbName}-anon` })
+    const anonSeed = await anon.loadSeed()
+    expect(anonSeed).not.toBeNull()
+
+    await mockWalletLogin()
+    await store.getState().login()
+
+    expect(store.getState().status).toBe('connected')
+    // No wipe: nothing to adopt means the anon seed is left untouched.
+    expect(await anon.loadSeed()).toEqual(anonSeed)
+  })
+
+  it('lets an adopted doc win an id collision by newer updatedAt', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+
+    const walletSeed = crypto.getRandomValues(new Uint8Array(32))
+    const grants = noteGrants()
+    // First connect (anon replica empty): opens the connected replica.
+    await store.getState().connectWithGrants({ seed: walletSeed, grants })
+    const uuid = crypto.randomUUID()
+    await requireStore().insertEntity('notes', {
+      id: uuid,
+      title: 'connected-older',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      deviceId: 'device-a'
+    })
+
+    // Back to local (the connected replica is kept on the device), then write a
+    // NEWER version of the same uuid into the anon replica.
+    await store.getState().logout()
+    expect(store.getState().status).toBe('local')
+    await requireStore().insertEntity('notes', {
+      id: uuid,
+      title: 'anon-newer',
+      updatedAt: '2026-02-02T00:00:00.000Z',
+      deviceId: 'device-a'
+    })
+
+    // Reconnect under the same seed (same per-controller database): adoption
+    // LWW-merges the newer anon doc over the older connected one.
+    await store.getState().connectWithGrants({ seed: walletSeed, grants })
+    const merged = await requireStore().listEntities<{
+      id: string
+      title: string
+    }>('notes')
+    expect(merged).toHaveLength(1)
+    expect(merged[0]!.title).toBe('anon-newer')
+  })
+
+  it('keeps the existing doc on an id collision when it wins updatedAt', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+
+    const walletSeed = crypto.getRandomValues(new Uint8Array(32))
+    const grants = noteGrants()
+    await store.getState().connectWithGrants({ seed: walletSeed, grants })
+    const uuid = crypto.randomUUID()
+    await requireStore().insertEntity('notes', {
+      id: uuid,
+      title: 'connected-newer',
+      updatedAt: '2026-02-02T00:00:00.000Z',
+      deviceId: 'device-a'
+    })
+
+    await store.getState().logout()
+    await requireStore().insertEntity('notes', {
+      id: uuid,
+      title: 'anon-older',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      deviceId: 'device-a'
+    })
+
+    await store.getState().connectWithGrants({ seed: walletSeed, grants })
+    const merged = await requireStore().listEntities<{
+      id: string
+      title: string
+    }>('notes')
+    expect(merged).toHaveLength(1)
+    expect(merged[0]!.title).toBe('connected-newer')
+  })
+
+  it('connectWithGrants adopts by default and clears the anon seed', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+    const anon = createSeedStore({ dbName: `${config.dbName}-anon` })
+    await requireStore().insertEntity('notes', {
+      id: crypto.randomUUID(),
+      title: 'adopt-me'
+    })
+
+    const seed = crypto.getRandomValues(new Uint8Array(32))
+    await store.getState().connectWithGrants({ seed, grants: noteGrants() })
+
+    expect(store.getState().status).toBe('connected')
+    const adopted = await requireStore().listEntities<{
+      id: string
+      title: string
+    }>('notes')
+    expect(adopted).toHaveLength(1)
+    expect(adopted[0]!.title).toBe('adopt-me')
+    expect(await anon.loadSeed()).toBeNull()
+  })
+
+  it('connectWithGrants under adopt "leave" keeps the anon replica', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+    const anon = createSeedStore({ dbName: `${config.dbName}-anon` })
+    const anonSeed = await anon.loadSeed()
+    await requireStore().insertEntity('notes', {
+      id: crypto.randomUUID(),
+      title: 'stay-local'
+    })
+
+    const seed = crypto.getRandomValues(new Uint8Array(32))
+    await store
+      .getState()
+      .connectWithGrants({ seed, grants: noteGrants(), adopt: 'leave' })
+
+    expect(store.getState().status).toBe('connected')
+    expect(await requireStore().listEntities('notes')).toHaveLength(0)
+    expect(await anon.loadSeed()).toEqual(anonSeed)
+  })
+})
+
+describe('hasLocalData()', () => {
+  it('is false on a fresh empty local, true after a write, false once connected', async () => {
+    const store = makeStore(baseConfig(), newSeedStore())
+    await store.getState().boot()
+    expect(store.getState().status).toBe('local')
+    expect(await store.getState().hasLocalData()).toBe(false)
+
+    await requireStore().insertEntity('notes', { id: crypto.randomUUID() })
+    expect(await store.getState().hasLocalData()).toBe(true)
+
+    const seed = crypto.getRandomValues(new Uint8Array(32))
+    await store
+      .getState()
+      .connectWithGrants({ seed, grants: noteGrants(), adopt: 'leave' })
+    expect(store.getState().status).toBe('connected')
+    expect(await store.getState().hasLocalData()).toBe(false)
   })
 })
 

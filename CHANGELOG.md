@@ -1,5 +1,43 @@
 # @interop/was-react Changelog
 
+## 0.1.7 - TBD
+
+### Added
+
+- Local-to-connected adoption: `login()` and `connectWithGrants()` now take
+  `{ adopt: 'merge' | 'leave' }` (default `'merge'`). On a merge, data created
+  in the anonymous `local` replica is copied into the connected replica before
+  its first hydrate and sync start (decrypted with the anonymous cipher,
+  re-encrypted with the connected one -- the two replicas derive their keys from
+  different seeds), so adopted documents reach the server as ordinary creates on
+  first push. Merge policy is last-write-wins per logical uuid, using the same
+  `remotePayloadWins` rule replication runs; payloads missing
+  `updatedAt`/`deviceId` are stamped at adoption time, and ones that carry them
+  keep their original values. After a successful merge the anonymous seed and
+  database are deleted (a later logout lands in a genuinely fresh `local`);
+  `'leave'` -- and any login cancel or failure -- keeps the anonymous replica
+  fully intact.
+- `hasLocalData()` store action + `useHasLocalData()` hook: whether the
+  anonymous `local` replica holds any documents, the check a login affordance
+  runs to decide whether to offer the adoption choice.
+- `AdoptDialog` in `./mui`: the pre-login three-way choice (bring my data / set
+  it aside / cancel), calling `login({ adopt })` itself.
+- `LocalStore.countEntities(key)` (live-row count without decrypting) and static
+  `LocalStore.removeDatabase({ dbName, storage })` (delete a closed database by
+  name).
+- `lwwFields()` is now exported from the sync layer (previously an internal
+  helper of the entity store).
+
+### Changed
+
+- `LocalStore.insertEntity` / `updateEntity` / `upsertEntity` are now generic
+  over the payload type (`T extends { id: string }`), so typed app documents and
+  inline literals pass without tripping excess-property checks.
+- `connectWithGrants` and login adoption read the anonymous replica through a
+  fresh database handle derived from the persisted anonymous seed, so a
+  StrictMode double-boot after a page reload (which can leave the process-wide
+  holder as a closed duplicate) can no longer abort the connect.
+
 ## 0.1.6 - 2026-07-18
 
 ### Added

@@ -17,9 +17,14 @@
  * `status !== 'boot'`.
  *
  * Login (or `connectWithGrants`) tears the anonymous replica down and opens the
- * connected replica under the wallet-derived seed. Logout returns to a fresh
- * `local` (optionally wiping the connected replica); `clearLocalData` mints a
- * brand-new anonymous seed and replica.
+ * connected replica under the wallet-derived seed. By default it ADOPTS the
+ * anonymous replica's data first (`adopt: 'merge'`): the decrypted payloads are
+ * collected before teardown, LWW-merged into the connected replica before its
+ * first hydrate/sync (so they reach the server as ordinary creates), and the
+ * anonymous seed + database are deleted once the activation lands. `adopt:
+ * 'leave'` sets the anonymous replica aside untouched instead (it returns after
+ * a logout). Logout returns to a fresh `local` (optionally wiping the connected
+ * replica); `clearLocalData` mints a brand-new anonymous seed and replica.
  *
  * The library cannot bind a module-level store to app config, so this is a
  * FACTORY: {@link createAuthStore} captures the app's {@link WasAppConfig} and
@@ -69,6 +74,7 @@ import {
   hydrateAll,
   patchFromChange
 } from '../storage/rehydrate.js'
+import { mergeAdopted } from '../storage/adopt.js'
 import { startWasSync } from '../storage/wasSync.js'
 import { errorMessage } from '../sync/index.js'
 import {
@@ -89,12 +95,23 @@ import { useSyncStatusStore } from '../storage/syncStatusStore.js'
  */
 export type SessionStatus = 'boot' | 'local' | 'connected' | 'reconnect'
 
+/**
+ * What adoption carries from the anonymous replica into the connected one: the
+ * decrypted payloads per collection key, plus the anonymous controller DID
+ * (whose per-controller database is deleted once the merge lands).
+ */
+interface AdoptSource {
+  controllerDid: string
+  entities: Record<string, Array<{ id: string }>>
+}
+
 interface ActiveSession {
   seed: Uint8Array
   identity: IdentityAgents
   parsed: ParsedGrants
   grants: IZcap[]
   expires: string
+  adopt?: AdoptSource
 }
 
 export interface AuthState {
@@ -135,21 +152,34 @@ export interface AuthState {
   boot: () => Promise<void>
   /**
    * Full Login With Wallet (first-run or returning). On success tears down the
-   * anonymous replica and opens the connected one.
+   * anonymous replica and opens the connected one. `adopt` decides what happens
+   * to data created in `local` before this login: `'merge'` (the default)
+   * LWW-merges it into the connected replica and then deletes the anonymous
+   * seed + database; `'leave'` sets the anonymous replica aside untouched (it
+   * returns after a logout). A cancel or failure leaves `local` intact either
+   * way.
+   *
+   * @param [options] {object}
+   * @param [options.adopt] {'merge' | 'leave'}
+   * @returns {Promise<void>}
    */
-  login: () => Promise<void>
+  login: (options?: { adopt?: 'merge' | 'leave' }) => Promise<void>
   /**
    * Non-CHAPI connect from an explicit seed + grants (dev/test and provisioned
-   * grants). Tears down the current replica and opens the connected one.
+   * grants). Tears down the current replica and opens the connected one, with
+   * the same `adopt` choice (and `'merge'` default) as `login`, so this path
+   * exercises adoption exactly as a wallet login does.
    *
    * @param options {object}
    * @param options.seed {Uint8Array}
    * @param options.grants {IZcap[]}
+   * @param [options.adopt] {'merge' | 'leave'}
    * @returns {Promise<void>}
    */
   connectWithGrants: (options: {
     seed: Uint8Array
     grants: IZcap[]
+    adopt?: 'merge' | 'leave'
   }) => Promise<void>
   /**
    * Re-run the grants flow with the existing seed (expired access).
@@ -170,6 +200,12 @@ export interface AuthState {
    * `local`-mode "Clear data" button.
    */
   clearLocalData: () => Promise<void>
+  /**
+   * Whether the anonymous `local` replica currently holds any documents -- the
+   * check a login screen runs to decide whether to offer the adoption choice
+   * before `login()`. Always false outside `local`.
+   */
+  hasLocalData: () => Promise<boolean>
   notifyAccessExpired: () => void
   /**
    * Tears down the live replica (expiry watch, controller, local store) WITHOUT
@@ -387,19 +423,25 @@ export function createAuthStore({
   /**
    * Opens the encrypted replica under `seed` (a per-controller database name),
    * installs it as the process-wide store, and hydrates every entity store.
-   * Shared by `openLocal` and the connected activation.
+   * Shared by `openLocal` and the connected activation. When `adopt` is given
+   * (a connected activation following a merge login), the collected anonymous
+   * payloads are LWW-merged in BEFORE the hydrate -- and before sync starts --
+   * so the entity stores and the first push both see them as ordinary rows.
    *
    * @param options {object}
    * @param options.seed {Uint8Array}
    * @param options.controllerDid {string}
+   * @param [options.adopt] {AdoptSource}
    * @returns {Promise<void>}
    */
   async function openAndHydrate({
     seed,
-    controllerDid
+    controllerDid,
+    adopt
   }: {
     seed: Uint8Array
     controllerDid: string
+    adopt?: AdoptSource
   }): Promise<void> {
     const local = await LocalStore.init({
       seed,
@@ -408,6 +450,9 @@ export function createAuthStore({
       ...(storage && { storage })
     })
     setLocalStore(local)
+    if (adopt) {
+      await mergeAdopted({ store: local, entities: adopt.entities })
+    }
     await hydrateAll(registry)
   }
 
@@ -467,7 +512,8 @@ export function createAuthStore({
     try {
       await openAndHydrate({
         seed: session.seed,
-        controllerDid: session.identity.controllerDid
+        controllerDid: session.identity.controllerDid,
+        ...(session.adopt && { adopt: session.adopt })
       })
       await persistAndStartSync({
         seed: session.seed,
@@ -550,15 +596,67 @@ export function createAuthStore({
   }
 
   /**
-   * The step-3 adoption seam: called from `login()` after the wallet returns
-   * identity + grants and before the connected replica opens. In step 2 it only
-   * tears the anonymous replica down; the anonymous seed and its IndexedDB are
-   * left intact (not migrated, not deleted) so a later step can adopt them.
+   * Reads every decrypted payload out of the anonymous replica ahead of its
+   * teardown (adoption is a copy: the anonymous and connected replicas derive
+   * their ciphers from different seeds, so envelopes cannot move across).
+   * Returns null when there is nothing to adopt -- not in `local`, or every
+   * collection empty -- in which case the anonymous replica is simply left
+   * intact, exactly as an `adopt: 'leave'` login leaves it.
    *
+   * Reads through a FRESH handle on the anonymous database (re-derived from
+   * the persisted anonymous seed), not the process-wide holder: a StrictMode
+   * double-boot can leave the holder as a closed duplicate (`closeDuplicates`),
+   * and this read must not be able to abort the connect.
+   *
+   * @returns {Promise<AdoptSource | null>}
+   */
+  async function collectAdoptable(): Promise<AdoptSource | null> {
+    const { status, controllerDid } = store.getState()
+    if (status !== 'local' || controllerDid === null) {
+      return null
+    }
+    const seed = await anonStore.loadSeed()
+    if (!seed) {
+      return null
+    }
+    const anonLocal = await LocalStore.init({
+      seed,
+      collections: config.collections,
+      dbName: dbNameForController({ dbName, controllerDid }),
+      ...(storage && { storage })
+    })
+    try {
+      const entities: AdoptSource['entities'] = {}
+      let total = 0
+      for (const { key } of config.collections) {
+        const payloads = await anonLocal.listEntities(key)
+        if (payloads.length > 0) {
+          entities[key] = payloads
+          total += payloads.length
+        }
+      }
+      return total > 0 ? { controllerDid, entities } : null
+    } finally {
+      await anonLocal.close()
+    }
+  }
+
+  /**
+   * Deletes the adopted anonymous replica -- its persisted seed and its
+   * per-controller database -- so the data lives on only in the connected
+   * replica and a later logout lands in a genuinely fresh `local`. Called only
+   * after the connected activation has succeeded; any earlier failure leaves
+   * the anonymous replica intact for the fallback to re-open.
+   *
+   * @param controllerDid {string}   the anonymous controller DID
    * @returns {Promise<void>}
    */
-  async function adoptLocalIntoConnected(): Promise<void> {
-    await deactivateStore()
+  async function discardAnonReplica(controllerDid: string): Promise<void> {
+    await anonStore.clearSeedStore()
+    await LocalStore.removeDatabase({
+      dbName: dbNameForController({ dbName, controllerDid }),
+      ...(storage && { storage })
+    })
   }
 
   // Declared last so `prefer-const` is satisfied; the lifecycle closures above
@@ -641,7 +739,7 @@ export function createAuthStore({
       }
     },
 
-    login: async () => {
+    login: async ({ adopt = 'merge' } = {}) => {
       if (get().authenticating || get().status === 'connected') {
         return
       }
@@ -651,16 +749,24 @@ export function createAuthStore({
           config: loginConfig,
           onPhase: phase => set({ phase })
         })
-        // The wallet succeeded: only now tear down the anonymous replica (a
-        // cancel above leaves `local` intact).
-        await adoptLocalIntoConnected()
+        // The wallet succeeded: collect the anonymous replica's payloads (merge
+        // only), then -- only now -- tear it down (a cancel above leaves
+        // `local` intact). The anonymous seed and database are deleted only
+        // after the activation lands, so a failure below still falls back to an
+        // intact `local`.
+        const source = adopt === 'merge' ? await collectAdoptable() : null
+        await deactivateStore()
         await activateConnected({
           seed: outcome.seed,
           identity: outcome.identity,
           parsed: outcome.parsed,
           grants: outcome.grants,
-          expires: outcome.expires
+          expires: outcome.expires,
+          ...(source && { adopt: source })
         })
+        if (source) {
+          await discardAnonReplica(source.controllerDid)
+        }
         set({
           status: 'connected',
           authenticating: false,
@@ -681,14 +787,25 @@ export function createAuthStore({
       }
     },
 
-    connectWithGrants: async ({ seed, grants }) => {
+    connectWithGrants: async ({ seed, grants, adopt = 'merge' }) => {
       const identity = await initAppSession({ seed })
       const parsed = parseGrants(grants)
       const expires =
         earliestExpiry(grants) ??
         new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
+      const source = adopt === 'merge' ? await collectAdoptable() : null
       await deactivateStore()
-      await activateConnected({ seed, identity, parsed, grants, expires })
+      await activateConnected({
+        seed,
+        identity,
+        parsed,
+        grants,
+        expires,
+        ...(source && { adopt: source })
+      })
+      if (source) {
+        await discardAnonReplica(source.controllerDid)
+      }
       set({
         status: 'connected',
         controllerDid: identity.controllerDid,
@@ -747,6 +864,25 @@ export function createAuthStore({
     clearLocalData: async () => {
       await resetToFreshLocal({ deleteDb: true, discardAnonSeed: true })
       set({ phase: null, reconnecting: false })
+    },
+
+    hasLocalData: async () => {
+      if (get().status !== 'local' || !hasStore()) {
+        return false
+      }
+      try {
+        for (const { key } of config.collections) {
+          if ((await requireStore().countEntities(key)) > 0) {
+            return true
+          }
+        }
+      } catch {
+        // The holder can be a closed duplicate after a StrictMode double-boot;
+        // false only skips the adoption prompt, and login's `'merge'` default
+        // still collects (through a fresh handle) whatever exists.
+        return false
+      }
+      return false
     },
 
     notifyAccessExpired: () => {
