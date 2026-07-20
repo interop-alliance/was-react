@@ -274,8 +274,9 @@ describe('login()', () => {
       firstRun: false
     })
 
-    await store.getState().login()
+    const outcome = await store.getState().login()
 
+    expect(outcome).toEqual({ firstRun: false })
     expect(store.getState().status).toBe('connected')
     expect(store.getState().authenticating).toBe(false)
     expect(store.getState().controllerDid).toBe(identity.controllerDid)
@@ -292,12 +293,35 @@ describe('login()', () => {
       new LoginCancelledError('wallet login')
     )
 
-    await store.getState().login()
+    // A cancel resolves with `null` (not a failure) and leaves no scary error.
+    const outcome = await store.getState().login()
+
+    expect(outcome).toBeNull()
+    expect(store.getState().status).toBe('local')
+    expect(store.getState().authenticating).toBe(false)
+    expect(store.getState().controllerDid).toBe(localDid)
+    expect(store.getState().error).toBeNull()
+    // The anonymous replica was never torn down.
+    expect(hasStore()).toBe(true)
+  })
+
+  it('rejects and records the error when the wallet login fails', async () => {
+    const store = makeStore(baseConfig(), newSeedStore())
+    await store.getState().boot()
+    const localDid = store.getState().controllerDid
+
+    loginWithWalletMock.mockRejectedValue(
+      new Error('grants verification failed')
+    )
+
+    await expect(store.getState().login()).rejects.toThrow(
+      /grants verification failed/
+    )
 
     expect(store.getState().status).toBe('local')
     expect(store.getState().authenticating).toBe(false)
     expect(store.getState().controllerDid).toBe(localDid)
-    expect(store.getState().error).toMatch(/cancelled/i)
+    expect(store.getState().error).toMatch(/Login failed/i)
     // The anonymous replica was never torn down.
     expect(hasStore()).toBe(true)
   })

@@ -161,11 +161,19 @@ export interface AuthState {
    * returns after a logout). A cancel or failure leaves `local` intact either
    * way.
    *
+   * Resolves with `{ firstRun }` on success (`firstRun` is true when this login
+   * created a brand-new app key, so the app can show a "connected for the first
+   * time" confirmation). Resolves with `null` when the user cancels a wallet
+   * popup (not an error). REJECTS on any genuine failure, after recording the
+   * message in `error` so the UI state still reflects it.
+   *
    * @param [options] {object}
    * @param [options.adopt] {'merge' | 'leave'}
-   * @returns {Promise<void>}
+   * @returns {Promise<{ firstRun: boolean } | null>}
    */
-  login: (options?: { adopt?: 'merge' | 'leave' }) => Promise<void>
+  login: (options?: {
+    adopt?: 'merge' | 'leave'
+  }) => Promise<{ firstRun: boolean } | null>
   /**
    * Non-CHAPI connect from an explicit seed + grants (dev/test and provisioned
    * grants). Tears down the current replica and opens the connected one, with
@@ -279,9 +287,6 @@ export function createAuthStore({
     })),
     credential: config.credential,
     documentLoader,
-    ...(config.wasServerUrl !== undefined && {
-      wasServerUrl: config.wasServerUrl
-    }),
     ...(config.mediatorBase !== undefined && {
       mediatorBase: config.mediatorBase
     })
@@ -702,14 +707,6 @@ export function createAuthStore({
           return
         }
         const parsed = parseGrants(restored.grants)
-        if (
-          config.wasServerUrl !== undefined &&
-          parsed.serverUrl !== config.wasServerUrl
-        ) {
-          await clearAppSession({ store: sessionStore })
-          await openLocal()
-          return
-        }
         // Unlike login/reconnect (which run `checkGrants`), a hot restore trusts
         // the persisted grants; re-check that they still cover every configured
         // collection so a partially-covered grant set raises the reconnect
@@ -753,7 +750,7 @@ export function createAuthStore({
 
     login: async ({ adopt = 'merge' } = {}) => {
       if (get().authenticating || get().status === 'connected') {
-        return
+        return null
       }
       set({ authenticating: true, error: null, phase: 'probing' })
       try {
@@ -788,14 +785,23 @@ export function createAuthStore({
           error: null,
           accessExpired: false
         })
+        return { firstRun: outcome.firstRun }
       } catch (err) {
+        // A cancel is not a failure: clear the in-flight flags without leaving a
+        // scary error, and resolve with `null` so the caller can distinguish it
+        // from a connected outcome. `local` stays intact.
+        if (err instanceof LoginCancelledError) {
+          set({ authenticating: false, phase: null, error: null })
+          return null
+        }
+        // A genuine failure: record the message so the UI state still reflects
+        // it, then rethrow so the caller's promise rejects.
         const message =
-          err instanceof LoginCancelledError
-            ? err.message
-            : err instanceof Error
-              ? `Login failed: ${err.message}`
-              : 'Login failed.'
+          err instanceof Error
+            ? `Login failed: ${err.message}`
+            : 'Login failed.'
         set({ authenticating: false, phase: null, error: message })
+        throw err
       }
     },
 

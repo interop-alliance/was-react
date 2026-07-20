@@ -14,7 +14,7 @@
  *    `authentication`, `domain` equals what this app sent (its origin), and
  *    the `challenge` echoes this request's fresh nonce.
  * 3. Grant structure: every zcap is controlled by OUR seed-derived DID,
- *    targets a single space on the expected WAS host, is unexpired, and the
+ *    targets a single space on a single WAS host, is unexpired, and the
  *    collection set is fully covered with sufficient actions. (Delegation-
  *    chain proofs are enforced server-side at invocation; the RP checks
  *    structure.)
@@ -145,22 +145,18 @@ function actionsOf(zcap: IZcap): string[] {
  *   covered
  * @param [options.requiredActions] {string[]}   the actions each collection
  *   grant must allow (defaults to `RW_ACTIONS`)
- * @param [options.expectedServerUrl] {string}   the configured WAS host; when
- *   set, every grant must target it
  * @returns {CheckedGrants}
  */
 export function checkGrants({
   grants,
   controllerDid,
   collections,
-  requiredActions = RW_ACTIONS,
-  expectedServerUrl
+  requiredActions = RW_ACTIONS
 }: {
   grants: IZcap[]
   controllerDid: string
   collections: string[]
   requiredActions?: string[]
-  expectedServerUrl?: string
 }): CheckedGrants {
   if (grants.length === 0) {
     throw new Error('The wallet returned no storage grants.')
@@ -179,16 +175,9 @@ export function checkGrants({
   }
 
   // Asserts a single server origin + single space across all grants and
-  // builds the per-collection routing table.
+  // builds the per-collection routing table. The wallet decides where the
+  // user's Space lives; the sync layer derives its target from the grants.
   const parsed = parseGrants(grants)
-  if (
-    expectedServerUrl !== undefined &&
-    parsed.serverUrl !== expectedServerUrl
-  ) {
-    throw new Error(
-      `Grants target "${parsed.serverUrl}", expected "${expectedServerUrl}".`
-    )
-  }
 
   for (const id of collections) {
     const grant = parsed.byCollectionId[id]

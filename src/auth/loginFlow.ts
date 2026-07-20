@@ -69,11 +69,6 @@ export interface LoginConfig {
    */
   documentLoader: DocumentLoader
   /**
-   * The expected WAS server URL. When set, every granted zcap must target it;
-   * grants pointing anywhere else are rejected at login.
-   */
-  wasServerUrl?: string
-  /**
    * The CHAPI mediator base URL (defaults to `DEFAULT_MEDIATOR_BASE`).
    */
   mediatorBase?: string
@@ -157,10 +152,7 @@ export async function requestGrants({
   return checkGrants({
     grants: grantsOf(presentation),
     controllerDid: identity.controllerDid,
-    collections: config.collections.map(collection => collection.id),
-    ...(config.wasServerUrl !== undefined && {
-      expectedServerUrl: config.wasServerUrl
-    })
+    collections: config.collections.map(collection => collection.id)
   })
 }
 

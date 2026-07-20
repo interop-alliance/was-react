@@ -1,5 +1,27 @@
 # @interop/was-react Changelog
 
+## 0.1.11 - TBD
+
+### Changed
+
+- `login()` now rejects on a genuine failure instead of swallowing it. It still
+  records the message in `error` (so the UI state reflects the failure), but the
+  returned promise rejects rather than resolving. On success it resolves with
+  `{ firstRun }` (`firstRun` is true when this login created a brand-new app
+  key, so an app can show a "connected for the first time" confirmation); on a
+  user cancellation of a wallet popup it resolves with `null` and leaves no
+  error. The tier-1 `useDocument().connect()` facade returns the same outcome.
+
+### Removed
+
+- The `wasServerUrl` app-config option (on `WasAppConfig` and
+  `defineDocumentApp`) and the corresponding `expectedServerUrl` grant check.
+  Grants are no longer required to target a pre-configured server URL: the
+  wallet decides where the user's Space lives and the sync layer derives its
+  target from the grants. Grants are still verified on their own terms
+  (controlled by the expected DID, cover the requested collections, unexpired,
+  single origin and single space).
+
 ## 0.1.10 - 2026-07-19
 
 ### Added
@@ -11,30 +33,29 @@
   blinded-index path is not yet supported -- plus empty/duplicate names and
   diverging declarations for one WAS collection id). The sync bootstrap
   best-effort announces the declaration in the collection description
-  (`WasRemoteStore.declareCollectionIndexes`, a sibling of the encryption
-  marker PUT).
+  (`WasRemoteStore.declareCollectionIndexes`, a sibling of the encryption marker
+  PUT).
 - `EntityStore.query({ equals, limit?, cursor? })`: runs one equality query
-  against the collection on the server and returns
-  `{ docs, hasMore, cursor? }` without touching the in-memory Map. Multiple
-  `equals` attributes AND together; values are string equality only. On the
-  wire it is the cacheable `filter[attr]=value` GET on the collection list
-  endpoint with filter attributes emitted in sorted (canonical) order, signed
-  with the granted collection capability
-  (`WasRemoteStore.queryCollectionByEquality`; page type `EqualityQueryPage`).
+  against the collection on the server and returns `{ docs, hasMore, cursor? }`
+  without touching the in-memory Map. Multiple `equals` attributes AND together;
+  values are string equality only. On the wire it is the cacheable
+  `filter[attr]=value` GET on the collection list endpoint with filter
+  attributes emitted in sorted (canonical) order, signed with the granted
+  collection capability (`WasRemoteStore.queryCollectionByEquality`; page type
+  `EqualityQueryPage`).
 - A process-wide holder for the per-session delegated remote store
   (`setRemoteStore` / `requireRemoteStore` / `hasRemoteStore` /
   `clearRemoteStore`), installed by `createAuthStore` once background sync
-  bootstraps and cleared on logout/teardown, so entity-store verbs that need
-  the server (`query`) can reach it. `LocalStore` exposes
-  `collectionConfig(key)` (the registered `WasCollectionConfig` for one
-  collection key).
+  bootstraps and cleared on logout/teardown, so entity-store verbs that need the
+  server (`query`) can reach it. `LocalStore` exposes `collectionConfig(key)`
+  (the registered `WasCollectionConfig` for one collection key).
 - `publicUrlFor({ collectionKey, id })` (and the underlying
   `WasRemoteStore.publicUrlFor({ collectionId, id })`): composes the stable,
-  world-readable resource URL for a document in a public collection -- the
-  share link an unauthenticated reader fetches, for the publish-copy share
-  pattern. Stable across edits because a public collection stores the payload
-  under its logical uuid; fails closed on non-public / unprovisioned
-  collections and empty ids.
+  world-readable resource URL for a document in a public collection -- the share
+  link an unauthenticated reader fetches, for the publish-copy share pattern.
+  Stable across edits because a public collection stores the payload under its
+  logical uuid; fails closed on non-public / unprovisioned collections and empty
+  ids.
 
 ### Changed
 
@@ -47,10 +68,10 @@
   `GrantRequestCollection[]` (`{ id, visibility? }`, exported) instead of bare
   collection-id strings; apps using `createAuthStore` are unaffected.
 - `createDocumentLoader` no longer takes a `wasServerUrl` option: the http
-  did:web dev shim is gone, since `@interop/security-document-loader` 9.4.4
-  (via `@interop/did-web-resolver` 6.3.0) now resolves did:web DIDs on
-  loopback hosts (`localhost` / `127.0.0.1`, any port) over plain http
-  natively. The loader is the plain security loader again.
+  did:web dev shim is gone, since `@interop/security-document-loader` 9.4.4 (via
+  `@interop/did-web-resolver` 6.3.0) now resolves did:web DIDs on loopback hosts
+  (`localhost` / `127.0.0.1`, any port) over plain http natively. The loader is
+  the plain security loader again.
 
 ## 0.1.9 - 2026-07-19
 

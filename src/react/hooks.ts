@@ -78,7 +78,9 @@ export function useSession(): {
  * @returns {object}
  */
 export function useLogin(): {
-  login: (options?: { adopt?: 'merge' | 'leave' }) => Promise<void>
+  login: (options?: {
+    adopt?: 'merge' | 'leave'
+  }) => Promise<{ firstRun: boolean } | null>
   authenticating: boolean
   status: ReturnType<WasAuthStore['getState']>['status']
   phase: ReturnType<WasAuthStore['getState']>['phase']
