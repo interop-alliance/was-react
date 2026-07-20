@@ -46,6 +46,11 @@
   private collection. `buildGrantsVpr` and `LoginConfig` now take
   `GrantRequestCollection[]` (`{ id, visibility? }`, exported) instead of bare
   collection-id strings; apps using `createAuthStore` are unaffected.
+- `createDocumentLoader` no longer takes a `wasServerUrl` option: the http
+  did:web dev shim is gone, since `@interop/security-document-loader` 9.4.4
+  (via `@interop/did-web-resolver` 6.3.0) now resolves did:web DIDs on
+  loopback hosts (`localhost` / `127.0.0.1`, any port) over plain http
+  natively. The loader is the plain security loader again.
 
 ## 0.1.9 - 2026-07-19
 
