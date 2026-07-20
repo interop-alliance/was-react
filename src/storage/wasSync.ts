@@ -4,7 +4,8 @@
 /**
  * Shared WAS replication bootstrap: given a parsed grant set and the invoking
  * ZcapClient, builds the delegated {@link WasRemoteStore}, best-effort marks
- * each collection encrypted, and starts the supplied {@link SyncController} with
+ * each private collection encrypted and declares each public collection's
+ * equality `indexes`, and starts the supplied {@link SyncController} with
  * reactive store patching. The caller injects the opened localStore, the
  * controller, and the per-doc `onRemoteChange` patcher (typically wired to the
  * rehydrate mechanism over the app's store registry) rather than this module
@@ -61,15 +62,24 @@ export async function startWasSync({
     collections
   })
 
-  // Best-effort encryption marker; non-fatal either way (envelopes replicate
-  // into an unmarked collection just the same). Public collections are skipped
-  // inside markCollectionEncrypted (reported ok + skipped).
+  // Best-effort collection-description PUTs; non-fatal either way (envelopes
+  // replicate into an unmarked collection just the same, and a query against
+  // undeclared indexes fails with a descriptive 400). Each helper skips the
+  // collections it does not apply to (reported ok + skipped): the encryption
+  // marker skips public collections, the indexes declaration skips private
+  // ones and public ones with no declared indexes.
   await Promise.all(
     Object.keys(parsed.byCollectionId).map(async collectionId => {
-      const result = await remoteStore.markCollectionEncrypted(collectionId)
-      if (!result.ok) {
+      const marker = await remoteStore.markCollectionEncrypted(collectionId)
+      if (!marker.ok) {
         console.warn(
-          `Encryption marker PUT not authorized for "${collectionId}" (status ${result.status ?? 'n/a'}).`
+          `Encryption marker PUT not authorized for "${collectionId}" (status ${marker.status ?? 'n/a'}).`
+        )
+      }
+      const indexes = await remoteStore.declareCollectionIndexes(collectionId)
+      if (!indexes.ok) {
+        console.warn(
+          `Indexes declaration PUT not authorized for "${collectionId}" (status ${indexes.status ?? 'n/a'}).`
         )
       }
     })

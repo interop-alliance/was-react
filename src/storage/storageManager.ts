@@ -3,16 +3,19 @@
  */
 /**
  * The storage manager: a thin process-wide holder for the one {@link LocalStore}
- * instance plus the per-install device id. Entity stores reach for the store
- * through {@link requireStore} inside their CRUD actions rather than importing it
+ * instance, the per-session {@link WasRemoteStore}, plus the per-install device
+ * id. Entity stores reach for the stores through {@link requireStore} /
+ * {@link requireRemoteStore} inside their verbs rather than importing them
  * directly, which keeps this module free of store imports (no cycle) and lets
  * the app own the init/hydrate ordering.
  */
 import { uuidv7 } from 'uuidv7'
 import { DEFAULT_STORAGE_KEY_PREFIX } from '../config.js'
 import type { LocalStore } from './localStore.js'
+import type { WasRemoteStore } from './wasRemoteStore.js'
 
 let localStore: LocalStore | null = null
+let remoteStore: WasRemoteStore | null = null
 
 /**
  * Installs the opened store (called once by the app bootstrap).
@@ -52,6 +55,50 @@ export function hasStore(): boolean {
  */
 export function clearLocalStore(): void {
   localStore = null
+}
+
+/**
+ * Installs the per-session delegated remote store (set once background sync
+ * has bootstrapped it from the granted zcaps).
+ *
+ * @param store {WasRemoteStore}
+ * @returns {void}
+ */
+export function setRemoteStore(store: WasRemoteStore): void {
+  remoteStore = store
+}
+
+/**
+ * The connected session's remote store, or throws while no wallet-connected
+ * session is active (local-only mode, or sync has not bootstrapped yet).
+ *
+ * @returns {WasRemoteStore}
+ */
+export function requireRemoteStore(): WasRemoteStore {
+  if (!remoteStore) {
+    throw new Error(
+      'No WAS remote store is available; connect a wallet session first.'
+    )
+  }
+  return remoteStore
+}
+
+/**
+ * Whether a connected session's remote store is available.
+ *
+ * @returns {boolean}
+ */
+export function hasRemoteStore(): boolean {
+  return remoteStore !== null
+}
+
+/**
+ * Releases the held remote store reference (logout / sync teardown).
+ *
+ * @returns {void}
+ */
+export function clearRemoteStore(): void {
+  remoteStore = null
 }
 
 /**

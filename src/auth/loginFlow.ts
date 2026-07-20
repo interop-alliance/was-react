@@ -30,7 +30,8 @@ import { chapiGet, chapiStore } from './chapi.js'
 import {
   buildGrantsVpr,
   buildSeedProbeVpr,
-  newChallenge
+  newChallenge,
+  type GrantRequestCollection
 } from './loginRequest.js'
 import {
   checkGrants,
@@ -55,9 +56,10 @@ export interface LoginConfig {
    */
   appName: string
   /**
-   * The WAS collection ids to request read/write grants for.
+   * The collections to request read/write grants for (WAS collection id +
+   * visibility; `'public'` selects the `urn:was:public-collection` descriptor).
    */
-  collections: string[]
+  collections: GrantRequestCollection[]
   /**
    * The seed-credential type name + vocabulary namespace.
    */
@@ -155,7 +157,7 @@ export async function requestGrants({
   return checkGrants({
     grants: grantsOf(presentation),
     controllerDid: identity.controllerDid,
-    collections: config.collections,
+    collections: config.collections.map(collection => collection.id),
     ...(config.wasServerUrl !== undefined && {
       expectedServerUrl: config.wasServerUrl
     })

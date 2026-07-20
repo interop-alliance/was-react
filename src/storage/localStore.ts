@@ -87,21 +87,25 @@ export class LocalStore {
   private _db: RxDatabase
   private _collections: Record<string, RxCollection<SyncedDoc>>
   private _ciphers: Record<string, DocCipher>
+  private _configs: Record<string, WasCollectionConfig>
   // Per-collection logical-uuid -> envelope (RxDB primary key) index.
   private _index: Record<string, Map<string, string>>
 
   private constructor({
     db,
     collections,
-    ciphers
+    ciphers,
+    configs
   }: {
     db: RxDatabase
     collections: Record<string, RxCollection<SyncedDoc>>
     ciphers: Record<string, DocCipher>
+    configs: Record<string, WasCollectionConfig>
   }) {
     this._db = db
     this._collections = collections
     this._ciphers = ciphers
+    this._configs = configs
     this._index = {}
   }
 
@@ -186,7 +190,12 @@ export class LocalStore {
       collectionsConfig
     )) as unknown as Record<string, RxCollection<SyncedDoc>>
 
-    return new LocalStore({ db, collections: collectionsMap, ciphers })
+    return new LocalStore({
+      db,
+      collections: collectionsMap,
+      ciphers,
+      configs: Object.fromEntries(collections.map(entry => [entry.key, entry]))
+    })
   }
 
   private _collection(key: string): RxCollection<SyncedDoc> {
@@ -195,6 +204,22 @@ export class LocalStore {
       throw new Error(`Unknown collection "${key}".`)
     }
     return collection
+  }
+
+  /**
+   * The registered {@link WasCollectionConfig} for one collection key (the
+   * WAS collection id, visibility, and declared indexes the storage layer
+   * routes on).
+   *
+   * @param key {string}   the collection logical key
+   * @returns {WasCollectionConfig}
+   */
+  collectionConfig(key: string): WasCollectionConfig {
+    const config = this._configs[key]
+    if (!config) {
+      throw new Error(`Unknown collection "${key}".`)
+    }
+    return config
   }
 
   private _cipher(key: string): DocCipher {

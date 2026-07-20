@@ -3,7 +3,13 @@
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import type { LocalStore } from './localStore.js'
-import { setLocalStore, clearLocalStore } from './storageManager.js'
+import type { WasRemoteStore } from './wasRemoteStore.js'
+import {
+  setLocalStore,
+  clearLocalStore,
+  setRemoteStore,
+  clearRemoteStore
+} from './storageManager.js'
 import { createEntityStore } from './entityStore.js'
 
 interface Note {
@@ -20,6 +26,7 @@ function flushMicrotasks(): Promise<void> {
 
 afterEach(() => {
   clearLocalStore()
+  clearRemoteStore()
 })
 
 describe('createEntityStore', () => {
@@ -198,5 +205,58 @@ describe('createEntityStore', () => {
       ['notes', { id: 'solo', text: 'v1' }],
       ['notes', { id: 'solo', text: 'v2' }]
     ])
+  })
+
+  it('query routes key to WAS id and maps the page to payloads', async () => {
+    const store = createEntityStore<Note>('notes')
+    setLocalStore({
+      collectionConfig: (key: string) => ({
+        key,
+        id: 'shared-notes',
+        visibility: 'public',
+        indexes: ['text']
+      })
+    } as unknown as LocalStore)
+    const queries: unknown[] = []
+    setRemoteStore({
+      queryCollectionByEquality: async (query: unknown) => {
+        queries.push(query)
+        return {
+          documents: [
+            { id: 'a', data: { id: 'a', text: 'hi' } },
+            // A blob resource carries no JSON content; it is omitted from docs.
+            { id: 'blob', custom: { name: 'pic' } }
+          ],
+          hasMore: true,
+          cursor: 'more'
+        }
+      }
+    } as unknown as WasRemoteStore)
+
+    const page = await store
+      .getState()
+      .query({ equals: { text: 'hi' }, limit: 10 })
+
+    expect(queries).toEqual([
+      { collectionId: 'shared-notes', equals: { text: 'hi' }, limit: 10 }
+    ])
+    expect(page).toEqual({
+      docs: [{ id: 'a', text: 'hi' }],
+      hasMore: true,
+      cursor: 'more'
+    })
+    // A read verb: the Map is untouched.
+    expect(store.getState().byId.size).toBe(0)
+  })
+
+  it('query throws while no wallet-connected session holds a remote store', async () => {
+    const store = createEntityStore<Note>('notes')
+    setLocalStore({
+      collectionConfig: () => ({ id: 'shared-notes' })
+    } as unknown as LocalStore)
+
+    await expect(
+      store.getState().query({ equals: { text: 'hi' } })
+    ).rejects.toThrow(/connect a wallet session/)
   })
 })

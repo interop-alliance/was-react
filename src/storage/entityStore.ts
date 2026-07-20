@@ -18,7 +18,7 @@
  * local writes stay immediate so a single edit is snappy.
  */
 import { create, type UseBoundStore, type StoreApi } from 'zustand'
-import { requireStore } from './storageManager.js'
+import { requireStore, requireRemoteStore } from './storageManager.js'
 import { lwwFields, remotePayloadWins } from '../sync/lww.js'
 
 export interface EntityStore<T extends { id: string }> {
@@ -70,6 +70,22 @@ export interface EntityStore<T extends { id: string }> {
    * coalesced with `patch` into one store update per pull burst.
    */
   drop: (uuid: string) => void
+  /**
+   * Runs one server-side equality query against this collection and returns
+   * the matching payloads WITHOUT touching the Map (a read verb, not a sync
+   * path; the replica already holds this device's rows). Multiple `equals`
+   * attributes AND together; values are string equality only, and every
+   * attribute must appear in the collection config's declared `indexes`.
+   * Requires a wallet-connected session and, for now, a `visibility: 'public'`
+   * (plaintext) collection -- the encrypted blinded-index path is not yet
+   * supported. Pass the returned `cursor` back in to fetch the next page while
+   * `hasMore` is true.
+   */
+  query: (query: {
+    equals: Record<string, string>
+    limit?: number
+    cursor?: string
+  }) => Promise<{ docs: T[]; hasMore: boolean; cursor?: string }>
 }
 
 /**
@@ -188,6 +204,29 @@ export function createEntityStore<T extends { id: string }>(
       drop: uuid => {
         pending.push({ type: 'drop', uuid })
         schedulePendingFlush()
+      },
+      query: async ({ equals, limit, cursor }) => {
+        // Route the logical key to its WAS collection id through the local
+        // registry; the remote store validates visibility + declared indexes
+        // and fails closed before any network round trip.
+        const { id } = requireStore().collectionConfig(collectionKey)
+        const page = await requireRemoteStore().queryCollectionByEquality({
+          collectionId: id,
+          equals,
+          ...(limit !== undefined && { limit }),
+          ...(cursor !== undefined && { cursor })
+        })
+        // `data` is the stored JSON content -- for a public (plaintext)
+        // collection that IS the payload; a blob resource carries none and is
+        // omitted.
+        const docs = page.documents
+          .filter(document => document.data !== undefined)
+          .map(document => document.data as T)
+        return {
+          docs,
+          hasMore: page.hasMore,
+          ...(page.cursor !== undefined && { cursor: page.cursor })
+        }
       }
     }
   })

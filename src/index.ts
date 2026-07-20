@@ -82,7 +82,8 @@ export {
   RW_ACTIONS,
   newChallenge,
   buildSeedProbeVpr,
-  buildGrantsVpr
+  buildGrantsVpr,
+  type GrantRequestCollection
 } from './auth/loginRequest.js'
 export {
   verifyLoginPresentation,
@@ -127,10 +128,19 @@ export {
   requireStore,
   hasStore,
   clearLocalStore,
+  setRemoteStore,
+  requireRemoteStore,
+  hasRemoteStore,
+  clearRemoteStore,
   getDeviceId
 } from './storage/storageManager.js'
 export { createEntityStore, type EntityStore } from './storage/entityStore.js'
-export { WasRemoteStore, type MarkerResult } from './storage/wasRemoteStore.js'
+export {
+  WasRemoteStore,
+  type MarkerResult,
+  type EqualityQueryPage
+} from './storage/wasRemoteStore.js'
+export { publicUrlFor } from './storage/publicUrl.js'
 export {
   useSyncStatusStore,
   deriveSyncRollup,

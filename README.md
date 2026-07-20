@@ -116,6 +116,17 @@ recognize a stray encrypted envelope and refuses the row), and payloads should
 carry the `updatedAt` / `deviceId` LWW fields like any other collection --
 without them a concurrent multi-device edit falls back to server-wins.
 
+At login, a public collection is requested from the wallet with the distinct
+`urn:was:public-collection` descriptor type (private collections use
+`urn:was:collection`): the wallet provisions it plaintext with a public-read
+policy, shows a world-readable consent warning, and delegates the usual
+read/write capability (public covers only unauthenticated reads; writes stay
+capability-only). A wallet that predates the descriptor reports the request
+unsatisfiable rather than silently provisioning a private collection, so the
+feature fails closed with older wallets. Publicness is granted at consent time
+by the wallet -- the app itself can never escalate an existing private
+collection to public.
+
 ### 2. Entity stores and the registry
 
 ```ts
@@ -227,6 +238,75 @@ Entity payloads MUST carry `updatedAt` and `deviceId` (from `getDeviceId()`),
 stamped on EVERY insert and update: they are the last-write-wins pair that
 settles concurrent multi-device edits of the same entity. A payload without them
 loses every sync conflict.
+
+A public collection can additionally answer server-side equality queries.
+Declare the queryable content attributes in the collection config:
+
+```ts
+{ key: 'posts', id: 'microblog-posts', visibility: 'public',
+  indexes: ['author', 'inReplyTo'] }
+```
+
+The sync bootstrap announces the declaration in the collection description (the
+server rejects filters on undeclared attributes fail-closed), and the entity
+store's `query` verb runs the query:
+
+```ts
+const page = await usePosts.getState().query({
+  equals: { author: 'did:key:z6Mk...' }
+})
+// page.docs: the matching payloads
+// page.hasMore / page.cursor: pass cursor back in to fetch the next page
+```
+
+`query` is a read verb against the server (signed with the granted collection
+capability, so it needs a wallet-connected session), not a sync path: it never
+touches the in-memory Map. Multiple `equals` attributes AND together; values
+are string equality only. On the wire it is the collection list endpoint's
+cacheable `filter[attr]=value` GET form, with filter attributes emitted in
+sorted order so identical queries produce identical URLs; on a public
+collection the same URL also answers anonymously for non-app consumers.
+Declaring `indexes` on a private collection is rejected at config validation --
+the encrypted (blinded-index) query path is not yet supported.
+
+### Share links (publish-copy)
+
+A public collection also gives every document a stable, world-readable resource
+URL, which is the basis for share links. The pattern is publish-copy: declare
+one public collection for shared documents,
+
+```ts
+{ key: 'sharedNotes', id: 'shared-notes', visibility: 'public' }
+```
+
+to share a document, copy it into that store, and the share URL is that copy's
+resource URL:
+
+```ts
+import { publicUrlFor } from '@interop/was-react'
+import { useSharedNotes } from './stores.js'
+
+// Share: copy the doc into the public collection.
+await useSharedNotes.getState().insert(doc)
+const url = publicUrlFor({ collectionKey: 'sharedNotes', id: doc.id })
+
+// Unshare: remove the copy; replication pushes the delete and the URL stops
+// resolving.
+await useSharedNotes.getState().remove(doc.id)
+```
+
+The URL is stable across edits because a public collection stores the payload
+under its own logical uuid. Whether a share is a copy (which survives later
+unsharing edits of the original) or a move is an app product decision;
+content-addressed ids (hashing immutable content so identical content shares
+one URL) are likewise an app-level choice.
+
+Anyone on the web can read the URL -- there is no auth. A consumer can fetch it
+with `WasClient.publicRead` from `@interop/was-client` or a plain GET. The URL
+resolves only after the document has synced to the server (a locally-inserted
+doc shares after the next sync push). Expiring or time-boxed share links are
+not supported: sharing IS public-collection membership, so a share lasts until
+the copy is removed.
 
 The MUI entry supplies a router gate and status UI on top of this; see
 [Entry points](#entry-points).

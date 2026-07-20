@@ -36,12 +36,14 @@ function capabilityQueriesOf(vpr: IVPRDetails): ICapabilityQueryDetail[] {
 
 describe('buildGrantsVpr', () => {
   it('emits exactly one collection-scoped query per collection and no more', () => {
-    const collections = ['notes', 'projects']
+    const collections = [{ id: 'notes' }, { id: 'projects' }]
     const vpr = buildGrantsVpr({ ...BASE, collections })
     const capabilityQuery = capabilityQueriesOf(vpr)
 
     expect(capabilityQuery).toHaveLength(collections.length)
-    expect(capabilityQuery.map(entry => entry.referenceId)).toEqual(collections)
+    expect(capabilityQuery.map(entry => entry.referenceId)).toEqual(
+      collections.map(collection => collection.id)
+    )
     for (const entry of capabilityQuery) {
       expect(entry.invocationTarget).toEqual({
         type: 'urn:was:collection',
@@ -52,8 +54,32 @@ describe('buildGrantsVpr', () => {
     }
   })
 
+  it('emits urn:was:public-collection for visibility: public and keeps ' +
+    'private collections on urn:was:collection', () => {
+    const vpr = buildGrantsVpr({
+      ...BASE,
+      collections: [
+        { id: 'microblog-posts', visibility: 'public' },
+        { id: 'drafts', visibility: 'private' },
+        { id: 'notes' }
+      ]
+    })
+    const capabilityQuery = capabilityQueriesOf(vpr)
+
+    expect(capabilityQuery.map(entry => entry.invocationTarget)).toEqual([
+      { type: 'urn:was:public-collection', name: 'microblog-posts' },
+      { type: 'urn:was:collection', name: 'drafts' },
+      { type: 'urn:was:collection', name: 'notes' }
+    ])
+    // Public collections get the same RW zcap request: public covers only
+    // unauthenticated reads; writes stay capability-only.
+    for (const entry of capabilityQuery) {
+      expect(entry.allowedAction).toEqual(RW_ACTIONS)
+    }
+  })
+
   it('requests no whole-space (urn:was:space) query', () => {
-    const vpr = buildGrantsVpr({ ...BASE, collections: ['notes'] })
+    const vpr = buildGrantsVpr({ ...BASE, collections: [{ id: 'notes' }] })
     const capabilityQuery = capabilityQueriesOf(vpr)
 
     const hasSpaceQuery = capabilityQuery.some(
@@ -67,7 +93,7 @@ describe('buildGrantsVpr', () => {
   it('honors a custom action set', () => {
     const vpr = buildGrantsVpr({
       ...BASE,
-      collections: ['notes'],
+      collections: [{ id: 'notes' }],
       actions: ['GET', 'HEAD']
     })
     const capabilityQuery = capabilityQueriesOf(vpr)
