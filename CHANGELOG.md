@@ -1,5 +1,52 @@
 # @interop/was-react Changelog
 
+## 0.1.10 - TBD
+
+### Added
+
+- Server-side equality queries on public collections. `WasCollectionConfig`
+  grows an optional `indexes` field declaring the queryable content attributes
+  (e.g. `indexes: ['author', 'inReplyTo']`); `validateCollections` rejects
+  declarations fail-closed (public collections only -- the encrypted
+  blinded-index path is not yet supported -- plus empty/duplicate names and
+  diverging declarations for one WAS collection id). The sync bootstrap
+  best-effort announces the declaration in the collection description
+  (`WasRemoteStore.declareCollectionIndexes`, a sibling of the encryption
+  marker PUT).
+- `EntityStore.query({ equals, limit?, cursor? })`: runs one equality query
+  against the collection on the server and returns
+  `{ docs, hasMore, cursor? }` without touching the in-memory Map. Multiple
+  `equals` attributes AND together; values are string equality only. On the
+  wire it is the cacheable `filter[attr]=value` GET on the collection list
+  endpoint with filter attributes emitted in sorted (canonical) order, signed
+  with the granted collection capability
+  (`WasRemoteStore.queryCollectionByEquality`; page type `EqualityQueryPage`).
+- A process-wide holder for the per-session delegated remote store
+  (`setRemoteStore` / `requireRemoteStore` / `hasRemoteStore` /
+  `clearRemoteStore`), installed by `createAuthStore` once background sync
+  bootstraps and cleared on logout/teardown, so entity-store verbs that need
+  the server (`query`) can reach it. `LocalStore` exposes
+  `collectionConfig(key)` (the registered `WasCollectionConfig` for one
+  collection key).
+- `publicUrlFor({ collectionKey, id })` (and the underlying
+  `WasRemoteStore.publicUrlFor({ collectionId, id })`): composes the stable,
+  world-readable resource URL for a document in a public collection -- the
+  share link an unauthenticated reader fetches, for the publish-copy share
+  pattern. Stable across edits because a public collection stores the payload
+  under its logical uuid; fails closed on non-public / unprovisioned
+  collections and empty ids.
+
+### Changed
+
+- **BREAKING**: The login flow now requests `visibility: 'public'` collections
+  with the distinct `urn:was:public-collection` descriptor type, so the wallet
+  provisions them plaintext with a public-read policy and renders a
+  world-readable consent warning. Wallets that predate the descriptor render
+  such a request unsatisfiable (fail-closed) instead of silently provisioning a
+  private collection. `buildGrantsVpr` and `LoginConfig` now take
+  `GrantRequestCollection[]` (`{ id, visibility? }`, exported) instead of bare
+  collection-id strings; apps using `createAuthStore` are unaffected.
+
 ## 0.1.9 - 2026-07-19
 
 ### Added

@@ -38,6 +38,69 @@ describe('validateCollections', () => {
     expect(() => validateCollections(collections)).toThrow(/unknown visibility/)
   })
 
+  it('accepts equality indexes on a public collection', () => {
+    expect(() =>
+      validateCollections([
+        {
+          key: 'posts',
+          id: 'microblog-posts',
+          visibility: 'public',
+          indexes: ['author', 'inReplyTo']
+        }
+      ])
+    ).not.toThrow()
+  })
+
+  it('rejects indexes on a private collection (fail-closed)', () => {
+    expect(() =>
+      validateCollections([{ key: 'notes', id: 'notes', indexes: ['author'] }])
+    ).toThrow(/require a public/)
+  })
+
+  it('rejects empty and duplicate index attribute names', () => {
+    expect(() =>
+      validateCollections([
+        { key: 'posts', id: 'posts', visibility: 'public', indexes: [''] }
+      ])
+    ).toThrow(/empty index attribute/)
+    expect(() =>
+      validateCollections([
+        {
+          key: 'posts',
+          id: 'posts',
+          visibility: 'public',
+          indexes: ['author', 'author']
+        }
+      ])
+    ).toThrow(/twice/)
+  })
+
+  it('rejects diverging index declarations for the same WAS id', () => {
+    expect(() =>
+      validateCollections([
+        { key: 'a', id: 'shared', visibility: 'public', indexes: ['author'] },
+        { key: 'b', id: 'shared', visibility: 'public', indexes: ['tag'] }
+      ])
+    ).toThrow(/diverging index/)
+    // Identical declarations (in any order) are fine.
+    expect(() =>
+      validateCollections([
+        {
+          key: 'a',
+          id: 'shared',
+          visibility: 'public',
+          indexes: ['author', 'tag']
+        },
+        {
+          key: 'b',
+          id: 'shared',
+          visibility: 'public',
+          indexes: ['tag', 'author']
+        }
+      ])
+    ).not.toThrow()
+  })
+
   it('rejects the same WAS id registered as both private and public', () => {
     expect(() =>
       validateCollections([

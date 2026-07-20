@@ -49,6 +49,15 @@ export interface WasCollectionConfig {
    * their stored form and stop being readable by the other mode.
    */
   visibility?: 'private' | 'public'
+  /**
+   * The content attributes the server indexes for equality queries
+   * (`store.query({ equals })`), e.g. `['author', 'inReplyTo']`. Declared here
+   * so the sync bootstrap can announce them in the collection description
+   * (undeclared attributes are rejected fail-closed by the server). Only valid
+   * on `visibility: 'public'` (plaintext) collections for now: the encrypted
+   * `blinded-index` query path is not yet supported.
+   */
+  indexes?: string[]
 }
 
 /**
@@ -224,17 +233,22 @@ export const DEFAULT_EXPIRY_WATCH_MS = 60 * 1000
 /**
  * Validates a collection registry, fail-closed. Rejects an unknown `visibility`
  * value (a config written against a future library version must not silently
- * fall back to either mode) and the encrypted-but-public combination: the same
+ * fall back to either mode), the encrypted-but-public combination: the same
  * WAS collection id registered under conflicting visibilities, which would
  * treat one server-side collection as both encrypted (private) and plaintext
- * (public). Called by the storage layer before any replica is opened.
+ * (public), and malformed `indexes` declarations (indexes on a private
+ * collection -- the encrypted query path is not yet supported -- plus empty or
+ * duplicate attribute names, and the same WAS collection id declared with
+ * diverging index sets). Called by the storage layer before any replica is
+ * opened.
  *
  * @param collections {WasCollectionConfig[]}   the collection registry
  * @returns {void}
  */
 export function validateCollections(collections: WasCollectionConfig[]): void {
   const visibilityById = new Map<string, 'private' | 'public'>()
-  for (const { key, id, visibility } of collections) {
+  const indexesById = new Map<string, string>()
+  for (const { key, id, visibility, indexes } of collections) {
     const effective = visibility ?? 'private'
     if (effective !== 'private' && effective !== 'public') {
       throw new Error(
@@ -250,6 +264,43 @@ export function validateCollections(collections: WasCollectionConfig[]): void {
       )
     }
     visibilityById.set(id, effective)
+
+    if (indexes !== undefined) {
+      if (effective !== 'public') {
+        throw new Error(
+          `Collection "${key}" declares indexes but is private: equality ` +
+            `indexes require a public (plaintext) collection (the encrypted ` +
+            `blinded-index query path is not yet supported).`
+        )
+      }
+      const seen = new Set<string>()
+      for (const name of indexes) {
+        if (typeof name !== 'string' || name.length === 0) {
+          throw new Error(
+            `Collection "${key}" declares an empty index attribute name.`
+          )
+        }
+        if (seen.has(name)) {
+          throw new Error(
+            `Collection "${key}" declares index attribute "${name}" twice.`
+          )
+        }
+        seen.add(name)
+      }
+    }
+    // The same WAS id registered under two keys must declare identical indexes
+    // (order-insensitive): the sync bootstrap announces ONE declaration per
+    // server-side collection.
+    const canonical = [...(indexes ?? [])].sort().join(' ')
+    const priorIndexes = indexesById.get(id)
+    if (priorIndexes !== undefined && priorIndexes !== canonical) {
+      throw new Error(
+        `Collection id "${id}" is registered with diverging index ` +
+          `declarations; every entry for one WAS collection must declare the ` +
+          `same indexes.`
+      )
+    }
+    indexesById.set(id, canonical)
   }
 }
 

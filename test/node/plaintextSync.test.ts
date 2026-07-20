@@ -22,6 +22,14 @@ import { provisionDevGrants } from '../../src/dev/provisionDevGrants.js'
 import { parseGrants, type ParsedGrants } from '../../src/grants.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import { LocalStore } from '../../src/storage/localStore.js'
+import { createEntityStore } from '../../src/storage/entityStore.js'
+import { publicUrlFor } from '../../src/storage/publicUrl.js'
+import {
+  clearLocalStore,
+  clearRemoteStore,
+  setLocalStore,
+  setRemoteStore
+} from '../../src/storage/storageManager.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
 import {
   createSyncController,
@@ -41,7 +49,7 @@ import type { WasCollectionConfig } from '../../src/config.js'
 const PUBLIC_ID = 'microblog-posts'
 const PRIVATE_ID = 'notes'
 const REGISTRY: WasCollectionConfig[] = [
-  { key: 'posts', id: PUBLIC_ID, visibility: 'public' },
+  { key: 'posts', id: PUBLIC_ID, visibility: 'public', indexes: ['title'] },
   { key: 'notes', id: PRIVATE_ID }
 ]
 
@@ -212,14 +220,61 @@ describe('plaintext-collection sync against was-teaching-server', () => {
     expect(JSON.stringify(privateBody)).not.toContain('secret-note-marker')
   }, 60000)
 
-  it('leaves the public collection unmarked (no encryption marker)', async () => {
+  it('leaves the public collection unmarked and declares its indexes', async () => {
     const response = await remoteStore.was.request({
       capability: remoteStore.collectionCapability(PUBLIC_ID),
       path: `/space/${remoteStore.spaceId}/${PUBLIC_ID}`,
       method: 'GET'
     })
-    const description = response.data as { encryption?: unknown }
+    const description = response.data as {
+      encryption?: unknown
+      indexes?: unknown
+    }
     expect(description.encryption).toBeUndefined()
+    // The sync bootstrap announced the registry's equality indexes.
+    expect(description.indexes).toEqual(['title'])
+  }, 60000)
+
+  it('answers an equality query over the GET filter', async () => {
+    const page = await waitFor(async () => {
+      const result = await remoteStore.queryCollectionByEquality({
+        collectionId: PUBLIC_ID,
+        equals: { title: post.title }
+      })
+      return result.documents.length > 0 ? result : null
+    }, 'the equality query to match the pushed post')
+    expect(page.hasMore).toBe(false)
+    expect(page.documents).toEqual([{ id: post.id, data: post }])
+
+    // A non-matching term answers an empty page, not an error.
+    const empty = await remoteStore.queryCollectionByEquality({
+      collectionId: PUBLIC_ID,
+      equals: { title: 'no such title' }
+    })
+    expect(empty).toEqual({ documents: [], hasMore: false })
+
+    // An undeclared attribute fails closed client-side.
+    await expect(
+      remoteStore.queryCollectionByEquality({
+        collectionId: PUBLIC_ID,
+        equals: { author: 'nobody' }
+      })
+    ).rejects.toThrow(/not declared/)
+
+    // The app-facing entity-store verb, end-to-end through the process-wide
+    // holders: key routing, the GET filter, and the payload mapping.
+    setLocalStore(stores[0]!)
+    setRemoteStore(remoteStore)
+    try {
+      const posts = createEntityStore<PostDoc>('posts')
+      const viaStore = await posts
+        .getState()
+        .query({ equals: { title: post.title } })
+      expect(viaStore).toEqual({ docs: [post], hasMore: false })
+    } finally {
+      clearLocalStore()
+      clearRemoteStore()
+    }
   }, 60000)
 
   it('pulls both collections into a fresh replica', async () => {
@@ -236,5 +291,64 @@ describe('plaintext-collection sync against was-teaching-server', () => {
       return listed.length > 0 ? listed : null
     }, 'the private note to be pulled')
     expect(pulledNotes).toEqual([note])
+  }, 60000)
+
+  it('composes a share URL an anonymous reader can fetch, and unshares', async () => {
+    // A dedicated shared doc, inserted and then unshared (tombstoned) within
+    // this test. It runs after the pull test so the extra post never disturbs
+    // that test's assertions.
+    const shared = makeDoc('A shareable post')
+    const store = stores[0]!
+    await store.insertEntity('posts', shared)
+
+    // Mimic wallet provisioning of a public collection: set the `PublicCanRead`
+    // access-control policy so unauthenticated reads are authorized (the
+    // dev-grant provisioner creates plaintext collections but does not attach a
+    // public-read policy). Set via the delegated collection capability, whose
+    // invocationTarget is a RESTful prefix of the collection `/policy` path.
+    await remoteStore.was.request({
+      capability: remoteStore.collectionCapability(PUBLIC_ID),
+      path: `/space/${remoteStore.spaceId}/${PUBLIC_ID}/policy`,
+      method: 'PUT',
+      json: { type: 'PublicCanRead' }
+    })
+
+    // The root helper routes the logical key through the process-wide holders;
+    // it must agree with the remote store's own composition.
+    setLocalStore(store)
+    setRemoteStore(remoteStore)
+    let url: string
+    try {
+      url = publicUrlFor({ collectionKey: 'posts', id: shared.id })
+    } finally {
+      clearLocalStore()
+      clearRemoteStore()
+    }
+    expect(url).toBe(
+      remoteStore.publicUrlFor({ collectionId: PUBLIC_ID, id: shared.id })
+    )
+    expect(url).toBe(
+      `${serverUrl}/space/${remoteStore.spaceId}/${PUBLIC_ID}/${shared.id}`
+    )
+
+    // An unauthenticated reader (a plain, unsigned GET) can consume the share
+    // link once the doc has replicated to the server.
+    const fetched = await waitFor(async () => {
+      const response = await fetch(url)
+      return response.ok ? ((await response.json()) as PostDoc) : null
+    }, 'the shared post to be publicly readable')
+    expect(fetched).toEqual(shared)
+
+    // Unshare: delete the copy, let replication push the tombstone, and the
+    // unsigned fetch stops returning the payload.
+    await store.deleteEntity('posts', shared.id)
+    await waitFor(async () => {
+      const response = await fetch(url)
+      // Drain the body so the connection is not left dangling.
+      await response.arrayBuffer()
+      // Wait for a clean 404 -- a transient 5xx can surface while the delete is
+      // still settling on the file backend.
+      return response.status === 404 ? true : null
+    }, 'the unshared post to stop resolving publicly')
   }, 60000)
 })

@@ -64,9 +64,11 @@ import { parseGrants, type ParsedGrants } from '../grants.js'
 import { LocalStore, dbNameForController } from '../storage/localStore.js'
 import {
   clearLocalStore,
+  clearRemoteStore,
   hasStore,
   requireStore,
-  setLocalStore
+  setLocalStore,
+  setRemoteStore
 } from '../storage/storageManager.js'
 import {
   cancelScheduledRehydrates,
@@ -268,12 +270,17 @@ export function createAuthStore({
       : {}
   )
 
-  // The login flow consumes only the WAS collection ids; this config layer owns
-  // the `{ key, id }` registry.
+  // The login flow consumes only the WAS collection ids + visibility; this
+  // config layer owns the `{ key, id }` registry.
   const loginConfig: LoginConfig = {
     appOrigin: config.appOrigin,
     appName: config.appName,
-    collections: config.collections.map(collection => collection.id),
+    collections: config.collections.map(collection => ({
+      id: collection.id,
+      ...(collection.visibility !== undefined && {
+        visibility: collection.visibility
+      })
+    })),
     credential: config.credential,
     documentLoader,
     ...(config.wasServerUrl !== undefined && {
@@ -333,8 +340,11 @@ export function createAuthStore({
   /**
    * Starts a fresh per-session controller replicating the granted collections,
    * wiring reactive per-doc store patching and the auth-error (401/403) signal.
+   * The bootstrapped remote store is installed as the process-wide holder so
+   * entity-store verbs that need the server (e.g. `query`) can reach it;
+   * `stopController` clears it.
    */
-  function beginSync({
+  async function beginSync({
     parsed,
     zcapClient
   }: {
@@ -345,7 +355,7 @@ export function createAuthStore({
       collections: config.collections,
       ...(config.sync && { sync: config.sync })
     })
-    return startWasSync({
+    const remoteStore = await startWasSync({
       parsed,
       zcapClient,
       collections: config.collections,
@@ -355,6 +365,8 @@ export function createAuthStore({
         void patchFromChange(registry, key, event),
       onAuthError: () => store.getState().notifyAccessExpired()
     })
+    setRemoteStore(remoteStore)
+    return remoteStore
   }
 
   /**
@@ -419,6 +431,9 @@ export function createAuthStore({
       await controller.stop()
       controller = null
     }
+    // The remote store belongs to the session that just stopped (a reconnect
+    // re-grant installs a fresh one via `beginSync`).
+    clearRemoteStore()
   }
 
   /**
