@@ -83,7 +83,6 @@ import type { WasAppConfig } from '@interop/was-react'
 export const config: WasAppConfig = {
   appName: 'Notes',
   appOrigin: 'https://notes.example',
-  wasServerUrl: 'https://was.example',
   collections: [{ key: 'notes', id: 'notes' }],
   credential: {
     credentialType: 'NotesAppKey',
@@ -261,13 +260,13 @@ const page = await usePosts.getState().query({
 
 `query` is a read verb against the server (signed with the granted collection
 capability, so it needs a wallet-connected session), not a sync path: it never
-touches the in-memory Map. Multiple `equals` attributes AND together; values
-are string equality only. On the wire it is the collection list endpoint's
-cacheable `filter[attr]=value` GET form, with filter attributes emitted in
-sorted order so identical queries produce identical URLs; on a public
-collection the same URL also answers anonymously for non-app consumers.
-Declaring `indexes` on a private collection is rejected at config validation --
-the encrypted (blinded-index) query path is not yet supported.
+touches the in-memory Map. Multiple `equals` attributes AND together; values are
+string equality only. On the wire it is the collection list endpoint's cacheable
+`filter[attr]=value` GET form, with filter attributes emitted in sorted order so
+identical queries produce identical URLs; on a public collection the same URL
+also answers anonymously for non-app consumers. Declaring `indexes` on a private
+collection is rejected at config validation -- the encrypted (blinded-index)
+query path is not yet supported.
 
 ### Share links (publish-copy)
 
@@ -298,15 +297,15 @@ await useSharedNotes.getState().remove(doc.id)
 The URL is stable across edits because a public collection stores the payload
 under its own logical uuid. Whether a share is a copy (which survives later
 unsharing edits of the original) or a move is an app product decision;
-content-addressed ids (hashing immutable content so identical content shares
-one URL) are likewise an app-level choice.
+content-addressed ids (hashing immutable content so identical content shares one
+URL) are likewise an app-level choice.
 
 Anyone on the web can read the URL -- there is no auth. A consumer can fetch it
 with `WasClient.publicRead` from `@interop/was-client` or a plain GET. The URL
 resolves only after the document has synced to the server (a locally-inserted
-doc shares after the next sync push). Expiring or time-boxed share links are
-not supported: sharing IS public-collection membership, so a share lasts until
-the copy is removed.
+doc shares after the next sync push). Expiring or time-boxed share links are not
+supported: sharing IS public-collection membership, so a share lasts until the
+copy is removed.
 
 The MUI entry supplies a router gate and status UI on top of this; see
 [Entry points](#entry-points).
@@ -341,8 +340,9 @@ Login is driven by CHAPI Verifiable Presentation Requests (VPRs). The
    wallet provisions the collections and returns a signed presentation.
 7. **Verify the response.** `verifyLoginPresentation` checks the VP and embedded
    proofs (purpose `authentication`, matching domain and challenge), and
-   `checkGrants` asserts every zcap is controlled by the app DID, targets the
-   configured `wasServerUrl`, shares one space, and is unexpired.
+   `checkGrants` asserts every zcap is controlled by the app DID, shares one
+   space on a single WAS host, and is unexpired. The wallet decides where the
+   user's Space lives; the sync layer derives its target from the grants.
 8. **Activate.** The session (seed, grants, earliest expiry) is persisted to
    IndexedDB, the encrypted local store is opened, the entity stores hydrate,
    and background WAS sync starts.

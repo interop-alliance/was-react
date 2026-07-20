@@ -54,29 +54,32 @@ describe('buildGrantsVpr', () => {
     }
   })
 
-  it('emits urn:was:public-collection for visibility: public and keeps ' +
-    'private collections on urn:was:collection', () => {
-    const vpr = buildGrantsVpr({
-      ...BASE,
-      collections: [
-        { id: 'microblog-posts', visibility: 'public' },
-        { id: 'drafts', visibility: 'private' },
-        { id: 'notes' }
-      ]
-    })
-    const capabilityQuery = capabilityQueriesOf(vpr)
+  it(
+    'emits urn:was:public-collection for visibility: public and keeps ' +
+      'private collections on urn:was:collection',
+    () => {
+      const vpr = buildGrantsVpr({
+        ...BASE,
+        collections: [
+          { id: 'microblog-posts', visibility: 'public' },
+          { id: 'drafts', visibility: 'private' },
+          { id: 'notes' }
+        ]
+      })
+      const capabilityQuery = capabilityQueriesOf(vpr)
 
-    expect(capabilityQuery.map(entry => entry.invocationTarget)).toEqual([
-      { type: 'urn:was:public-collection', name: 'microblog-posts' },
-      { type: 'urn:was:collection', name: 'drafts' },
-      { type: 'urn:was:collection', name: 'notes' }
-    ])
-    // Public collections get the same RW zcap request: public covers only
-    // unauthenticated reads; writes stay capability-only.
-    for (const entry of capabilityQuery) {
-      expect(entry.allowedAction).toEqual(RW_ACTIONS)
+      expect(capabilityQuery.map(entry => entry.invocationTarget)).toEqual([
+        { type: 'urn:was:public-collection', name: 'microblog-posts' },
+        { type: 'urn:was:collection', name: 'drafts' },
+        { type: 'urn:was:collection', name: 'notes' }
+      ])
+      // Public collections get the same RW zcap request: public covers only
+      // unauthenticated reads; writes stay capability-only.
+      for (const entry of capabilityQuery) {
+        expect(entry.allowedAction).toEqual(RW_ACTIONS)
+      }
     }
-  })
+  )
 
   it('requests no whole-space (urn:was:space) query', () => {
     const vpr = buildGrantsVpr({ ...BASE, collections: [{ id: 'notes' }] })

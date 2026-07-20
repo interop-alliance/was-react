@@ -137,9 +137,10 @@ export function buildGrantsVpr({
       controller: controllerDid,
       allowedAction: actions,
       invocationTarget: {
-        type: visibility === 'public'
-          ? 'urn:was:public-collection'
-          : 'urn:was:collection',
+        type:
+          visibility === 'public'
+            ? 'urn:was:public-collection'
+            : 'urn:was:collection',
         name: id
       }
     })

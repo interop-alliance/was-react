@@ -110,11 +110,6 @@ export interface WasAppConfig {
    */
   appOrigin: string
   /**
-   * The expected WAS server URL. When set, every granted zcap must target it;
-   * grants pointing anywhere else are rejected at login.
-   */
-  wasServerUrl?: string
-  /**
    * The CHAPI mediator base URL (the requesting origin is appended).
    */
   mediatorBase?: string

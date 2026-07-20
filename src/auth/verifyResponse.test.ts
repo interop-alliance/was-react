@@ -278,8 +278,7 @@ describe('checkGrants', () => {
     const checked = checkGrants({
       grants,
       controllerDid: appDid,
-      collections: TEST_COLLECTIONS,
-      expectedServerUrl: SERVER_URL
+      collections: TEST_COLLECTIONS
     })
     expect(checked.parsed.serverUrl).toBe(SERVER_URL)
     expect(checked.parsed.spaceId).toBe('e2e-space')
@@ -323,17 +322,6 @@ describe('checkGrants', () => {
         collections: TEST_COLLECTIONS
       })
     ).toThrow(/expired/)
-  })
-
-  it('rejects a grant set on the wrong server', () => {
-    expect(() =>
-      checkGrants({
-        grants: fullGrantSet(),
-        controllerDid: appDid,
-        collections: TEST_COLLECTIONS,
-        expectedServerUrl: 'http://localhost:4000'
-      })
-    ).toThrow(/expected/)
   })
 
   it('rejects a grant set spanning two spaces', () => {

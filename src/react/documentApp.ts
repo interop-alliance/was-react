@@ -118,9 +118,12 @@ export interface DocumentApp<T extends object> {
     /**
      * "Save to Web Spaces": run the CHAPI wallet login, requesting a grant for
      * exactly this app's one sandbox collection, then adopt (merge) the local
-     * document into it and start background sync.
+     * document into it and start background sync. Resolves with `{ firstRun }`
+     * on success (`firstRun` marks a brand-new app key, for a first-connect
+     * confirmation), `null` when the user cancels a wallet popup, and REJECTS
+     * on a genuine failure (the message is also mirrored into `error`).
      */
-    connect: () => Promise<void>
+    connect: () => Promise<{ firstRun: boolean } | null>
     /**
      * Detach the wallet session (data already synced stays on the server and
      * in the kept device replica) and land back in a fresh `local` state.
@@ -145,7 +148,6 @@ export interface DocumentApp<T extends object> {
  * @param options {object}
  * @param options.appName {string}   human-readable name (consent reason lines)
  * @param options.appOrigin {string}   this app's own web origin
- * @param [options.wasServerUrl] {string}   expected WAS server URL
  * @param [options.mediatorBase] {string}   CHAPI mediator base URL
  * @param options.document {object}   `collectionId` (the WAS sandbox
  *   collection id) and `initial` (the document value before the first write)
@@ -159,7 +161,6 @@ export interface DocumentApp<T extends object> {
 export function defineDocumentApp<T extends object>({
   appName,
   appOrigin,
-  wasServerUrl,
   mediatorBase,
   document,
   credential,
@@ -170,7 +171,6 @@ export function defineDocumentApp<T extends object>({
 }: {
   appName: string
   appOrigin: string
-  wasServerUrl?: string
   mediatorBase?: string
   document: { collectionId: string; initial: T }
   credential: SeedCredentialConfig
@@ -185,7 +185,6 @@ export function defineDocumentApp<T extends object>({
   const config: WasAppConfig = {
     appName,
     appOrigin,
-    ...(wasServerUrl !== undefined && { wasServerUrl }),
     ...(mediatorBase !== undefined && { mediatorBase }),
     collections: [{ key: DOCUMENT_COLLECTION_KEY, id: collectionId }],
     onboarding: 'local-first',
