@@ -1,5 +1,18 @@
 # @interop/was-react Changelog
 
+## 0.2.1 - TBD
+
+### Changed
+
+- `ClearDataDialog` warning text is now mode-aware: once connected, it explains
+  that only the device copy is erased and the data already synced to the Web
+  Space survives (reconnect to bring it back), instead of the local-only "cannot
+  be recovered" warning, which was inaccurate in that state.
+- `clearLocalData` now also clears the persisted connected session (as `logout`
+  already did), so clearing data while connected fully disconnects -- the next
+  page load lands in `local` mode instead of silently reconnecting and syncing
+  the cleared data back down.
+
 ## 0.2.0 - 2026-07-20
 
 ### Changed

@@ -2,12 +2,14 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The clear-data confirmation dialog (local mode). A dumb presentational
- * component over the store's `clearLocalData` action: it confirms the
- * destructive reset -- deleting the local replica and minting a brand-new
- * anonymous identity -- and nudges the user to export their data first, since a
- * local-only, unsynced app has no server copy to recover from. Dismissing the
- * dialog (backdrop / escape / Cancel) leaves the data untouched.
+ * The clear-data confirmation dialog. A dumb presentational component over the
+ * store's `clearLocalData` action: it confirms the destructive reset --
+ * deleting the local replica and minting a brand-new anonymous identity. The
+ * warning text is mode-aware: in `local` mode the device copy is the ONLY copy,
+ * so it nudges the user to export first; once connected, the copy already
+ * synced to the Web Space survives the reset, so the text says so instead of
+ * threatening total loss. Dismissing the dialog (backdrop / escape / Cancel)
+ * leaves the data untouched.
  */
 import {
   Button,
@@ -17,7 +19,7 @@ import {
   DialogContentText,
   DialogTitle
 } from '@mui/material'
-import { useClearData } from '../react/hooks.js'
+import { useClearData, useSession } from '../react/hooks.js'
 
 /**
  * @param props {object}
@@ -34,6 +36,8 @@ export function ClearDataDialog({
   onClose: () => void
 }) {
   const clearData = useClearData()
+  const { status } = useSession()
+  const connected = status === 'connected' || status === 'reconnect'
 
   async function handleClear(): Promise<void> {
     await clearData()
@@ -45,9 +49,15 @@ export function ClearDataDialog({
       <DialogTitle>Clear data</DialogTitle>
       <DialogContent>
         <DialogContentText>
-          This permanently erases everything stored on this device and starts
-          you over fresh. Your data lives only on this device, so once cleared
-          it cannot be recovered -- export a copy first if you want to keep it.
+          {connected
+            ? 'This erases the copy stored on this device and disconnects it ' +
+              'from your Web Space. The data already saved to your Web Space ' +
+              'stays there -- reconnect with your wallet to bring it back ' +
+              'onto this device.'
+            : 'This permanently erases everything stored on this device and ' +
+              'starts you over fresh. Your data lives only on this device, ' +
+              'so once cleared it cannot be recovered -- export a copy first ' +
+              'if you want to keep it.'}
         </DialogContentText>
       </DialogContent>
       <DialogActions>

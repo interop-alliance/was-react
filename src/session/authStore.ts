@@ -24,7 +24,8 @@
  * anonymous seed + database are deleted once the activation lands. `adopt:
  * 'leave'` sets the anonymous replica aside untouched instead (it returns after
  * a logout). Logout returns to a fresh `local` (optionally wiping the connected
- * replica); `clearLocalData` mints a brand-new anonymous seed and replica.
+ * replica); `clearLocalData` mints a brand-new anonymous seed and replica and
+ * drops any persisted connected session.
  *
  * The library cannot bind a module-level store to app config, so this is a
  * FACTORY: {@link createAuthStore} captures the app's {@link WasAppConfig} and
@@ -206,8 +207,10 @@ export interface AuthState {
   logout: (options?: { wipe?: boolean }) => Promise<void>
   /**
    * Delete the local replica, discard the anonymous seed, and mint a fresh
-   * anonymous seed/DID + replica. The shared reset primitive behind the
-   * `local`-mode "Clear data" button.
+   * anonymous seed/DID + replica. Also clears any persisted connected session,
+   * so clearing while connected fully disconnects (a later boot lands `local`
+   * instead of silently reconnecting and syncing the data back down). The
+   * reset primitive behind the "Clear data" button.
    */
   clearLocalData: () => Promise<void>
   /**
@@ -931,6 +934,7 @@ export function createAuthStore({
 
       clearLocalData: async () => {
         await resetToFreshLocal({ deleteDb: true, discardAnonSeed: true })
+        await clearAppSession({ store: sessionStore })
         set({ phase: null, reconnecting: false })
       },
 

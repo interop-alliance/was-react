@@ -15,7 +15,8 @@
  *   `local -> connected`, tearing down the anonymous replica but leaving its
  *   seed intact; a cancelled `login()` leaves `local` intact;
  * - `logout({ wipe })` keeps vs deletes the connected replica, landing `local`;
- * - `clearLocalData()` mints a brand-new anonymous seed/DID and empties stores.
+ * - `clearLocalData()` mints a brand-new anonymous seed/DID, empties stores,
+ *   and drops any persisted connected session.
  *
  * @vitest-environment node
  */
@@ -624,5 +625,19 @@ describe('clearLocalData()', () => {
     expect(store.getState().controllerDid).not.toBe(firstDid)
     expect(store.getState().controllerDid).toMatch(/^did:key:/)
     expect(await requireStore().listEntities('notes')).toHaveLength(0)
+  })
+
+  it('clears the persisted session when run while connected', async () => {
+    const seedStore = newSeedStore()
+    await persistSession({ seedStore })
+    const store = makeStore(baseConfig(), seedStore)
+    await store.getState().boot()
+    expect(store.getState().status).toBe('connected')
+
+    await store.getState().clearLocalData()
+
+    expect(store.getState().status).toBe('local')
+    // The session record was cleared, so a later boot cannot reconnect.
+    expect(await seedStore.loadSeed()).toBeNull()
   })
 })
