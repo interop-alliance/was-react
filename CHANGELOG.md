@@ -1,5 +1,32 @@
 # @interop/was-react Changelog
 
+## 0.1.12 - TBD
+
+### Fixed
+
+- Fixed a race where a fast unmount/remount of the session provider (for
+  example, React dev-mode double effects) could leave the app on a closed
+  database handle or an empty-looking hydrate. `boot` and `destroy` are now
+  serialized inside the session store, so a teardown fired while a boot is still
+  opening/hydrating waits for that boot to settle before running, and a boot
+  queued after it re-opens cleanly -- the open/hydrate/sync bring-up can no
+  longer overlap a teardown.
+
+### Changed
+
+- The sync-status chip no longer labels the no-replication state "Offline"
+  (local-only mode is not offline). The rollup states now read `Local only`,
+  `Sync error`, `Syncing`, and `Synced`, with tooltips clarifying that
+  local-only data stays on the device and the other states are connected to
+  storage. The `SyncStatusChip` `data-sync-state` attribute now emits the
+  machine state key (`offline`/`error`/`syncing`/`synced`) directly, so it is
+  stable regardless of the human-readable copy.
+- The app-key credential now carries a top-level `name` and `description` so a
+  wallet renders it as, for example, "Text Editor app key" with a sentence
+  explaining what the key is for, instead of a generic "Verifiable Credential".
+  `issueSeedCredential` gains a required `appName` option supplying the
+  human-readable app name.
+
 ## 0.1.11 - 2026-07-20
 
 ### Changed

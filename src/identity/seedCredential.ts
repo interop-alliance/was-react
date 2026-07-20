@@ -58,7 +58,9 @@ function seedContext({ credentialType, vocabBase }: SeedCredentialConfig): {
     '@protected': true,
     [credentialType]: `${vocabBase}${credentialType}`,
     seed: `${vocabBase}seed`,
-    origin: `${vocabBase}origin`
+    origin: `${vocabBase}origin`,
+    name: 'https://schema.org/name',
+    description: 'https://schema.org/description'
   }
 }
 
@@ -83,6 +85,8 @@ export function base64urlToBytes(text: string): Uint8Array {
  * @param options {object}
  * @param options.seed {Uint8Array}   the 32-byte master seed
  * @param options.origin {string}     this app's web origin (anti-phishing bind)
+ * @param options.appName {string}    human-readable app name, shown by the
+ *   wallet on the credential (`name`/`description`)
  * @param options.config {SeedCredentialConfig}   credential type + vocab
  * @param options.documentLoader {DocumentLoader}
  * @returns {Promise<IVerifiableCredential>}
@@ -90,11 +94,13 @@ export function base64urlToBytes(text: string): Uint8Array {
 export async function issueSeedCredential({
   seed,
   origin,
+  appName,
   config,
   documentLoader
 }: {
   seed: Uint8Array
   origin: string
+  appName: string
   config: SeedCredentialConfig
   documentLoader: DocumentLoader
 }): Promise<IVerifiableCredential> {
@@ -106,6 +112,8 @@ export async function issueSeedCredential({
     '@context': [VC_1_CONTEXT_URL, seedContext(config)],
     id: `urn:uuid:${crypto.randomUUID()}`,
     type: ['VerifiableCredential', config.credentialType],
+    name: `${appName} app key`,
+    description: `The ${appName} app keeps this key in your wallet so it can open your encrypted data on this and other devices.`,
     issuer: controllerDid,
     credentialSubject: {
       id: controllerDid,

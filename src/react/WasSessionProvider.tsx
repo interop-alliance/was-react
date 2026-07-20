@@ -46,9 +46,12 @@ export function WasSessionProvider({
   // `ProtectedRoute` still boots), and tear the live session down on unmount so
   // an abandoned provider never leaves the expiry-watch interval and the
   // replication loop firing against a store no one is reading (reliably hit by
-  // React StrictMode dev remounts and by tests). `destroy()` returns the store
-  // to `boot` with both persisted seeds intact, so a StrictMode remount's
-  // `boot()` re-opens the same session (or fresh local).
+  // React dev-mode remounts and by tests). `destroy()` returns the store to
+  // `boot` with both persisted seeds intact, so a remount's `boot()` re-opens
+  // the same session (or fresh local). boot and destroy are serialized inside
+  // the store, so the dev-mode boot -> destroy -> boot double-invocation can
+  // never overlap open/hydrate/sync with teardown (which otherwise could leave
+  // the app on a closed database handle or an empty-looking hydrate).
   useEffect(() => {
     void store.getState().boot()
     return () => {

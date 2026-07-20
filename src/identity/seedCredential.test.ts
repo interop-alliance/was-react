@@ -22,6 +22,7 @@ import { createDocumentLoader } from './documentLoader.js'
 import { deriveIdentity } from './agents.js'
 
 const ORIGIN = 'http://localhost:5173'
+const APP_NAME = 'Test App'
 const CONFIG: SeedCredentialConfig = {
   credentialType: 'TestAppKey',
   vocabBase: 'urn:test-app:vocab#'
@@ -58,6 +59,7 @@ describe('issueSeedCredential', () => {
     const credential = await issueSeedCredential({
       seed,
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })
@@ -75,10 +77,34 @@ describe('issueSeedCredential', () => {
     expect(credential.proof).toBeDefined()
   })
 
+  it('carries a wallet-facing name and description', async () => {
+    const credential = await issueSeedCredential({
+      seed: randomSeed(),
+      origin: ORIGIN,
+      appName: APP_NAME,
+      config: CONFIG,
+      documentLoader
+    })
+    const withCopy = credential as unknown as {
+      name: string
+      description: string
+    }
+    expect(withCopy.name).toBe(`${APP_NAME} app key`)
+    expect(withCopy.description).toContain(APP_NAME)
+    expect(withCopy.description.length).toBeGreaterThan(0)
+    const context = (credential['@context'] as unknown[])[1] as Record<
+      string,
+      unknown
+    >
+    expect(context.name).toBe('https://schema.org/name')
+    expect(context.description).toBe('https://schema.org/description')
+  })
+
   it('issues a cryptographically verifiable credential', async () => {
     const credential = await issueSeedCredential({
       seed: randomSeed(),
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })
@@ -95,6 +121,7 @@ describe('issueSeedCredential', () => {
       issueSeedCredential({
         seed: new Uint8Array(16),
         origin: ORIGIN,
+        appName: APP_NAME,
         config: CONFIG,
         documentLoader
       })
@@ -109,6 +136,7 @@ describe('parseSeedCredential', () => {
     const credential = await issueSeedCredential({
       seed,
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })
@@ -125,6 +153,7 @@ describe('parseSeedCredential', () => {
     const credential = await issueSeedCredential({
       seed: randomSeed(),
       origin: 'https://evil.example',
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })
@@ -137,6 +166,7 @@ describe('parseSeedCredential', () => {
     const credential = await issueSeedCredential({
       seed: randomSeed(),
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })
@@ -157,6 +187,7 @@ describe('parseSeedCredential', () => {
     const credential = await issueSeedCredential({
       seed: randomSeed(),
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })
@@ -193,6 +224,7 @@ describe('parseSeedCredential', () => {
     const credential = await issueSeedCredential({
       seed: randomSeed(),
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })
@@ -219,6 +251,7 @@ describe('findSeedCredential / wrapCredentialForStore', () => {
     const credential = await issueSeedCredential({
       seed: randomSeed(),
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })

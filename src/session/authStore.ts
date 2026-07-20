@@ -221,8 +221,10 @@ export interface AuthState {
    * Tears down the live replica (expiry watch, controller, local store) WITHOUT
    * wiping the persisted session record, and returns to `boot` so a fresh
    * `boot()` can re-open it. Called from the provider's unmount cleanup so an
-   * unmount (or a React StrictMode dev remount) never orphans the replication
-   * loop or the expiry-watch interval.
+   * unmount (or a React dev-mode remount) never orphans the replication loop or
+   * the expiry-watch interval. Serialized with `boot` so a destroy fired while a
+   * boot is still in flight tears down only once that boot has fully settled,
+   * and a boot queued after it re-opens cleanly.
    */
   destroy: () => Promise<void>
 }
@@ -311,6 +313,30 @@ export function createAuthStore({
   // trips first). Awaited before teardown so a logout racing the bootstrap
   // cannot stop the controller before it has finished starting.
   let pendingSync: Promise<unknown> | null = null
+
+  // Serializes the boot/destroy lifecycle so their multi-await bring-up and
+  // teardown never overlap. A fast unmount/remount of the session provider
+  // (React dev-mode double effects) fires boot -> destroy -> boot in quick
+  // succession; run unserialized, the first boot's continuations (open,
+  // hydrate, start sync) race the destroy's teardown -- installing a
+  // closed/duplicate replica as the process-wide holder, hydrating against a
+  // torn-down store, or leaking an interval/controller behind the losing boot.
+  // Chaining every boot/destroy through this promise makes each run to
+  // completion before the next begins: destroy always tears down a fully-open
+  // session, and a queued boot re-opens cleanly on top of it. Neither routine
+  // awaits user interaction (boot starts replication in the background, never
+  // blocking on it), so the chain cannot deadlock. Login and the other
+  // user-driven transitions stay off this chain -- they are guarded by their own
+  // flags and never run as part of the mount/unmount race.
+  let lifecycle: Promise<void> = Promise.resolve()
+  function serializeLifecycle(task: () => Promise<void>): Promise<void> {
+    const run = lifecycle.then(task, task)
+    lifecycle = run.then(
+      () => {},
+      () => {}
+    )
+    return run
+  }
 
   /**
    * Stops the near-expiry watch (logout / re-grant).
@@ -620,10 +646,12 @@ export function createAuthStore({
    * collection empty -- in which case the anonymous replica is simply left
    * intact, exactly as an `adopt: 'leave'` login leaves it.
    *
-   * Reads through a FRESH handle on the anonymous database (re-derived from
-   * the persisted anonymous seed), not the process-wide holder: a StrictMode
-   * double-boot can leave the holder as a closed duplicate (`closeDuplicates`),
-   * and this read must not be able to abort the connect.
+   * Reads through a FRESH handle on the anonymous database (re-derived from the
+   * persisted anonymous seed), not the process-wide holder. Adoption runs from
+   * `login` / `connectWithGrants`, which are OFF the serialized boot/destroy
+   * lifecycle chain, so a provider unmount firing `destroy` mid-login could
+   * close the holder out from under this read; re-deriving from the seed keeps
+   * the collect independent of the holder so it can never abort the connect.
    *
    * @returns {Promise<AdoptSource | null>}
    */
@@ -678,18 +706,8 @@ export function createAuthStore({
 
   // Declared last so `prefer-const` is satisfied; the lifecycle closures above
   // only dereference `store` at call time, by which point it is assigned.
-  const store: WasAuthStore = createStore<AuthState>()((set, get) => ({
-    status: 'boot',
-    onboarding,
-    authenticating: false,
-    phase: null,
-    error: null,
-    controllerDid: null,
-    expires: null,
-    accessExpired: false,
-    reconnecting: false,
-
-    boot: async () => {
+  const store: WasAuthStore = createStore<AuthState>()((set, get) => {
+    const bootImpl = async (): Promise<void> => {
       if (get().status !== 'boot') {
         return
       }
@@ -746,173 +764,14 @@ export function createAuthStore({
           }
         }
       }
-    },
+    }
 
-    login: async ({ adopt = 'merge' } = {}) => {
-      if (get().authenticating || get().status === 'connected') {
-        return null
-      }
-      set({ authenticating: true, error: null, phase: 'probing' })
-      try {
-        const outcome = await loginWithWallet({
-          config: loginConfig,
-          onPhase: phase => set({ phase })
-        })
-        // The wallet succeeded: collect the anonymous replica's payloads (merge
-        // only), then -- only now -- tear it down (a cancel above leaves
-        // `local` intact). The anonymous seed and database are deleted only
-        // after the activation lands, so a failure below still falls back to an
-        // intact `local`.
-        const source = adopt === 'merge' ? await collectAdoptable() : null
-        await deactivateStore()
-        await activateConnected({
-          seed: outcome.seed,
-          identity: outcome.identity,
-          parsed: outcome.parsed,
-          grants: outcome.grants,
-          expires: outcome.expires,
-          ...(source && { adopt: source })
-        })
-        if (source) {
-          await discardAnonReplica(source.controllerDid)
-        }
-        set({
-          status: 'connected',
-          authenticating: false,
-          controllerDid: outcome.identity.controllerDid,
-          expires: outcome.expires,
-          phase: null,
-          error: null,
-          accessExpired: false
-        })
-        return { firstRun: outcome.firstRun }
-      } catch (err) {
-        // A cancel is not a failure: clear the in-flight flags without leaving a
-        // scary error, and resolve with `null` so the caller can distinguish it
-        // from a connected outcome. `local` stays intact.
-        if (err instanceof LoginCancelledError) {
-          set({ authenticating: false, phase: null, error: null })
-          return null
-        }
-        // A genuine failure: record the message so the UI state still reflects
-        // it, then rethrow so the caller's promise rejects.
-        const message =
-          err instanceof Error
-            ? `Login failed: ${err.message}`
-            : 'Login failed.'
-        set({ authenticating: false, phase: null, error: message })
-        throw err
-      }
-    },
-
-    connectWithGrants: async ({ seed, grants, adopt = 'merge' }) => {
-      const identity = await initAppSession({ seed })
-      const parsed = parseGrants(grants)
-      const expires =
-        earliestExpiry(grants) ??
-        new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
-      const source = adopt === 'merge' ? await collectAdoptable() : null
-      await deactivateStore()
-      await activateConnected({
-        seed,
-        identity,
-        parsed,
-        grants,
-        expires,
-        ...(source && { adopt: source })
-      })
-      if (source) {
-        await discardAnonReplica(source.controllerDid)
-      }
-      set({
-        status: 'connected',
-        controllerDid: identity.controllerDid,
-        expires,
-        error: null,
-        accessExpired: false
-      })
-    },
-
-    reconnect: async () => {
-      const { reconnecting, status } = get()
-      if (reconnecting || status !== 'reconnect') {
-        return
-      }
-      set({ reconnecting: true, error: null })
-      try {
-        // The seed survives grant expiry; only the grants need renewing. Read it
-        // directly (not via `restoreAppSession`, which WIPES an expired record
-        // -- seed included -- exactly in the case reconnect exists for). A
-        // missing seed means the session is unrecoverable in place.
-        const seed = await sessionStore.loadSeed()
-        if (!seed) {
-          await get().logout()
-          return
-        }
-        const identity = await initAppSession({ seed })
-        const checked = await requestGrants({ identity, config: loginConfig })
-        await stopController()
-        await persistAndStartSync({
-          seed,
-          identity,
-          parsed: checked.parsed,
-          grants: checked.grants,
-          expires: checked.expires
-        })
-        set({
-          status: 'connected',
-          accessExpired: false,
-          expires: checked.expires,
-          reconnecting: false
-        })
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Reconnect failed.'
-        set({ reconnecting: false, error: message })
-      }
-    },
-
-    logout: async ({ wipe = false } = {}) => {
-      await resetToFreshLocal({ deleteDb: wipe })
-      await clearAppSession({ store: sessionStore })
-      // `resetToFreshLocal` already landed `local` (fresh anon replica); clear
-      // the remaining transients.
-      set({ phase: null, reconnecting: false })
-    },
-
-    clearLocalData: async () => {
-      await resetToFreshLocal({ deleteDb: true, discardAnonSeed: true })
-      set({ phase: null, reconnecting: false })
-    },
-
-    hasLocalData: async () => {
-      if (get().status !== 'local' || !hasStore()) {
-        return false
-      }
-      try {
-        for (const { key } of config.collections) {
-          if ((await requireStore().countEntities(key)) > 0) {
-            return true
-          }
-        }
-      } catch {
-        // The holder can be a closed duplicate after a StrictMode double-boot;
-        // false only skips the adoption prompt, and login's `'merge'` default
-        // still collects (through a fresh handle) whatever exists.
-        return false
-      }
-      return false
-    },
-
-    notifyAccessExpired: () => {
-      if (get().status === 'connected') {
-        set({ status: 'reconnect', accessExpired: true })
-      }
-    },
-
-    destroy: async () => {
+    const destroyImpl = async (): Promise<void> => {
       await deactivateStore()
       // Back to `boot` (not `local`) and both persisted seeds left intact: a
-      // StrictMode remount's `boot()` re-opens the same session (or local).
+      // remount's `boot()` re-opens the same session (or local). Serialized with
+      // `boot` (see `serializeLifecycle`), so this teardown always runs against a
+      // fully-open session, never an in-flight one.
       set({
         status: 'boot',
         authenticating: false,
@@ -924,7 +783,187 @@ export function createAuthStore({
         reconnecting: false
       })
     }
-  }))
+
+    return {
+      status: 'boot',
+      onboarding,
+      authenticating: false,
+      phase: null,
+      error: null,
+      controllerDid: null,
+      expires: null,
+      accessExpired: false,
+      reconnecting: false,
+
+      boot: () => serializeLifecycle(bootImpl),
+
+      login: async ({ adopt = 'merge' } = {}) => {
+        if (get().authenticating || get().status === 'connected') {
+          return null
+        }
+        set({ authenticating: true, error: null, phase: 'probing' })
+        try {
+          const outcome = await loginWithWallet({
+            config: loginConfig,
+            onPhase: phase => set({ phase })
+          })
+          // The wallet succeeded: collect the anonymous replica's payloads (merge
+          // only), then -- only now -- tear it down (a cancel above leaves
+          // `local` intact). The anonymous seed and database are deleted only
+          // after the activation lands, so a failure below still falls back to an
+          // intact `local`.
+          const source = adopt === 'merge' ? await collectAdoptable() : null
+          await deactivateStore()
+          await activateConnected({
+            seed: outcome.seed,
+            identity: outcome.identity,
+            parsed: outcome.parsed,
+            grants: outcome.grants,
+            expires: outcome.expires,
+            ...(source && { adopt: source })
+          })
+          if (source) {
+            await discardAnonReplica(source.controllerDid)
+          }
+          set({
+            status: 'connected',
+            authenticating: false,
+            controllerDid: outcome.identity.controllerDid,
+            expires: outcome.expires,
+            phase: null,
+            error: null,
+            accessExpired: false
+          })
+          return { firstRun: outcome.firstRun }
+        } catch (err) {
+          // A cancel is not a failure: clear the in-flight flags without leaving a
+          // scary error, and resolve with `null` so the caller can distinguish it
+          // from a connected outcome. `local` stays intact.
+          if (err instanceof LoginCancelledError) {
+            set({ authenticating: false, phase: null, error: null })
+            return null
+          }
+          // A genuine failure: record the message so the UI state still reflects
+          // it, then rethrow so the caller's promise rejects.
+          const message =
+            err instanceof Error
+              ? `Login failed: ${err.message}`
+              : 'Login failed.'
+          set({ authenticating: false, phase: null, error: message })
+          throw err
+        }
+      },
+
+      connectWithGrants: async ({ seed, grants, adopt = 'merge' }) => {
+        const identity = await initAppSession({ seed })
+        const parsed = parseGrants(grants)
+        const expires =
+          earliestExpiry(grants) ??
+          new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
+        const source = adopt === 'merge' ? await collectAdoptable() : null
+        await deactivateStore()
+        await activateConnected({
+          seed,
+          identity,
+          parsed,
+          grants,
+          expires,
+          ...(source && { adopt: source })
+        })
+        if (source) {
+          await discardAnonReplica(source.controllerDid)
+        }
+        set({
+          status: 'connected',
+          controllerDid: identity.controllerDid,
+          expires,
+          error: null,
+          accessExpired: false
+        })
+      },
+
+      reconnect: async () => {
+        const { reconnecting, status } = get()
+        if (reconnecting || status !== 'reconnect') {
+          return
+        }
+        set({ reconnecting: true, error: null })
+        try {
+          // The seed survives grant expiry; only the grants need renewing. Read it
+          // directly (not via `restoreAppSession`, which WIPES an expired record
+          // -- seed included -- exactly in the case reconnect exists for). A
+          // missing seed means the session is unrecoverable in place.
+          const seed = await sessionStore.loadSeed()
+          if (!seed) {
+            await get().logout()
+            return
+          }
+          const identity = await initAppSession({ seed })
+          const checked = await requestGrants({ identity, config: loginConfig })
+          await stopController()
+          await persistAndStartSync({
+            seed,
+            identity,
+            parsed: checked.parsed,
+            grants: checked.grants,
+            expires: checked.expires
+          })
+          set({
+            status: 'connected',
+            accessExpired: false,
+            expires: checked.expires,
+            reconnecting: false
+          })
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : 'Reconnect failed.'
+          set({ reconnecting: false, error: message })
+        }
+      },
+
+      logout: async ({ wipe = false } = {}) => {
+        await resetToFreshLocal({ deleteDb: wipe })
+        await clearAppSession({ store: sessionStore })
+        // `resetToFreshLocal` already landed `local` (fresh anon replica); clear
+        // the remaining transients.
+        set({ phase: null, reconnecting: false })
+      },
+
+      clearLocalData: async () => {
+        await resetToFreshLocal({ deleteDb: true, discardAnonSeed: true })
+        set({ phase: null, reconnecting: false })
+      },
+
+      hasLocalData: async () => {
+        if (get().status !== 'local' || !hasStore()) {
+          return false
+        }
+        try {
+          for (const { key } of config.collections) {
+            if ((await requireStore().countEntities(key)) > 0) {
+              return true
+            }
+          }
+        } catch {
+          // A defensive guard: this probe runs off the serialized boot/destroy
+          // lifecycle chain (the login page calls it while in `local`), so a
+          // concurrent provider unmount could close the holder mid-read. `false`
+          // only skips the adoption prompt, and login's `'merge'` default still
+          // collects (through a fresh handle) whatever exists.
+          return false
+        }
+        return false
+      },
+
+      notifyAccessExpired: () => {
+        if (get().status === 'connected') {
+          set({ status: 'reconnect', accessExpired: true })
+        }
+      },
+
+      destroy: () => serializeLifecycle(destroyImpl)
+    }
+  })
 
   return store
 }

@@ -64,27 +64,27 @@ export function deriveSyncRollup(statuses: SyncStatus[]): {
   if (statuses.length === 0) {
     return {
       state: 'offline',
-      label: 'Offline',
-      title: 'Local-only mode -- no storage sync running'
+      label: 'Local only',
+      title: 'Local-only mode -- your data stays on this device'
     }
   }
   if (statuses.includes('error')) {
     return {
       state: 'error',
       label: 'Sync error',
-      title: 'A collection failed to sync; retrying'
+      title: 'Connected to storage -- a collection failed to sync; retrying'
     }
   }
   if (statuses.includes('syncing') || statuses.includes('idle')) {
     return {
       state: 'syncing',
       label: 'Syncing',
-      title: 'Replicating with your wallet storage'
+      title: 'Connected to storage -- replicating your collections'
     }
   }
   return {
     state: 'synced',
     label: 'Synced',
-    title: 'All collections replicated'
+    title: 'Connected to storage -- all collections replicated'
   }
 }
