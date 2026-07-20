@@ -30,6 +30,7 @@ import {
 } from './verifyResponse.js'
 
 const ORIGIN = 'http://localhost:5173'
+const APP_NAME = 'Test App'
 const SERVER_URL = 'http://localhost:3999'
 const SPACE_URL = `${SERVER_URL}/space/e2e-space`
 const CONFIG: SeedCredentialConfig = {
@@ -153,6 +154,7 @@ describe('verifyLoginPresentation', () => {
     const credential = await issueSeedCredential({
       seed: appSeed,
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })
@@ -246,6 +248,7 @@ describe('verifyLoginPresentation', () => {
     const credential = await issueSeedCredential({
       seed: appSeed,
       origin: ORIGIN,
+      appName: APP_NAME,
       config: CONFIG,
       documentLoader
     })

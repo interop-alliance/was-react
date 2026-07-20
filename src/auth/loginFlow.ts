@@ -224,6 +224,7 @@ export async function loginWithWallet({
     const issued = await issueSeedCredential({
       seed,
       origin: config.appOrigin,
+      appName: config.appName,
       config: config.credential,
       documentLoader: config.documentLoader
     })

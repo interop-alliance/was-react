@@ -39,4 +39,11 @@ describe('deriveSyncRollup', () => {
       expect(rollup.title.length).toBeGreaterThan(0)
     }
   })
+
+  it('labels each rollup state with its human copy', () => {
+    expect(deriveSyncRollup([]).label).toBe('Local only')
+    expect(deriveSyncRollup(['error']).label).toBe('Sync error')
+    expect(deriveSyncRollup(['syncing']).label).toBe('Syncing')
+    expect(deriveSyncRollup(['synced']).label).toBe('Synced')
+  })
 })

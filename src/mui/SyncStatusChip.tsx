@@ -33,7 +33,7 @@ export function SyncStatusChip() {
         size="small"
         variant="outlined"
         data-testid="sync-status-chip"
-        data-sync-state={label.toLowerCase().replace(/\s+/g, '-')}
+        data-sync-state={state}
         sx={{ color: 'inherit', borderColor: 'currentColor' }}
       />
     </Tooltip>
