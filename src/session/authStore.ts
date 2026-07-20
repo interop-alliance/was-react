@@ -264,11 +264,7 @@ export function createAuthStore({
   // no session record, in its own IndexedDB so it never collides with the
   // wallet session or a connected replica.
   const anonStore = createSeedStore({ dbName: `${dbName}-anon` })
-  const documentLoader = createDocumentLoader(
-    config.wasServerUrl !== undefined
-      ? { wasServerUrl: config.wasServerUrl }
-      : {}
-  )
+  const documentLoader = createDocumentLoader()
 
   // The login flow consumes only the WAS collection ids + visibility; this
   // config layer owns the `{ key, id }` registry.
