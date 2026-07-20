@@ -2,42 +2,70 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * buildGrantsVpr tests: VPR #2 emits exactly one collection-scoped capability
- * query per requested collection, delegated to the controller DID, and adds no
- * extra whole-space query.
+ * buildAppConnectVpr tests: the one-popup App Connect VPR carries a
+ * DIDAuthentication query plus a single `AppConnectQuery` naming the app and the
+ * seed-credential, with exactly one collection-scoped capability query per
+ * requested collection -- and no `controller` or `reason` on those entries (the
+ * wallet fills the controller; the consent screen supersedes reasons).
  */
 import { describe, expect, it } from 'vitest'
-import { buildGrantsVpr, RW_ACTIONS } from './loginRequest.js'
+import { buildAppConnectVpr, RW_ACTIONS } from './loginRequest.js'
 import type {
-  ICapabilityQueryDetail,
-  IVPRDetails,
-  IZcapQuery
+  IAppConnectCapabilityQuery,
+  IAppConnectQuery,
+  IVPRDetails
 } from './walletRequestTypes.js'
 
 const BASE = {
   challenge: 'challenge-1',
   domain: 'https://app.example',
-  controllerDid: 'did:key:zApp',
-  appName: 'Example'
+  appName: 'Example',
+  credential: {
+    credentialType: 'ExampleAppKey',
+    vocabBase: 'urn:example:vocab#'
+  }
 }
 
-function capabilityQueriesOf(vpr: IVPRDetails): ICapabilityQueryDetail[] {
+function appConnectQueryOf(vpr: IVPRDetails): IAppConnectQuery {
   const queries = Array.isArray(vpr.query) ? vpr.query : [vpr.query]
-  const zcapQuery = queries.find(
-    (entry): entry is IZcapQuery =>
-      entry.type === 'AuthorizationCapabilityQuery'
+  const query = queries.find(
+    (entry): entry is IAppConnectQuery => entry.type === 'AppConnectQuery'
   )
-  if (zcapQuery === undefined) {
-    throw new Error('No AuthorizationCapabilityQuery in the VPR.')
+  if (query === undefined) {
+    throw new Error('No AppConnectQuery in the VPR.')
   }
-  const { capabilityQuery } = zcapQuery
+  return query
+}
+
+function capabilityQueriesOf(vpr: IVPRDetails): IAppConnectCapabilityQuery[] {
+  const { capabilityQuery } = appConnectQueryOf(vpr)
   return Array.isArray(capabilityQuery) ? capabilityQuery : [capabilityQuery]
 }
 
-describe('buildGrantsVpr', () => {
-  it('emits exactly one collection-scoped query per collection and no more', () => {
+describe('buildAppConnectVpr', () => {
+  it('includes a DIDAuthentication query alongside the AppConnectQuery', () => {
+    const vpr = buildAppConnectVpr({ ...BASE, collections: [{ id: 'notes' }] })
+    const queries = Array.isArray(vpr.query) ? vpr.query : [vpr.query]
+    expect(queries.map(entry => entry.type)).toEqual([
+      'DIDAuthentication',
+      'AppConnectQuery'
+    ])
+    expect(vpr.challenge).toBe(BASE.challenge)
+    expect(vpr.domain).toBe(BASE.domain)
+  })
+
+  it('carries the app name and seed-credential naming in the app block', () => {
+    const vpr = buildAppConnectVpr({ ...BASE, collections: [{ id: 'notes' }] })
+    expect(appConnectQueryOf(vpr).app).toEqual({
+      name: BASE.appName,
+      credentialType: BASE.credential.credentialType,
+      vocabBase: BASE.credential.vocabBase
+    })
+  })
+
+  it('emits exactly one collection-scoped query per collection, no controller or reason', () => {
     const collections = [{ id: 'notes' }, { id: 'projects' }]
-    const vpr = buildGrantsVpr({ ...BASE, collections })
+    const vpr = buildAppConnectVpr({ ...BASE, collections })
     const capabilityQuery = capabilityQueriesOf(vpr)
 
     expect(capabilityQuery).toHaveLength(collections.length)
@@ -49,8 +77,10 @@ describe('buildGrantsVpr', () => {
         type: 'urn:was:collection',
         name: entry.referenceId
       })
-      expect(entry.controller).toBe(BASE.controllerDid)
       expect(entry.allowedAction).toEqual(RW_ACTIONS)
+      // The wallet fills the controller; the consent screen supersedes reasons.
+      expect('controller' in entry).toBe(false)
+      expect('reason' in entry).toBe(false)
     }
   })
 
@@ -58,7 +88,7 @@ describe('buildGrantsVpr', () => {
     'emits urn:was:public-collection for visibility: public and keeps ' +
       'private collections on urn:was:collection',
     () => {
-      const vpr = buildGrantsVpr({
+      const vpr = buildAppConnectVpr({
         ...BASE,
         collections: [
           { id: 'microblog-posts', visibility: 'public' },
@@ -82,7 +112,7 @@ describe('buildGrantsVpr', () => {
   )
 
   it('requests no whole-space (urn:was:space) query', () => {
-    const vpr = buildGrantsVpr({ ...BASE, collections: [{ id: 'notes' }] })
+    const vpr = buildAppConnectVpr({ ...BASE, collections: [{ id: 'notes' }] })
     const capabilityQuery = capabilityQueriesOf(vpr)
 
     const hasSpaceQuery = capabilityQuery.some(
@@ -94,7 +124,7 @@ describe('buildGrantsVpr', () => {
   })
 
   it('honors a custom action set', () => {
-    const vpr = buildGrantsVpr({
+    const vpr = buildAppConnectVpr({
       ...BASE,
       collections: [{ id: 'notes' }],
       actions: ['GET', 'HEAD']
@@ -102,5 +132,10 @@ describe('buildGrantsVpr', () => {
     const capabilityQuery = capabilityQueriesOf(vpr)
     expect(capabilityQuery).toHaveLength(1)
     expect(capabilityQuery[0]?.allowedAction).toEqual(['GET', 'HEAD'])
+  })
+
+  it('emits an empty capabilityQuery when no collections are requested', () => {
+    const vpr = buildAppConnectVpr({ ...BASE, collections: [] })
+    expect(capabilityQueriesOf(vpr)).toEqual([])
   })
 })

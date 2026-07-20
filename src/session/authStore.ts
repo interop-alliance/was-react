@@ -801,7 +801,7 @@ export function createAuthStore({
         if (get().authenticating || get().status === 'connected') {
           return null
         }
-        set({ authenticating: true, error: null, phase: 'probing' })
+        set({ authenticating: true, error: null, phase: 'connecting' })
         try {
           const outcome = await loginWithWallet({
             config: loginConfig,

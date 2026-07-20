@@ -2,29 +2,34 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * RP-side VPR construction for Login With Wallet. Two requests:
+ * RP-side VPR construction for Login With Wallet: the one-popup App Connect
+ * request.
  *
- * 1. The seed probe: DIDAuthentication + QueryByExample for the app-key
- *    credential. An empty result is the first-run signal; a hit recovers the
- *    master seed on a new device.
- * 2. The grants request: DIDAuthentication + AuthorizationCapabilityQuery with
- *    one capabilityQuery per collection (descriptor-object targets, which the
- *    wallet resolves against the user's one Space and auto-provisions). Only
- *    collection-scoped capabilities are requested -- no whole-space grant.
- *    A `visibility: 'public'` collection is requested with the distinct
- *    descriptor type `urn:was:public-collection` (the wallet provisions it
- *    plaintext with a collection-level public-read policy and renders a
- *    world-readable consent warning); wallets that predate the type render it
- *    UNSATISFIABLE, which is the intended fail-closed behavior -- an older
- *    wallet must not silently provision a private collection the app believes
- *    is public.
+ * A single CHAPI `get` carries DIDAuthentication plus an `AppConnectQuery` that
+ * names the app (for the wallet's consent screen), the seed-credential naming
+ * the wallet needs to MATCH an existing app key or MINT a fresh one, and one
+ * collection-scoped capabilityQuery per requested collection. The wallet
+ * responds -- in the same round -- with the app-key credential and the
+ * delegated zcaps embedded in the response VP, so first-run and returning are a
+ * single request/response with no store popup and no separate grants popup.
+ *
+ * Only collection-scoped capabilities are requested (no whole-space grant). A
+ * `visibility: 'public'` collection is requested with the distinct descriptor
+ * type `urn:was:public-collection` (the wallet provisions it plaintext with a
+ * collection-level public-read policy and renders a world-readable consent
+ * warning); wallets that predate the type render it UNSATISFIABLE, which is the
+ * intended fail-closed behavior -- an older wallet must not silently provision a
+ * private collection the app believes is public. The App Connect query as a
+ * whole is likewise unsatisfiable on a wallet that predates it, so an old wallet
+ * fails closed rather than degrading into a partial generic flow.
  *
  * `domain` must host-match the CHAPI requesting origin or the wallet refuses
  * to sign; `challenge` must be fresh per request (echoed into the DIDAuth
  * proof and checked in verifyResponse).
  */
+import type { SeedCredentialConfig } from '../identity/seedCredential.js'
 import type {
-  ICapabilityQueryDetail,
+  IAppConnectCapabilityQuery,
   IVPRDetails
 } from './walletRequestTypes.js'
 
@@ -58,83 +63,49 @@ export function newChallenge(): string {
 }
 
 /**
- * VPR #1: DIDAuthentication + QueryByExample for the app-key credential.
+ * The one-popup App Connect VPR: DIDAuthentication + a single `AppConnectQuery`.
+ *
+ * The `app` block names the app (for the wallet's consent screen) and carries
+ * the seed-credential naming (`credentialType`/`vocabBase`) the wallet needs to
+ * MATCH an existing app key or MINT a fresh one. `capabilityQuery` holds one
+ * collection-scoped grant request per app collection -- the existing capability
+ * shape MINUS `controller` (the wallet fills it with the app-key subject DID)
+ * and MINUS `reason` (the App Connect consent screen supersedes per-grant
+ * reasons). A `visibility: 'public'` collection uses the
+ * `urn:was:public-collection` descriptor type; everything else uses
+ * `urn:was:collection`.
  *
  * @param options {object}
  * @param options.challenge {string}
  * @param options.domain {string}
- * @param options.credentialType {string}   the app's seed-credential type name
- * @param options.appName {string}   human-readable app name for the reason line
- * @returns {IVPRDetails}
- */
-export function buildSeedProbeVpr({
-  challenge,
-  domain,
-  credentialType,
-  appName
-}: {
-  challenge: string
-  domain: string
-  credentialType: string
-  appName: string
-}): IVPRDetails {
-  return {
-    query: [
-      {
-        type: 'DIDAuthentication',
-        acceptedMethods: [{ method: 'key' }]
-      },
-      {
-        type: 'QueryByExample',
-        credentialQuery: {
-          reason: `Recover the ${appName} app key stored in your wallet.`,
-          example: { type: credentialType }
-        }
-      }
-    ],
-    challenge,
-    domain
-  }
-}
-
-/**
- * VPR #2: DIDAuthentication + AuthorizationCapabilityQuery -- one read/write
- * capabilityQuery per app collection (delegated to `controllerDid`). Only
- * collection-scoped capabilities are requested. A `visibility: 'public'`
- * collection uses the `urn:was:public-collection` descriptor type; everything
- * else uses `urn:was:collection`.
- *
- * @param options {object}
- * @param options.challenge {string}
- * @param options.domain {string}
- * @param options.controllerDid {string}
+ * @param options.appName {string}   human-readable app name for the consent
+ *   screen
+ * @param options.credential {SeedCredentialConfig}   the app's seed-credential
+ *   type name + vocabulary namespace (match / mint)
  * @param options.collections {GrantRequestCollection[]}   the collections to
  *   request (WAS collection id + visibility)
- * @param options.appName {string}   human-readable app name for the reason line
  * @param [options.actions] {string[]}   the RW action set (defaults to
  *   `RW_ACTIONS`)
  * @returns {IVPRDetails}
  */
-export function buildGrantsVpr({
+export function buildAppConnectVpr({
   challenge,
   domain,
-  controllerDid,
-  collections,
   appName,
+  credential,
+  collections,
   actions = RW_ACTIONS
 }: {
   challenge: string
   domain: string
-  controllerDid: string
-  collections: GrantRequestCollection[]
   appName: string
+  credential: SeedCredentialConfig
+  collections: GrantRequestCollection[]
   actions?: string[]
 }): IVPRDetails {
-  const capabilityQuery: ICapabilityQueryDetail[] = collections.map(
+  const capabilityQuery: IAppConnectCapabilityQuery[] = collections.map(
     ({ id, visibility }) => ({
       referenceId: id,
-      reason: `Store your ${appName} data in the "${id}" collection.`,
-      controller: controllerDid,
       allowedAction: actions,
       invocationTarget: {
         type:
@@ -152,7 +123,12 @@ export function buildGrantsVpr({
         acceptedMethods: [{ method: 'key' }]
       },
       {
-        type: 'AuthorizationCapabilityQuery',
+        type: 'AppConnectQuery',
+        app: {
+          name: appName,
+          credentialType: credential.credentialType,
+          vocabBase: credential.vocabBase
+        },
         capabilityQuery
       }
     ],

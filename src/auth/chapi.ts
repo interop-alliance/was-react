@@ -4,7 +4,9 @@
 /// <reference types="vite/client" />
 /**
  * The CHAPI transport: credential-handler-polyfill loading (authn.io mediator)
- * plus thin `get()` / `store()` wrappers around `navigator.credentials`.
+ * plus a thin `get()` wrapper around `navigator.credentials`. The one-popup App
+ * Connect login rides `get()` alone -- both the app key and the grants come back
+ * in a single response VP -- so there is no `store()` wrapper.
  *
  * E2E seam (non-production builds only): the real CHAPI channel needs the
  * mediator's cross-origin handshake, which a test harness cannot perform.
@@ -15,7 +17,7 @@
  * response into `window.__WAS_REACT_E2E_CHAPI_RESPONSES__[id]`. Responses use
  * the CHAPI WebCredential wire shape `{ dataType, data } | null`.
  */
-import { loadOnce, WebCredential } from 'credential-handler-polyfill'
+import { loadOnce } from 'credential-handler-polyfill'
 import type { IVerifiablePresentation } from '@interop/data-integrity-core'
 import type { IVPRDetails } from './walletRequestTypes.js'
 
@@ -128,36 +130,4 @@ export async function chapiGet({
     return null
   }
   return wire.data as IVerifiablePresentation
-}
-
-/**
- * Offers a VP (wrapping a credential) to the wallet via CHAPI
- * `credentials.store()`. Returns true when the wallet confirmed the store,
- * false when the user cancelled/dismissed.
- *
- * @param options {object}
- * @param options.presentation {IVerifiablePresentation}
- * @param [options.mediatorBase] {string}
- * @returns {Promise<boolean>}
- */
-export async function chapiStore({
-  presentation,
-  mediatorBase
-}: {
-  presentation: IVerifiablePresentation
-  mediatorBase?: string
-}): Promise<boolean> {
-  if (e2eBridgeActive()) {
-    const wire = await e2eRoundTrip('store', presentation)
-    return wire !== null && wire.data !== undefined && wire.data !== null
-  }
-  await loadChapi(mediatorBase !== undefined ? { mediatorBase } : {})
-  const credential = new WebCredential(
-    'VerifiablePresentation',
-    presentation as unknown as object
-  )
-  const result = (await navigator.credentials.store(
-    credential as unknown as Credential
-  )) as unknown as ChapiWireResponse | null
-  return result !== null && result !== undefined
 }

@@ -2,34 +2,41 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The Login-With-Wallet orchestration:
+ * The Login-With-Wallet orchestration: one-popup App Connect.
  *
- * - First run (the wallet holds no app key): generate a fresh 32-byte master
- *   seed, self-issue the credential, and BLOCK until the wallet confirms
- *   storing it (a dismissed store would silently break cross-device recovery),
- *   then request the storage grants.
- * - Returning (the wallet returns the credential): recover the seed, verify
- *   the credential's self-issue/origin/DID binding, then request grants for
- *   the same stable controller DID.
+ * A single CHAPI `get` carries the {@link buildAppConnectVpr} request. The
+ * wallet -- in the same round -- matches an existing app key or mints a fresh
+ * one (the first-run branch is wallet-internal now), then returns the app-key
+ * credential and the delegated zcaps embedded in one signed response VP. So
+ * there is no second store popup and no separate grants popup:
+ *
+ * - Returning: the wallet returns the credential; we recover the seed and
+ *   verify its self-issue/origin/DID binding.
+ * - First run: the wallet mints the seed, self-issues the same-shaped
+ *   credential, and marks `presentation.appConnect.firstRun`.
+ *
+ * A wallet that predates `AppConnectQuery` cannot satisfy it and returns no
+ * app-key credential; that surfaces as {@link WalletUnsupportedError} (fail
+ * closed, legibly), distinct from a user cancel (a null CHAPI response).
  *
  * Hot restore (seed + grants already persisted locally) never reaches this
  * module -- the caller's session restore short-circuits it.
  */
-import type { IZcap } from '@interop/data-integrity-core'
+import type {
+  IVerifiablePresentation,
+  IZcap
+} from '@interop/data-integrity-core'
 import type { DocumentLoader } from '../identity/documentLoader.js'
 import {
   findSeedCredential,
-  issueSeedCredential,
   parseSeedCredential,
-  wrapCredentialForStore,
   type SeedCredentialConfig
 } from '../identity/seedCredential.js'
 import { initAppSession } from '../identity/initAppSession.js'
 import type { IdentityAgents } from '../identity/agents.js'
-import { chapiGet, chapiStore } from './chapi.js'
+import { chapiGet } from './chapi.js'
 import {
-  buildGrantsVpr,
-  buildSeedProbeVpr,
+  buildAppConnectVpr,
   newChallenge,
   type GrantRequestCollection
 } from './loginRequest.js'
@@ -75,10 +82,11 @@ export interface LoginConfig {
 }
 
 /**
- * A user-facing progress phase, for the login page's status line.
+ * A user-facing progress phase, for the login page's status line. The one-popup
+ * App Connect flow has just two: `connecting` (building the request and awaiting
+ * the wallet) and `verifying` (checking the wallet's response).
  */
-export type LoginPhase =
-  'probing' | 'storing-key' | 'requesting-grants' | 'verifying'
+export type LoginPhase = 'connecting' | 'verifying'
 
 export interface LoginOutcome {
   seed: Uint8Array
@@ -106,8 +114,80 @@ export class LoginCancelledError extends Error {
 }
 
 /**
- * Requests storage grants for `identity` and validates them. Shared by the
- * login flow and the expired-access reconnect path.
+ * Thrown when the wallet answered but returned no app-key credential -- the
+ * fail-closed signal that the wallet predates `AppConnectQuery` (it rendered the
+ * query unsatisfiable). Distinct from a user cancel so the UI can prompt an
+ * update instead of showing a generic verification error.
+ */
+export class WalletUnsupportedError extends Error {
+  constructor() {
+    super(
+      'Your wallet does not support App Connect yet; update Freewallet to ' +
+        'log in.'
+    )
+    this.name = 'WalletUnsupportedError'
+  }
+}
+
+/**
+ * A nominal far-future expiry (ms) used when an app requests no collections (so
+ * there are no grants and thus no earliest-expiry to report).
+ */
+const NO_GRANTS_EXPIRY_MS = 100 * 365 * 24 * 60 * 60 * 1000
+
+/**
+ * Reads the wallet-provided `presentation.appConnect.firstRun` boolean. Anything
+ * other than boolean `true` (including an absent member -- a returning login) is
+ * treated as `false`.
+ */
+function appConnectFirstRun(presentation: IVerifiablePresentation): boolean {
+  const appConnect = (presentation as { appConnect?: { firstRun?: unknown } })
+    .appConnect
+  return appConnect?.firstRun === true
+}
+
+/**
+ * Structurally validates the grants embedded in the wallet response against the
+ * requested collections. When the app requested NO collections there is nothing
+ * to delegate: `checkGrants` (which rejects an empty grant set) is skipped and
+ * an empty grant set with a far-future expiry is returned instead.
+ *
+ * @param options {object}
+ * @param options.presentation {IVerifiablePresentation}
+ * @param options.controllerDid {string}   the app-key subject DID grants must
+ *   be controlled by
+ * @param options.collections {GrantRequestCollection[]}
+ * @returns {CheckedGrants}
+ */
+function checkGrantsForCollections({
+  presentation,
+  controllerDid,
+  collections
+}: {
+  presentation: IVerifiablePresentation
+  controllerDid: string
+  collections: GrantRequestCollection[]
+}): CheckedGrants {
+  const collectionIds = collections.map(collection => collection.id)
+  if (collectionIds.length === 0) {
+    return {
+      grants: [],
+      parsed: { serverUrl: '', spaceId: '', byCollectionId: {} },
+      expires: new Date(Date.now() + NO_GRANTS_EXPIRY_MS).toISOString()
+    }
+  }
+  return checkGrants({
+    grants: grantsOf(presentation),
+    controllerDid,
+    collections: collectionIds
+  })
+}
+
+/**
+ * Re-requests storage grants for `identity` over a fresh App Connect popup and
+ * validates them. The expired-access reconnect path: the seed already exists, so
+ * only the grants need renewing. The wallet matches the same app key and
+ * re-delegates; the returned credential/`appConnect` marker are ignored here.
  *
  * @param options {object}
  * @param options.identity {IdentityAgents}
@@ -124,14 +204,14 @@ export async function requestGrants({
   config: LoginConfig
   onPhase?: (phase: LoginPhase) => void
 }): Promise<CheckedGrants> {
-  onPhase?.('requesting-grants')
+  onPhase?.('connecting')
   const challenge = newChallenge()
-  const vpr = buildGrantsVpr({
+  const vpr = buildAppConnectVpr({
     challenge,
     domain: window.location.origin,
-    controllerDid: identity.controllerDid,
-    collections: config.collections,
-    appName: config.appName
+    appName: config.appName,
+    credential: config.credential,
+    collections: config.collections
   })
   const presentation = await chapiGet({
     vpr,
@@ -149,17 +229,21 @@ export async function requestGrants({
     domain: window.location.origin,
     documentLoader: config.documentLoader
   })
-  return checkGrants({
-    grants: grantsOf(presentation),
+  return checkGrantsForCollections({
+    presentation,
     controllerDid: identity.controllerDid,
-    collections: config.collections.map(collection => collection.id)
+    collections: config.collections
   })
 }
 
 /**
- * Runs the full Login-With-Wallet flow (first-run or returning, decided by
- * the seed probe). Throws `LoginCancelledError` on dismissal and `Error` on
- * verification failures; nothing is persisted here (the caller persists).
+ * Runs the one-popup Login-With-Wallet (App Connect) flow. A single CHAPI `get`
+ * returns the app-key credential (matched or minted wallet-side) plus the
+ * delegated grants in one signed VP. Throws `LoginCancelledError` on a user
+ * cancel (a null CHAPI response), `WalletUnsupportedError` when the wallet
+ * answered but returned no app key (an old wallet that could not satisfy
+ * `AppConnectQuery`), and `Error` on any verification failure. Nothing is
+ * persisted here (the caller persists).
  *
  * @param options {object}
  * @param options.config {LoginConfig}
@@ -173,78 +257,60 @@ export async function loginWithWallet({
   config: LoginConfig
   onPhase?: (phase: LoginPhase) => void
 }): Promise<LoginOutcome> {
-  // Popup #1: probe the wallet for an existing app key.
-  onPhase?.('probing')
-  const probeChallenge = newChallenge()
-  const probeVpr = buildSeedProbeVpr({
-    challenge: probeChallenge,
+  onPhase?.('connecting')
+  const challenge = newChallenge()
+  const vpr = buildAppConnectVpr({
+    challenge,
     domain: window.location.origin,
-    credentialType: config.credential.credentialType,
-    appName: config.appName
+    appName: config.appName,
+    credential: config.credential,
+    collections: config.collections
   })
-  const probeVp = await chapiGet({
-    vpr: probeVpr,
+  const presentation = await chapiGet({
+    vpr,
     ...(config.mediatorBase !== undefined && {
       mediatorBase: config.mediatorBase
     })
   })
-  if (!probeVp) {
+  if (!presentation) {
     throw new LoginCancelledError('wallet login')
   }
+  onPhase?.('verifying')
   await verifyLoginPresentation({
-    presentation: probeVp,
-    challenge: probeChallenge,
+    presentation,
+    challenge,
     domain: window.location.origin,
     documentLoader: config.documentLoader
   })
 
-  let seed: Uint8Array
-  let firstRun: boolean
+  // The wallet mints the app key on first run, so a response with no app-key
+  // credential is not first run -- it is a wallet that could not satisfy
+  // `AppConnectQuery` at all. Fail closed, legibly, rather than as a generic
+  // verification error.
   const credential = findSeedCredential({
-    presentation: probeVp,
+    presentation,
     credentialType: config.credential.credentialType
   })
-  if (credential) {
-    // Returning login: recover the seed, enforce self-issue + origin + the
-    // seed-to-DID binding.
-    const parsed = await parseSeedCredential({
-      credential,
-      origin: config.appOrigin,
-      config: config.credential
-    })
-    seed = parsed.seed
-    firstRun = false
-  } else {
-    // First run: mint a fresh master seed and store its credential in the
-    // wallet. Block until the store succeeds -- without it, cross-device
-    // recovery is silently broken.
-    seed = crypto.getRandomValues(new Uint8Array(32))
-    firstRun = true
-    onPhase?.('storing-key')
-    const issued = await issueSeedCredential({
-      seed,
-      origin: config.appOrigin,
-      appName: config.appName,
-      config: config.credential,
-      documentLoader: config.documentLoader
-    })
-    const stored = await chapiStore({
-      presentation: wrapCredentialForStore(issued),
-      ...(config.mediatorBase !== undefined && {
-        mediatorBase: config.mediatorBase
-      })
-    })
-    if (!stored) {
-      throw new LoginCancelledError('saving your app key to the wallet')
-    }
+  if (!credential) {
+    throw new WalletUnsupportedError()
   }
+  // Recover the seed, enforcing self-issue + origin + the seed-to-DID binding
+  // (the same contract whether the wallet matched or minted the credential).
+  const parsedCredential = await parseSeedCredential({
+    credential,
+    origin: config.appOrigin,
+    config: config.credential
+  })
+  const seed = parsedCredential.seed
+  const firstRun = appConnectFirstRun(presentation)
 
   const identity = await initAppSession({ seed })
-  // Popup #2: request the storage grants for the stable controller DID.
-  const checked = await requestGrants({
-    identity,
-    config,
-    ...(onPhase && { onPhase })
+  // Grants ride in the SAME response; validate them against the app-key subject
+  // DID the wallet delegated to.
+  const checked = checkGrantsForCollections({
+    presentation,
+    controllerDid: parsedCredential.controllerDid,
+    collections: config.collections
   })
   return {
     seed,

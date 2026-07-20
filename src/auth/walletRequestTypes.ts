@@ -59,7 +59,8 @@ export type IVPRDetails = {
   domain?: string
 }
 
-export type IVPRQuery = IQueryByExample | IDIDAuthenticationQuery | IZcapQuery
+export type IVPRQuery =
+  IQueryByExample | IDIDAuthenticationQuery | IZcapQuery | IAppConnectQuery
 
 /**
  * A request for one or more VCs matching an example credential shape.
@@ -122,6 +123,37 @@ export type ICapabilityQueryDetail = {
   allowedAction?: string | string[]
   controller: string
   invocationTarget: string | { type: string; name?: string }
+}
+
+/**
+ * A single App Connect capability request: the existing
+ * {@link ICapabilityQueryDetail} shape MINUS `controller` (the wallet fills it
+ * with the app-key subject DID it matched or minted) and MINUS `reason` (the
+ * wallet's App Connect consent screen supersedes per-grant reason lines).
+ */
+export type IAppConnectCapabilityQuery = Omit<
+  ICapabilityQueryDetail,
+  'controller' | 'reason'
+>
+
+/**
+ * The one-popup App Connect query: it names the requesting app (for the consent
+ * screen) and the seed-credential naming the wallet needs to MATCH an existing
+ * app key or MINT a fresh one, alongside the collection grants to delegate to
+ * that app key's subject DID. A wallet that predates this type renders it
+ * UNSATISFIABLE (the intended fail-closed behavior -- see `verifyResponse` /
+ * `loginFlow`), so an older wallet cannot silently degrade the login.
+ *
+ * @see https://w3c.github.io/vcalm/ -- AuthorizationCapabilityQuery
+ */
+export type IAppConnectQuery = {
+  type: 'AppConnectQuery'
+  app: {
+    name: string
+    credentialType: string
+    vocabBase: string
+  }
+  capabilityQuery: IAppConnectCapabilityQuery | IAppConnectCapabilityQuery[]
 }
 
 /**

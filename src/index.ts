@@ -53,7 +53,6 @@ export {
   issueSeedCredential,
   parseSeedCredential,
   findSeedCredential,
-  wrapCredentialForStore,
   bytesToBase64url,
   base64urlToBytes,
   type SeedCredentialConfig,
@@ -72,17 +71,11 @@ export {
 } from './identity/appSession.js'
 
 // Auth: CHAPI bridge, VPR construction, response verification, login flow.
-export {
-  DEFAULT_MEDIATOR_BASE,
-  loadChapi,
-  chapiGet,
-  chapiStore
-} from './auth/chapi.js'
+export { DEFAULT_MEDIATOR_BASE, loadChapi, chapiGet } from './auth/chapi.js'
 export {
   RW_ACTIONS,
   newChallenge,
-  buildSeedProbeVpr,
-  buildGrantsVpr,
+  buildAppConnectVpr,
   type GrantRequestCollection
 } from './auth/loginRequest.js'
 export {
@@ -95,6 +88,7 @@ export {
   loginWithWallet,
   requestGrants,
   LoginCancelledError,
+  WalletUnsupportedError,
   type LoginConfig,
   type LoginPhase,
   type LoginOutcome
@@ -108,6 +102,8 @@ export type {
   IQueryByExample,
   IDIDAuthenticationQuery,
   IZcapQuery,
+  IAppConnectQuery,
+  IAppConnectCapabilityQuery,
   ICapabilityQueryDetail,
   WalletResponse,
   WalletRequestProfile,
