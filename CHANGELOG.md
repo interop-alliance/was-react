@@ -1,5 +1,31 @@
 # @interop/was-react Changelog
 
+## 0.1.13 - TBD
+
+### Changed
+
+- Login With Wallet is now a single CHAPI popup ("App Connect") instead of the
+  former three-popup (probe, store, grants) first-run flow. One `get` carries a
+  new `AppConnectQuery` (app name + seed-credential naming + the collection
+  grant requests); the wallet matches an existing app key or mints a fresh one
+  internally and returns the app-key credential together with the delegated
+  zcaps in one signed response VP. `buildSeedProbeVpr` and `buildGrantsVpr` are
+  replaced by `buildAppConnectVpr`, and the CHAPI store step is gone
+  (`chapiStore` and `wrapCredentialForStore` removed). The `login()` outcome
+  contract is unchanged (`{ firstRun }` on success, `null` on cancel, reject on
+  error); `firstRun` is now read from the wallet-provided
+  `presentation.appConnect.firstRun`.
+- The `LoginPhase` values collapse from `probing` / `storing-key` /
+  `requesting-grants` / `verifying` to just `connecting` / `verifying`.
+
+### Requirements
+
+- This release requires a wallet that understands `AppConnectQuery` (Freewallet
+  with App Connect support). An older wallet cannot satisfy the query and
+  returns no app key; that fails closed with a clear `WalletUnsupportedError`
+  ("Your wallet does not support App Connect yet; update Freewallet to log in.")
+  rather than a generic verification error.
+
 ## 0.1.12 - 2026-07-20
 
 ### Fixed

@@ -130,20 +130,6 @@ export async function issueSeedCredential({
 }
 
 /**
- * Wraps a credential in a minimal (unsigned) VP for CHAPI `store()`. The
- * credential's own proof self-authenticates; the offer envelope needs none.
- */
-export function wrapCredentialForStore(
-  credential: IVerifiableCredential
-): IVerifiablePresentation {
-  return {
-    '@context': [VC_1_CONTEXT_URL],
-    type: ['VerifiablePresentation'],
-    verifiableCredential: [credential]
-  } as unknown as IVerifiablePresentation
-}
-
-/**
  * Parses a seed credential and enforces the structural contract: type,
  * self-issue (issuer === subject id), origin binding, a well-formed 32-byte
  * seed, and -- the strongest check -- that the DID derived from the embedded

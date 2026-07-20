@@ -15,7 +15,6 @@ import {
   findSeedCredential,
   issueSeedCredential,
   parseSeedCredential,
-  wrapCredentialForStore,
   type SeedCredentialConfig
 } from './seedCredential.js'
 import { createDocumentLoader } from './documentLoader.js'
@@ -246,7 +245,7 @@ describe('parseSeedCredential', () => {
   })
 })
 
-describe('findSeedCredential / wrapCredentialForStore', () => {
+describe('findSeedCredential', () => {
   it('finds the app key inside a VP and ignores other credentials', async () => {
     const credential = await issueSeedCredential({
       seed: randomSeed(),
@@ -261,11 +260,11 @@ describe('findSeedCredential / wrapCredentialForStore', () => {
       issuer: 'did:example:x',
       credentialSubject: {}
     }
-    const vp = wrapCredentialForStore(credential)
-    ;(vp as { verifiableCredential: unknown[] }).verifiableCredential = [
-      other,
-      credential
-    ]
+    const vp = {
+      '@context': ['https://www.w3.org/2018/credentials/v1'],
+      type: ['VerifiablePresentation'],
+      verifiableCredential: [other, credential]
+    } as never
     expect(
       findSeedCredential({
         presentation: vp,
