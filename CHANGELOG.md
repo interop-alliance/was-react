@@ -1,5 +1,13 @@
 # @interop/was-react Changelog
 
+## 0.2.2 - TBD
+
+### Removed
+
+- **BREAKING**: Removed the `was-provision-dev-grants` CLI (the package `bin`
+  entry and `src/dev/cli.ts`). Use the programmatic `provisionDevGrants` from
+  `@interop/was-react/dev` instead.
+
 ## 0.2.1 - 2026-07-20
 
 ### Changed

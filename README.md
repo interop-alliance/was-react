@@ -419,7 +419,7 @@ cost.
 | ------------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------ |
 | `@interop/was-react`     | Core: config, identity, auth, sync, storage, session store, React provider and hooks | `react`, `zustand`, `rxdb`                             |
 | `@interop/was-react/mui` | Optional `ProtectedRoute`, `ReconnectBanner`, `SyncStatusChip`                       | `@mui/material`, `@mui/icons-material`, `react-router` |
-| `@interop/was-react/dev` | Node-only `provisionDevGrants` + the `was-provision-dev-grants` CLI                  | (none; Node only)                                      |
+| `@interop/was-react/dev` | Node-only `provisionDevGrants`                                                       | (none; Node only)                                      |
 
 MUI usage:
 
@@ -462,19 +462,6 @@ restores and the stores hydrate, redirects an unauthenticated visitor to
 The `./dev` entry provisions a Space, collections, and delegated read/write
 grants against a running was-teaching-server, so an app can dev-sync without a
 CHAPI wallet in the loop. It is Node-only (uses `node:fs`).
-
-CLI:
-
-```
-was-provision-dev-grants \
-  --server-url http://localhost:3002 \
-  --seed <hex-or-base64url 32-byte seed> \
-  --collections notes \
-  --space-name "Dev Space" \
-  --out ./public/dev-grants.local.json
-```
-
-Programmatic:
 
 ```ts
 import { provisionDevGrants } from '@interop/was-react/dev'
