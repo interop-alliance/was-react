@@ -6,4 +6,4 @@ minimumReleaseAgeExclude:
   - '@interop/security-document-loader@9.4.4'
   - '@interop/storage-core@0.3.7'
   - '@interop/was-client@0.17.0'
-  - was-teaching-server@0.11.0
+  - was-teaching-server@0.12.0

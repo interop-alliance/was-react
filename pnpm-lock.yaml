@@ -133,8 +133,8 @@ importers:
         specifier: ^4.1.7
         version: 4.1.10(@types/node@26.1.1)(@vitest/coverage-v8@4.1.10)(jsdom@27.4.0(@noble/hashes@2.2.0))(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(terser@5.49.0)(tsx@4.23.1)(yaml@2.9.0))
       was-teaching-server:
-        specifier: ^0.11.0
-        version: 0.11.0(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.7))
+        specifier: ^0.12.0
+        version: 0.12.0(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.7))
       zustand:
         specifier: ^5.0.12
         version: 5.0.14(@types/react@19.2.17)(react@19.2.7)
@@ -666,6 +666,10 @@ packages:
     resolution: {integrity: sha512-ejMNiUVZphaYyic1XCGw1JixPKZ6wj3nBDc+wDPVhiUHCuOduEq9+38+QWqw3nrRDyyilKiInLPTl0u9FlUwOg==}
     engines: {node: '>=24.0'}
 
+  '@interop/did-web-resolver@6.2.4':
+    resolution: {integrity: sha512-5TusTWI4Fuxa3HRtT6vmD/jsAciJ2YZ6/hGjFgkkb9G3LMkdChOYyrlc0okNfu27FsS4WiR4SqXo3UFkJNEI0A==}
+    engines: {node: '>=24.0'}
+
   '@interop/did-web-resolver@6.3.0':
     resolution: {integrity: sha512-/P+5oxkpEvt4Xrh+BKz15KX/FMRrlcR//SzgBqwqaIeN6MyF2ceXe0AaZYIYDfxNhu5td3zYJ3i2BWFkNbJuAg==}
     engines: {node: '>=24.0'}
@@ -753,6 +757,10 @@ packages:
 
   '@interop/minimal-cipher@7.7.0':
     resolution: {integrity: sha512-grTbvdh3j0DoHnGluBlKXrVGBnoUTUPh2LPc8AvfeoEVkHQrQXbtmcyJRZ2VGIDyJEkq30xV5rcr+EvmBrrepg==}
+    engines: {node: '>=24.0'}
+
+  '@interop/security-document-loader@9.4.2':
+    resolution: {integrity: sha512-21iK50N42lsaLplPWKWPRtgLie6UDnKp5MXe+xTsnsUC0OuSaTuYGgKG4NGQEibL8pNm+VIn/Bwv5Ua15cTR/A==}
     engines: {node: '>=24.0'}
 
   '@interop/security-document-loader@9.4.4':
@@ -3399,8 +3407,8 @@ packages:
   walker@1.0.8:
     resolution: {integrity: sha512-ts/8E8l5b7kY0vlWLewOkDXMmPdLcVV4GmOQLyxuSswIJsweeFZtAsMF7k1Nszz+TYBQrlYRmzOnr398y1JemQ==}
 
-  was-teaching-server@0.11.0:
-    resolution: {integrity: sha512-3mBXyjD85I+BoK5178k1uqV9oH4y1Z8H/cADAzYY8g9L0RPXXIeuHNsc8WDdt7oEcHL1DlmZd40TB315+reOnw==}
+  was-teaching-server@0.12.0:
+    resolution: {integrity: sha512-5jDxU/337HOYYOFxN2tj1W4V4Q8LJs5gL9iuV957PufUN/AIPz29v6rffsLiTKZEVkRSGyvBxpymPGtSbDLG7w==}
     engines: {node: '>=24.0'}
 
   web-request-rpc@3.0.1:
@@ -4076,6 +4084,16 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
+  '@interop/did-web-resolver@6.2.4':
+    dependencies:
+      '@interop/bnid': 6.0.2
+      '@interop/data-integrity-core': 8.3.0
+      '@interop/did-io': 4.1.0
+      '@interop/http-client': 1.0.4
+      did-context: 3.1.1
+    transitivePeerDependencies:
+      - react-native-get-random-values
+
   '@interop/did-web-resolver@6.3.0':
     dependencies:
       '@interop/bnid': 6.0.2
@@ -4203,6 +4221,33 @@ snapshots:
       '@stablelib/chacha': 2.0.1
       '@stablelib/chacha20poly1305': 2.0.1
 
+  '@interop/security-document-loader@9.4.2':
+    dependencies:
+      '@digitalbazaar/data-integrity-context': 2.0.1
+      '@digitalbazaar/multikey-context': 2.0.1
+      '@digitalbazaar/vc-bitstring-status-list-context': 1.1.0
+      '@digitalbazaar/vc-status-list-context': 3.1.1
+      '@digitalbazaar/zcap-context': 2.0.1
+      '@digitalcredentials/credentials-v2-context': 1.0.0
+      '@digitalcredentials/open-badges-context': 3.0.0
+      '@interop/data-integrity-core': 8.3.0
+      '@interop/did-io': 4.1.0
+      '@interop/did-method-key': 7.3.4
+      '@interop/did-web-resolver': 6.2.4
+      '@interop/ecdsa-multikey': 2.3.3
+      '@interop/ed25519-verification-key': 8.0.3
+      '@interop/http-client': 1.0.4
+      aes-key-wrapping-2019-context: 1.0.3
+      credentials-context: 2.0.0
+      did-context: 3.1.1
+      ed25519-signature-2020-context: 1.1.0
+      html-entities: 2.6.0
+      jsonld-document-loader: 2.3.0
+      sha256-hmac-key-2019-context: 1.0.3
+      x25519-key-agreement-2020-context: 1.0.0
+    transitivePeerDependencies:
+      - react-native-get-random-values
+
   '@interop/security-document-loader@9.4.4':
     dependencies:
       '@digitalbazaar/data-integrity-context': 2.0.1
@@ -4255,12 +4300,12 @@ snapshots:
       '@interop/data-integrity-proof': 3.4.2
       '@interop/did-io': 4.1.0
       '@interop/did-method-key': 7.3.4
-      '@interop/did-web-resolver': 6.3.0
+      '@interop/did-web-resolver': 6.2.4
       '@interop/ecdsa-signature': 2.0.5(@interop/jsonld-signatures@11.8.3)
       '@interop/ed25519-signature': 7.1.4(@interop/jsonld-signatures@11.8.3)
       '@interop/ed25519-verification-key': 8.0.3
       '@interop/jsonld-signatures': 11.8.3
-      '@interop/security-document-loader': 9.4.4
+      '@interop/security-document-loader': 9.4.2
       '@interop/vc': 11.0.5
       '@interop/vc-bitstring-status-list': 3.0.4
       ajv: 8.20.0
@@ -6953,7 +6998,7 @@ snapshots:
     dependencies:
       makeerror: 1.0.12
 
-  was-teaching-server@0.11.0(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.7)):
+  was-teaching-server@0.12.0(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.7)):
     dependencies:
       '@digitalcredentials/bnid': 5.0.0(react-native@0.86.0(@babel/core@7.29.7)(@types/react@19.2.17)(react@19.2.7))
       '@fastify/cors': 11.3.0
