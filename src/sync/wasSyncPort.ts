@@ -64,10 +64,19 @@ export function errorMessage(err: unknown): string {
 
 /**
  * Maps a raw `was.request()` rejection to the sync layer's typed errors: `412`
- * to {@link WasSyncConflictError} (a lost-update conflict) and `401` / `403` to
- * {@link WasSyncAuthError} (expired/revoked storage access). Every other error
- * is returned unchanged so RxDB's retry/backoff handles it. Returns the error to
- * throw (the caller re-throws) rather than throwing itself.
+ * to {@link WasSyncConflictError} (a lost-update conflict) and `401` / `403` /
+ * `404` to {@link WasSyncAuthError} (expired/revoked storage access). Every
+ * other error is returned unchanged so RxDB's retry/backoff handles it. Returns
+ * the error to throw (the caller re-throws) rather than throwing itself.
+ *
+ * `404` counts as access denied because a WAS server masks a failed capability
+ * invocation as `404` ("URL not found or invalid authorization") rather than
+ * `403`, so an unauthorized caller cannot probe which resources exist. On the
+ * sync paths the invoked space and collection are known to exist (the session
+ * synced them), so a `404` means the invocation itself was rejected -- the
+ * revoked/expired-grant signal. The one route where `404` is routine --
+ * deleting an already-absent resource -- inspects the preserved `status` on the
+ * mapped error and stays a success (see `deleteContent`).
  *
  * @param err {unknown}
  * @returns {unknown}
@@ -77,7 +86,7 @@ function toPortError(err: unknown): unknown {
   if (status === 412) {
     return new WasSyncConflictError()
   }
-  if (status === 401 || status === 403) {
+  if (status === 401 || status === 403 || status === 404) {
     return new WasSyncAuthError(status)
   }
   return err
@@ -167,8 +176,9 @@ export function createWasSyncPort({
           checkpoint: SyncCheckpoint | null
         }
       } catch (err) {
-        // Map a pull-path 401/403 to WasSyncAuthError too, so expired access is
-        // recognised whether it surfaces on the pull or the push side.
+        // Map a pull-path auth rejection (401/403, or the masked 404) to
+        // WasSyncAuthError too, so expired/revoked access is recognised
+        // whether it surfaces on the pull or the push side.
         throw toPortError(err)
       }
     },
@@ -200,7 +210,12 @@ export function createWasSyncPort({
         // and deleted locally before ever being pushed, or another device
         // deleted it first. Either way the tombstone's goal state holds, so
         // report success (no acked revision) instead of rejecting the batch,
-        // which RxDB would otherwise retry forever.
+        // which RxDB would otherwise retry forever. (A masked auth-failure 404
+        // is swallowed here too -- indistinguishable by design -- but revoked
+        // access still surfaces within one pull-poll interval, where 404 maps
+        // to WasSyncAuthError.) The mapped error keeps the raw `status`, so
+        // this check works on the WasSyncAuthError conditionalWrite now throws
+        // for a 404.
         if (errorStatus(err) === 404) {
           return undefined
         }

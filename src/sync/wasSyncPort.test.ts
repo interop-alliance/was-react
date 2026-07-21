@@ -4,9 +4,11 @@
 /**
  * Unit tests for `createWasSyncPort`'s HTTP-status-to-typed-error mapping,
  * driven by a fake `WasClient` whose `request` rejects with a scripted status.
- * The port maps `412` to {@link WasSyncConflictError} and `401` / `403` to
+ * The port maps `412` to {@link WasSyncConflictError} and `401` / `403` / `404`
+ * (a WAS server masks a failed capability invocation as `404`) to
  * {@link WasSyncAuthError} on both the query (pull) and the conditional-write
- * (push) paths; every other status propagates unchanged.
+ * (push) paths; every other status propagates unchanged, and a `404` on delete
+ * stays the already-absent success.
  */
 import { describe, it, expect } from 'vitest'
 import type { WasClient } from '@interop/was-client'
@@ -68,11 +70,18 @@ describe('createWasSyncPort error mapping', () => {
     await expect(port.deleteContent({ id: 'a' })).resolves.toBeUndefined()
   })
 
-  it('still propagates a 404 on a content write', async () => {
+  it('maps a 404 on a content write to WasSyncAuthError (masked denial)', async () => {
     const port = makePort(404)
     await expect(
       port.putContent({ id: 'a', data: { x: 1 } })
-    ).rejects.toMatchObject({ status: 404 })
+    ).rejects.toMatchObject({ name: 'WasSyncAuthError', status: 404 })
+  })
+
+  it('maps a 404 on the query (pull) path to WasSyncAuthError', async () => {
+    const port = makePort(404)
+    await expect(port.query({ limit: 10 })).rejects.toBeInstanceOf(
+      WasSyncAuthError
+    )
   })
 
   it('passes a non-mapped status (500) through unchanged', async () => {

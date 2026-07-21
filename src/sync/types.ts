@@ -226,12 +226,17 @@ export class WasSyncConflictError extends Error {
 
 /**
  * Thrown by a {@link WasSyncPort} implementation when a request is rejected with
- * `401 unauthorized` or `403 forbidden` -- the storage-access-expired/revoked
- * signal. Mapping the raw HTTP status to a typed error at the port boundary (the
- * same way `412` becomes {@link WasSyncConflictError}) lets the sync controller
- * recognise expired access with an `instanceof` check rather than re-extracting
- * status codes from a wrapped RxDB error graph. The offending HTTP status is
- * kept on `status` for diagnostics.
+ * `401 unauthorized`, `403 forbidden`, or `404 not found` -- the
+ * storage-access-expired/revoked signal. `404` qualifies because a WAS server
+ * masks a failed capability invocation as `404` (never confirming to an
+ * unauthorized caller whether the resource exists); on the sync paths the
+ * invoked collection is known to exist, so a `404` means the invocation was
+ * rejected. Mapping the raw HTTP status to a typed error at the port boundary
+ * (the same way `412` becomes {@link WasSyncConflictError}) lets the sync
+ * controller recognise expired access with an `instanceof` check rather than
+ * re-extracting status codes from a wrapped RxDB error graph. The offending
+ * HTTP status is kept on `status` -- diagnostics, plus the delete path's
+ * already-absent-404 check.
  */
 export class WasSyncAuthError extends Error {
   readonly status: number

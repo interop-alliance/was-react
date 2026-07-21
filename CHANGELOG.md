@@ -1,5 +1,20 @@
 # @interop/was-react Changelog
 
+## 0.3.2 - TBD
+
+### Fixed
+
+- Revoked/expired storage access is now detected against real WAS servers. A WAS
+  server masks a failed capability invocation as `404` ("URL not found or
+  invalid authorization") rather than `401`/`403`, so an unauthorized caller
+  cannot probe which resources exist -- which meant the sync port's 401/403-only
+  mapping never recognized a revoked grant, and the session stayed `connected`
+  (no reconnect banner) with only a generic sync error showing. The port now
+  also maps a `404` on the query (pull) and content/meta write paths to
+  `WasSyncAuthError`: on those paths the invoked collection is known to exist,
+  so a `404` means the invocation itself was rejected. A `404` on delete still
+  counts as the already-absent success.
+
 ## 0.3.1 - 2026-07-20
 
 ### Fixed
