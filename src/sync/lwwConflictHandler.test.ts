@@ -13,7 +13,7 @@ const decrypt = async (envelope: Json): Promise<Json> =>
   (envelope as { jwe: Json }).jwe
 
 function row(
-  payload: { updatedAt: string; deviceId: string } | null,
+  payload: { updatedAt: string; clientId: string } | null,
   {
     deleted = false,
     version = 0,
@@ -48,9 +48,9 @@ const handler = makeLwwConflictHandler(decrypt)
 
 describe('makeLwwConflictHandler', () => {
   it('isEqual is true only when body + deletion agree', () => {
-    const a = row({ updatedAt: 't1', deviceId: 'd1' })
-    const b = row({ updatedAt: 't1', deviceId: 'd1' })
-    const c = row({ updatedAt: 't2', deviceId: 'd1' })
+    const a = row({ updatedAt: 't1', clientId: 'd1' })
+    const b = row({ updatedAt: 't1', clientId: 'd1' })
+    const c = row({ updatedAt: 't2', clientId: 'd1' })
     expect(handler.isEqual(a, b)).toBe(true)
     expect(handler.isEqual(a, c)).toBe(false)
     expect(handler.isEqual(a, { ...b, _deleted: true })).toBe(false)
@@ -60,16 +60,16 @@ describe('makeLwwConflictHandler', () => {
     // Our own write echoing back from the changes feed: byte-identical body,
     // but one revision ahead. It must NOT compare equal, so the local row
     // adopts the server version and later If-Match headers stay in step.
-    const local = row({ updatedAt: 't1', deviceId: 'd1' }, { version: 0 })
-    const echo = row({ updatedAt: 't1', deviceId: 'd1' }, { version: 1 })
+    const local = row({ updatedAt: 't1', clientId: 'd1' }, { version: 0 })
+    const echo = row({ updatedAt: 't1', clientId: 'd1' }, { version: 1 })
     expect(handler.isEqual(local, echo)).toBe(false)
     expect(handler.isEqual(echo, { ...echo })).toBe(true)
     expect(handler.isEqual(echo, { ...echo, metaVersion: 1 })).toBe(false)
   })
 
   it('resolves to the later payload (remote wins)', async () => {
-    const remote = row({ updatedAt: '2026-02-02T00:00:00Z', deviceId: 'dB' })
-    const local = row({ updatedAt: '2026-01-01T00:00:00Z', deviceId: 'dA' })
+    const remote = row({ updatedAt: '2026-02-02T00:00:00Z', clientId: 'dB' })
+    const local = row({ updatedAt: '2026-01-01T00:00:00Z', clientId: 'dA' })
     const winner = await handler.resolve({
       realMasterState: remote,
       newDocumentState: local
@@ -78,8 +78,8 @@ describe('makeLwwConflictHandler', () => {
   })
 
   it('resolves to the later payload (local wins)', async () => {
-    const remote = row({ updatedAt: '2026-01-01T00:00:00Z', deviceId: 'dB' })
-    const local = row({ updatedAt: '2026-02-02T00:00:00Z', deviceId: 'dA' })
+    const remote = row({ updatedAt: '2026-01-01T00:00:00Z', clientId: 'dB' })
+    const local = row({ updatedAt: '2026-02-02T00:00:00Z', clientId: 'dA' })
     const winner = await handler.resolve({
       realMasterState: remote,
       newDocumentState: local
@@ -87,9 +87,9 @@ describe('makeLwwConflictHandler', () => {
     expect(winner).toBe(local)
   })
 
-  it('breaks an exact updatedAt tie by greater deviceId', async () => {
-    const remote = row({ updatedAt: 'T', deviceId: 'dZ' })
-    const local = row({ updatedAt: 'T', deviceId: 'dA' })
+  it('breaks an exact updatedAt tie by greater clientId', async () => {
+    const remote = row({ updatedAt: 'T', clientId: 'dZ' })
+    const local = row({ updatedAt: 'T', clientId: 'dA' })
     const winner = await handler.resolve({
       realMasterState: remote,
       newDocumentState: local
@@ -99,7 +99,7 @@ describe('makeLwwConflictHandler', () => {
 
   it('keeps a live local edit over a remote tombstone', async () => {
     const remote = row(null, { deleted: true, version: 3 })
-    const local = row({ updatedAt: 'T', deviceId: 'dA' })
+    const local = row({ updatedAt: 'T', clientId: 'dA' })
     const winner = await handler.resolve({
       realMasterState: remote,
       newDocumentState: local
@@ -108,7 +108,7 @@ describe('makeLwwConflictHandler', () => {
   })
 
   it('defaults to the master when incomparable (local tombstone)', async () => {
-    const remote = row({ updatedAt: 'T', deviceId: 'dB' }, { version: 2 })
+    const remote = row({ updatedAt: 'T', clientId: 'dB' }, { version: 2 })
     const local = row(null, { deleted: true })
     const winner = await handler.resolve({
       realMasterState: remote,
@@ -121,7 +121,7 @@ describe('makeLwwConflictHandler', () => {
     // The classic dropped-delete: the row's If-Match was one revision stale,
     // but the master's content is exactly what this replica last synced. The
     // tombstone must survive resolution and be re-pushed -- not resurrect.
-    const payload = { updatedAt: 'T', deviceId: 'dA' }
+    const payload = { updatedAt: 'T', clientId: 'dA' }
     const assumed = row(payload, { version: 0 })
     const master = row(payload, { version: 1 })
     const tombstone = row(null, { deleted: true })
@@ -134,10 +134,10 @@ describe('makeLwwConflictHandler', () => {
   })
 
   it('re-asserts a local edit on a version-only conflict', async () => {
-    const payload = { updatedAt: 'T1', deviceId: 'dA' }
+    const payload = { updatedAt: 'T1', clientId: 'dA' }
     const assumed = row(payload, { version: 0 })
     const master = row(payload, { version: 1 })
-    const edit = row({ updatedAt: 'T2', deviceId: 'dA' })
+    const edit = row({ updatedAt: 'T2', clientId: 'dA' })
     const winner = await handler.resolve({
       realMasterState: master,
       newDocumentState: edit,
@@ -150,8 +150,8 @@ describe('makeLwwConflictHandler', () => {
     // The master's content REALLY changed since this replica last synced (a
     // concurrent edit on another device won the push race): the edit wins and
     // the entity resurrects, deterministically on every replica.
-    const assumed = row({ updatedAt: 'T1', deviceId: 'dA' }, { version: 1 })
-    const master = row({ updatedAt: 'T2', deviceId: 'dB' }, { version: 2 })
+    const assumed = row({ updatedAt: 'T1', clientId: 'dA' }, { version: 1 })
+    const master = row({ updatedAt: 'T2', clientId: 'dB' }, { version: 2 })
     const tombstone = row(null, { deleted: true })
     const winner = await handler.resolve({
       realMasterState: master,
@@ -167,7 +167,7 @@ describe('makeLwwConflictHandler', () => {
     // assembled master carries A's committed `custom` with `data` unchanged.
     // The equal-`data` LWW payloads would tie and keep B's stale `custom`; rule
     // 2 instead adopts the server-committed metadata so A's edit is not lost.
-    const payload = { updatedAt: 'T', deviceId: 'dA' }
+    const payload = { updatedAt: 'T', clientId: 'dA' }
     const assumed = row(payload, {
       version: 3,
       metaVersion: 1,
@@ -194,7 +194,7 @@ describe('makeLwwConflictHandler', () => {
   it('re-asserts local state on a version-only conflict when custom is also unchanged', async () => {
     // Both `data` and `custom` match the assumed master (only the revision
     // moved), so rule 1 fires even though metadata exists: keep the local edit.
-    const payload = { updatedAt: 'T1', deviceId: 'dA' }
+    const payload = { updatedAt: 'T1', clientId: 'dA' }
     const assumed = row(payload, {
       version: 0,
       metaVersion: 1,
@@ -206,7 +206,7 @@ describe('makeLwwConflictHandler', () => {
       custom: { jwe: 'C0' }
     })
     const edit = row(
-      { updatedAt: 'T2', deviceId: 'dA' },
+      { updatedAt: 'T2', clientId: 'dA' },
       { version: 0, metaVersion: 1, custom: { jwe: 'C0' } }
     )
     const winner = await handler.resolve({

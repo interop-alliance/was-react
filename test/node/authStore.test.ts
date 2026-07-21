@@ -407,14 +407,14 @@ describe('adoption', () => {
       id: string
       title: string
       updatedAt: string
-      deviceId: string
+      clientId: string
     }>('notes')
     expect(adopted.map(doc => doc.title).sort()).toEqual(['first', 'second'])
     for (const doc of adopted) {
       expect(typeof doc.updatedAt).toBe('string')
       expect(doc.updatedAt.length).toBeGreaterThan(0)
-      expect(typeof doc.deviceId).toBe('string')
-      expect(doc.deviceId.length).toBeGreaterThan(0)
+      expect(typeof doc.clientId).toBe('string')
+      expect(doc.clientId.length).toBeGreaterThan(0)
     }
     // The anon seed is gone and its database was deleted (a reopen is empty).
     expect(await anon.loadSeed()).toBeNull()
@@ -486,7 +486,7 @@ describe('adoption', () => {
       id: uuid,
       title: 'connected-older',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
 
     // Back to local (the connected replica is kept on the device), then write a
@@ -497,7 +497,7 @@ describe('adoption', () => {
       id: uuid,
       title: 'anon-newer',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
 
     // Reconnect under the same seed (same per-controller database): adoption
@@ -524,7 +524,7 @@ describe('adoption', () => {
       id: uuid,
       title: 'connected-newer',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
 
     await store.getState().logout()
@@ -532,7 +532,7 @@ describe('adoption', () => {
       id: uuid,
       title: 'anon-older',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
 
     await store.getState().connectWithGrants({ seed: walletSeed, grants })

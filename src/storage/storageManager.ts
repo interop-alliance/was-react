@@ -3,7 +3,7 @@
  */
 /**
  * The storage manager: a thin process-wide holder for the one {@link LocalStore}
- * instance, the per-session {@link WasRemoteStore}, plus the per-install device
+ * instance, the per-session {@link WasRemoteStore}, plus the per-install client
  * id. Entity stores reach for the stores through {@link requireStore} /
  * {@link requireRemoteStore} inside their verbs rather than importing them
  * directly, which keeps this module free of store imports (no cycle) and lets
@@ -102,22 +102,22 @@ export function clearRemoteStore(): void {
 }
 
 /**
- * A stable per-install device id (the last-write-wins tiebreak stamped into
- * every payload), persisted in localStorage under `<prefix>deviceId`.
+ * A stable per-install client id (the last-write-wins tiebreak stamped into
+ * every payload), persisted in localStorage under `<prefix>clientId`.
  *
  * @param [options] {object}
  * @param [options.storageKeyPrefix] {string}   the localStorage key prefix
  *   (defaults to {@link DEFAULT_STORAGE_KEY_PREFIX})
  * @returns {string}
  */
-export function getDeviceId({
+export function getClientId({
   storageKeyPrefix = DEFAULT_STORAGE_KEY_PREFIX
 }: { storageKeyPrefix?: string } = {}): string {
-  const deviceIdKey = `${storageKeyPrefix}deviceId`
-  let id = localStorage.getItem(deviceIdKey)
+  const clientIdKey = `${storageKeyPrefix}clientId`
+  let id = localStorage.getItem(clientIdKey)
   if (!id) {
     id = uuidv7()
-    localStorage.setItem(deviceIdKey, id)
+    localStorage.setItem(clientIdKey, id)
   }
   return id
 }

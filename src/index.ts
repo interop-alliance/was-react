@@ -128,7 +128,7 @@ export {
   requireRemoteStore,
   hasRemoteStore,
   clearRemoteStore,
-  getDeviceId
+  getClientId
 } from './storage/storageManager.js'
 export { createEntityStore, type EntityStore } from './storage/entityStore.js'
 export {

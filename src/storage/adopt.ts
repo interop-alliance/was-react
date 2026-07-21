@@ -14,31 +14,31 @@
  *   the same last-write-wins rule replication runs ({@link remotePayloadWins});
  *   a connected doc without LWW fields always loses to a stamped adopted one.
  *
- * Adopted payloads missing `updatedAt`/`deviceId` are stamped at adoption time
+ * Adopted payloads missing `updatedAt`/`clientId` are stamped at adoption time
  * (the sync layer's conflict resolution requires them); payloads that already
  * carry them keep their original values, so a doc edited long ago does not
  * suddenly outrank fresher remote edits.
  */
 import { uuidv7 } from 'uuidv7'
 import { lwwFields, remotePayloadWins } from '../sync/lww.js'
-import { getDeviceId } from './storageManager.js'
+import { getClientId } from './storageManager.js'
 import type { LocalStore } from './localStore.js'
 
 /**
  * The one-per-merge stamp applied to payloads missing their LWW fields.
  *
- * @returns {{ updatedAt: string, deviceId: string }}
+ * @returns {{ updatedAt: string, clientId: string }}
  */
-function adoptionStamp(): { updatedAt: string; deviceId: string } {
-  let deviceId: string
+function adoptionStamp(): { updatedAt: string; clientId: string } {
+  let clientId: string
   try {
-    deviceId = getDeviceId()
+    clientId = getClientId()
   } catch {
     // No localStorage (non-browser environments): an unpersisted id still
     // gives the LWW tiebreak a deterministic value for this merge.
-    deviceId = uuidv7()
+    clientId = uuidv7()
   }
-  return { updatedAt: new Date().toISOString(), deviceId }
+  return { updatedAt: new Date().toISOString(), clientId }
 }
 
 /**
@@ -60,7 +60,7 @@ export async function mergeAdopted({
   store: LocalStore
   entities: Record<string, Array<{ id: string }>>
 }): Promise<void> {
-  let stamp: { updatedAt: string; deviceId: string } | null = null
+  let stamp: { updatedAt: string; clientId: string } | null = null
   for (const [key, payloads] of Object.entries(entities)) {
     const existing = new Map(
       (await store.listEntities(key)).map(doc => [doc.id, doc])

@@ -61,7 +61,7 @@ export interface EntityStore<T extends { id: string }> {
    * stream owns the persisted row already). Used for per-doc reactive patching
    * of pulled/conflict-resolved remote changes; coalesced into one store update
    * per pull burst (see the reactivity note above). When both the incoming and
-   * the held doc carry the LWW fields (`updatedAt` + `deviceId`), a stale
+   * the held doc carry the LWW fields (`updatedAt` + `clientId`), a stale
    * incoming doc is discarded rather than clobbering the newer held one.
    */
   patch: (doc: T) => void

@@ -3,7 +3,7 @@
  */
 /**
  * Tier-1 facade tests (jsdom): `defineDocumentApp` builds a one-collection
- * local-first config plus a singleton-document registry, and `useDocument`
+ * local-first config plus a singleton-document registry, and `useAppDocument`
  * reads/writes the document through the storage seam. The LocalStore is a
  * Map-backed fake installed via `setLocalStore` (the repo convention: real
  * encryption never runs under jsdom -- node:crypto Buffers fail @scure/base's
@@ -44,7 +44,7 @@ interface SaveFile {
 interface StoredSave {
   id: string
   updatedAt: string
-  deviceId: string
+  clientId: string
   data: SaveFile
 }
 
@@ -145,24 +145,24 @@ describe('defineDocumentApp', () => {
     fake.rows.set('main', {
       id: 'main',
       updatedAt: '2026-07-19T00:00:00.000Z',
-      deviceId: 'device-1',
+      clientId: 'device-1',
       data: { score: 12, playerName: 'restored' }
     })
     await app.registry[DOCUMENT_COLLECTION_KEY]?.hydrate()
 
-    const { result } = renderHook(() => app.useDocument(), {
+    const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
     })
     expect(result.current.doc).toEqual({ score: 12, playerName: 'restored' })
   })
 })
 
-describe('useDocument', () => {
+describe('useAppDocument', () => {
   it('hides the doc during boot, then serves initial and merges writes', async () => {
     fakeLocalStore()
     const { app, store } = localApp()
     store.setState({ status: 'boot' })
-    const { result } = renderHook(() => app.useDocument(), {
+    const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
     })
     expect(result.current.doc).toBeUndefined()
@@ -193,7 +193,7 @@ describe('useDocument', () => {
   it('persists under the fixed id with fresh LWW stamps on every write', async () => {
     const fake = fakeLocalStore()
     const { app, store } = localApp()
-    const { result } = renderHook(() => app.useDocument(), {
+    const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
     })
     await result.current.update({ score: 7 })
@@ -204,7 +204,7 @@ describe('useDocument', () => {
     // LWW stamps are the facade's job: an ISO timestamp and the persisted
     // per-install device id, wrapped BESIDE the app data, never inside it.
     expect(Date.parse(row?.updatedAt ?? '')).not.toBeNaN()
-    expect(row?.deviceId).toBeTruthy()
+    expect(row?.clientId).toBeTruthy()
     expect(fake.rows.size).toBe(1)
 
     await result.current.update({ score: 8 })
@@ -215,7 +215,7 @@ describe('useDocument', () => {
   it('round-trips the document through exportFile / importFile', async () => {
     fakeLocalStore()
     const { app, store } = localApp()
-    const { result } = renderHook(() => app.useDocument(), {
+    const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
     })
     await result.current.update({ score: 9000, playerName: 'exporter' })
@@ -247,7 +247,7 @@ describe('useDocument', () => {
   it('rejects a file that is not a document export', async () => {
     fakeLocalStore()
     const { app, store } = localApp()
-    const { result } = renderHook(() => app.useDocument(), {
+    const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
     })
     await waitFor(() => expect(result.current.doc).toEqual(INITIAL))
@@ -268,7 +268,7 @@ describe('useDocument', () => {
   it('wires connect/disconnect to the session login/logout', () => {
     fakeLocalStore()
     const { app, store } = localApp()
-    const { result } = renderHook(() => app.useDocument(), {
+    const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
     })
     // The wiring targets are the store's own actions; invoking them here would

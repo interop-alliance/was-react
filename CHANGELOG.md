@@ -1,5 +1,19 @@
 # @interop/was-react Changelog
 
+## 0.3.0 - TBD
+
+### Changed
+
+- **BREAKING**: Renamed the hook returned by `defineDocumentApp` from
+  `useDocument` to `useAppDocument`.
+- **BREAKING**: Renamed `deviceId` to `clientId` across the board (an SPA is a
+  client, not a device): the LWW tiebreak field stamped into every synced
+  payload, the `getDeviceId` helper (now `getClientId`), and the
+  `<prefix>deviceId` localStorage key (now `<prefix>clientId`). No migration:
+  rows already stored or synced under `deviceId` no longer carry a recognized
+  LWW stamp, and each install mints a fresh client id on first load after the
+  upgrade.
+
 ## 0.2.2 - 2026-07-20
 
 ### Removed

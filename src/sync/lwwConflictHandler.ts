@@ -7,17 +7,17 @@
  * correct for content-addressed (immutable-per-id) collections but wrong here:
  * every entity is a mutable head that two devices can edit concurrently, so a
  * genuine content conflict must be settled by last-write-wins on the payload's
- * own `updatedAt` (deviceId tiebreak) -- exactly the rule two offline replicas
+ * own `updatedAt` (clientId tiebreak) -- exactly the rule two offline replicas
  * apply independently to converge.
  *
  * The wrinkle is that the conflicting bodies are EDV envelopes (ciphertext), so
  * `resolve` must decrypt both sides through this collection's cipher before it
- * can compare the plaintext `updatedAt` / `deviceId`. `isEqual` stays cheap and
+ * can compare the plaintext `updatedAt` / `clientId`. `isEqual` stays cheap and
  * synchronous (a structural compare of the opaque bodies), as RxDB requires.
  *
  * Convergence: the server holds ONE winner of the push race as `realMasterState`;
  * every replica compares that same master against its own local edit, and the
- * `payloadWins` comparator is a total order over `(updatedAt, deviceId)`, so the
+ * `payloadWins` comparator is a total order over `(updatedAt, clientId)`, so the
  * globally-latest payload wins on every replica with no coordination.
  *
  * The resolution rules, in order:
@@ -59,7 +59,7 @@ import { remotePayloadWins } from './lww.js'
  */
 interface LwwPayload {
   updatedAt: string
-  deviceId: string
+  clientId: string
 }
 
 /**
@@ -70,7 +70,7 @@ function bodiesEqual(a: Json | undefined, b: Json | undefined): boolean {
 }
 
 /**
- * Decrypts one side's envelope into its `{ updatedAt, deviceId }`, or `null`
+ * Decrypts one side's envelope into its `{ updatedAt, clientId }`, or `null`
  * when the side has no decryptable payload (a tombstone, or an absent/corrupt
  * body). `null` means "no comparable timestamp", handled by the caller.
  */
@@ -85,9 +85,9 @@ async function lwwFieldsOf(
     const payload = (await decrypt(doc.data)) as Partial<LwwPayload>
     if (
       typeof payload.updatedAt === 'string' &&
-      typeof payload.deviceId === 'string'
+      typeof payload.clientId === 'string'
     ) {
-      return { updatedAt: payload.updatedAt, deviceId: payload.deviceId }
+      return { updatedAt: payload.updatedAt, clientId: payload.clientId }
     }
     return null
   } catch {
@@ -103,7 +103,7 @@ async function lwwFieldsOf(
  * @param [payloadWins] {(remote: LwwPayload, local: LwwPayload) => boolean}
  *   the total-order comparator deciding whether the remote payload replaces the
  *   local one; defaults to {@link remotePayloadWins} (later `updatedAt` wins,
- *   `deviceId` breaks a tie)
+ *   `clientId` breaks a tie)
  * @returns {import('rxdb/plugins/core').RxConflictHandler<SyncedDoc>}
  */
 export function makeLwwConflictHandler(

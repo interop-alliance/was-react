@@ -23,7 +23,7 @@ interface Note {
   id: string
   title: string
   updatedAt?: string
-  deviceId?: string
+  clientId?: string
 }
 
 let dbCounter = 0
@@ -61,7 +61,7 @@ describe('mergeAdopted', () => {
       id: crypto.randomUUID(),
       title: 'alpha',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     }
     await source.insertEntity(COLLECTION, note)
 
@@ -87,8 +87,8 @@ describe('mergeAdopted', () => {
     expect(listed[0]!.title).toBe('unstamped')
     expect(typeof listed[0]!.updatedAt).toBe('string')
     expect(listed[0]!.updatedAt!.length).toBeGreaterThan(0)
-    expect(typeof listed[0]!.deviceId).toBe('string')
-    expect(listed[0]!.deviceId!.length).toBeGreaterThan(0)
+    expect(typeof listed[0]!.clientId).toBe('string')
+    expect(listed[0]!.clientId!.length).toBeGreaterThan(0)
   })
 
   it('preserves the original LWW fields of a payload that already carries them', async () => {
@@ -98,7 +98,7 @@ describe('mergeAdopted', () => {
       id: crypto.randomUUID(),
       title: 'dated',
       updatedAt: '2025-05-05T00:00:00.000Z',
-      deviceId: 'device-original'
+      clientId: 'device-original'
     }
     await source.insertEntity(COLLECTION, note)
 
@@ -106,7 +106,7 @@ describe('mergeAdopted', () => {
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed[0]!.updatedAt).toBe('2025-05-05T00:00:00.000Z')
-    expect(listed[0]!.deviceId).toBe('device-original')
+    expect(listed[0]!.clientId).toBe('device-original')
   })
 
   it('updates the existing doc when the adopted payload wins LWW', async () => {
@@ -117,13 +117,13 @@ describe('mergeAdopted', () => {
       id: uuid,
       title: 'old',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
     await source.insertEntity(COLLECTION, {
       id: uuid,
       title: 'new',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
 
     await mergeAdopted({ store: connected, entities: await collect(source) })
@@ -133,7 +133,7 @@ describe('mergeAdopted', () => {
     expect(listed[0]!.title).toBe('new')
   })
 
-  it('breaks an updatedAt tie by the greater deviceId', async () => {
+  it('breaks an updatedAt tie by the greater clientId', async () => {
     const source = await openStore(1)
     const connected = await openStore(2)
     const uuid = crypto.randomUUID()
@@ -142,13 +142,13 @@ describe('mergeAdopted', () => {
       id: uuid,
       title: 'a-loses',
       updatedAt: at,
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
     await source.insertEntity(COLLECTION, {
       id: uuid,
       title: 'z-wins',
       updatedAt: at,
-      deviceId: 'device-z'
+      clientId: 'device-z'
     })
 
     await mergeAdopted({ store: connected, entities: await collect(source) })
@@ -166,13 +166,13 @@ describe('mergeAdopted', () => {
       id: uuid,
       title: 'keep',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
     await source.insertEntity(COLLECTION, {
       id: uuid,
       title: 'stale',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      deviceId: 'device-a'
+      clientId: 'device-a'
     })
 
     await mergeAdopted({ store: connected, entities: await collect(source) })

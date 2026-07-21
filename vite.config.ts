@@ -11,6 +11,13 @@ export default defineConfig({
   optimizeDeps: {
     entries: ['src/index.ts', 'src/mui/index.ts']
   },
+  // A dedicated port (with strictPort so Vite fails loudly instead of
+  // silently drifting to another port) keeps the Playwright suite from
+  // accidentally talking to some other project's dev server on 5173.
+  server: {
+    port: 5183,
+    strictPort: true
+  },
   test: {
     include: ['test/node/**/*.test.{ts,tsx}', 'src/**/*.test.{ts,tsx}'],
     // Default to node (crypto/IndexedDB tests); React hook/component tests

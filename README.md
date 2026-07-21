@@ -104,7 +104,7 @@ no per-collection key is derived, payloads are stored as-is locally and
 remotely, and the stored resource id is the payload's own logical `id`, so a
 public document keeps a stable, shareable resource URL across edits. Be aware
 that everything in a public payload is world-readable -- including the LWW
-bookkeeping fields `updatedAt` and `deviceId` (`deviceId` is a random
+bookkeeping fields `updatedAt` and `clientId` (`clientId` is a random
 per-install identifier, but still a linkability handle across a user's public
 documents). Changing a collection's visibility after first use is a
 data-migration event, not a config tweak: rows written in the other mode stop
@@ -112,7 +112,7 @@ being readable. A registry that maps one WAS collection id to both visibilities
 is rejected at store open. Two payload constraints on public collections: a
 top-level object-valued `jwe` field is reserved (the read path uses it to
 recognize a stray encrypted envelope and refuses the row), and payloads should
-carry the `updatedAt` / `deviceId` LWW fields like any other collection --
+carry the `updatedAt` / `clientId` LWW fields like any other collection --
 without them a concurrent multi-device edit falls back to server-wins.
 
 At login, a public collection is requested from the wallet with the distinct
@@ -138,7 +138,7 @@ export interface Note {
   body: string
   createdAt: string
   updatedAt: string
-  deviceId: string
+  clientId: string
 }
 
 export const useNotes = createEntityStore<Note>('notes')
@@ -201,7 +201,7 @@ export function LoginPage() {
 
 ```tsx
 import { uuidv7 } from 'uuidv7'
-import { getDeviceId } from '@interop/was-react'
+import { getClientId } from '@interop/was-react'
 import { useNotes } from './stores.js'
 
 export function Notes() {
@@ -216,7 +216,7 @@ export function Notes() {
       body: '',
       createdAt: now,
       updatedAt: now,
-      deviceId: getDeviceId()
+      clientId: getClientId()
     })
   }
 
@@ -233,7 +233,7 @@ export function Notes() {
 }
 ```
 
-Entity payloads MUST carry `updatedAt` and `deviceId` (from `getDeviceId()`),
+Entity payloads MUST carry `updatedAt` and `clientId` (from `getClientId()`),
 stamped on EVERY insert and update: they are the last-write-wins pair that
 settles concurrent multi-device edits of the same entity. A payload without them
 loses every sync conflict.
@@ -402,8 +402,8 @@ Hooks:
   zcaps). Pull is driven by the WAS `changes` feed; a low-frequency periodic
   re-sync (`sync.pollMs`, default 15s) keeps open sessions converging.
 - **Conflict resolution.** Last-writer-wins on the payload's own
-  `(updatedAt, deviceId)` (ISO lexical compare, with a per-install random
-  `deviceId` tiebreaker). Updates re-encrypt in place under the same envelope id
+  `(updatedAt, clientId)` (ISO lexical compare, with a per-install random
+  `clientId` tiebreaker). Updates re-encrypt in place under the same envelope id
   with `sequence`+1 (a mutable-head model); deletes are soft-delete tombstones.
 - **Status.** `useSyncStatus()` rolls the per-collection replication states up
   to an aggregate: `offline` (no replication running / local-only), or

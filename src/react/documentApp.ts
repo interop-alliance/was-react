@@ -5,16 +5,16 @@
  * The tier-1 "one sandbox document" facade: `defineDocumentApp` builds the
  * whole was-react wiring (config, store registry, entity store) for an app
  * whose entire model is a single key-value document -- an Excalidraw-style
- * editor, a browser-game save file -- and returns a typed `useDocument` hook
+ * editor, a browser-game save file -- and returns a typed `useAppDocument` hook
  * over it. The app never sees `createEntityStore`, grants parsing, or sync
  * internals: it renders `doc`, calls `update`, and optionally offers file
  * export/import and a "Save to Web Spaces" connect button.
  *
  * The facade is a degenerate entity store: one collection (the app-named
  * sandbox collection) holding one logical document under a fixed id. The
- * stored row wraps the app's data (`{ id, updatedAt, deviceId, data }`) so app
+ * stored row wraps the app's data (`{ id, updatedAt, clientId, data }`) so app
  * fields can never collide with the LWW fields the sync layer requires, and
- * the facade stamps `updatedAt`/`deviceId` on every write itself. Hydration
+ * the facade stamps `updatedAt`/`clientId` on every write itself. Hydration
  * goes through `LocalStore.hydrateSingleton`, which LWW-reconciles the
  * duplicate envelope rows two devices can mint for the same logical document.
  *
@@ -37,7 +37,7 @@ import type {
 import type { SeedCredentialConfig } from '../identity/seedCredential.js'
 import type { SessionStatus } from '../session/authStore.js'
 import { createEntityStore } from '../storage/entityStore.js'
-import { getDeviceId, requireStore } from '../storage/storageManager.js'
+import { getClientId, requireStore } from '../storage/storageManager.js'
 import type { SyncRollup } from '../storage/syncStatusStore.js'
 import { useAuthStore, useSession, useSyncStatus } from './hooks.js'
 
@@ -63,7 +63,7 @@ export const DOCUMENT_EXPORT_FORMAT = 'was-document/v1'
 interface StoredDocument<T> {
   id: string
   updatedAt: string
-  deviceId: string
+  clientId: string
   data: T
 }
 
@@ -84,7 +84,7 @@ export interface DocumentApp<T extends object> {
   /**
    * The tier-1 document hook. Usable in any component below the provider.
    */
-  useDocument: () => {
+  useAppDocument: () => {
     /**
      * The document: `undefined` during boot, then the stored value or the
      * configured `initial` when nothing has been written yet.
@@ -143,7 +143,7 @@ export interface DocumentApp<T extends object> {
 /**
  * Builds the complete wiring for a one-document app: a `WasAppConfig` with a
  * single sandbox collection and local-first onboarding, the singleton-document
- * store registry, and the typed `useDocument` hook bound to both.
+ * store registry, and the typed `useAppDocument` hook bound to both.
  *
  * @param options {object}
  * @param options.appName {string}   human-readable name (consent reason lines)
@@ -226,7 +226,7 @@ export function defineDocumentApp<T extends object>({
     await docStore.getState().upsert({
       id: DOCUMENT_ID,
       updatedAt: new Date().toISOString(),
-      deviceId: getDeviceId({
+      clientId: getClientId({
         ...(storageKeyPrefix !== undefined && { storageKeyPrefix })
       }),
       data
@@ -281,7 +281,7 @@ export function defineDocumentApp<T extends object>({
     await update(() => imported)
   }
 
-  function useDocument(): ReturnType<DocumentApp<T>['useDocument']> {
+  function useAppDocument(): ReturnType<DocumentApp<T>['useAppDocument']> {
     const held = docStore(state => state.byId.get(DOCUMENT_ID))
     const { status, authenticating, error } = useSession()
     const { state: syncState } = useSyncStatus()
@@ -305,5 +305,5 @@ export function defineDocumentApp<T extends object>({
     }
   }
 
-  return { config, registry, useDocument }
+  return { config, registry, useAppDocument }
 }
