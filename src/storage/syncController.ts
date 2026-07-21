@@ -58,7 +58,11 @@ type Unsubscribable = { unsubscribe: () => void }
  * `401` / `403` to a typed {@link WasSyncAuthError} at the boundary. RxDB then
  * wraps that thrown error inside an RxError (nested under `cause` / `errors` /
  * `parameters.errors`), so this walks the error graph looking for a
- * `WasSyncAuthError` instance rather than re-extracting raw status codes.
+ * `WasSyncAuthError` rather than re-extracting raw status codes. RxDB's
+ * wrapping serializes the handler's thrown error to plain JSON (name, message,
+ * stack -- `errorToPlainJson`), so the walk matches the serialized `name`
+ * alongside a live instance; an instance only ever appears when a caller hands
+ * the port error over directly.
  *
  * @param err {unknown}
  * @returns {boolean}
@@ -72,7 +76,10 @@ export function isAuthError(err: unknown): boolean {
       continue
     }
     seen.add(current)
-    if (current instanceof WasSyncAuthError) {
+    if (
+      current instanceof WasSyncAuthError ||
+      (current as { name?: unknown }).name === 'WasSyncAuthError'
+    ) {
       return true
     }
     const candidate = current as {

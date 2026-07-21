@@ -78,6 +78,25 @@ describe('isAuthError', () => {
     expect(isAuthError(rxError)).toBe(true)
   })
 
+  it('recognises the plain-JSON form RxDB serializes handler errors to', () => {
+    // RxDB's RC_PULL/RC_PUSH wrapping runs the thrown error through
+    // `errorToPlainJson`, keeping only name/message/stack -- no instance, no
+    // custom fields like `status`.
+    const rxError = {
+      code: 'RC_PULL',
+      parameters: {
+        errors: [
+          {
+            name: 'WasSyncAuthError',
+            message: 'WAS storage access denied (HTTP 403).',
+            stack: 'WasSyncAuthError: ...'
+          }
+        ]
+      }
+    }
+    expect(isAuthError(rxError)).toBe(true)
+  })
+
   it('recognises a WasSyncAuthError nested under `cause`', () => {
     expect(isAuthError({ cause: { cause: new WasSyncAuthError(401) } })).toBe(
       true

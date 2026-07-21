@@ -9,28 +9,67 @@
  * that the Node unit tests miss.
  */
 import { expect, test } from '@playwright/test'
+import type { Page } from '@playwright/test'
+
+/**
+ * Navigates to the test page and runs the given evaluate step, retrying when
+ * Vite's dep optimizer discovers a dependency mid-import on a cold cache and
+ * triggers a full page reload, destroying the evaluate's execution context.
+ *
+ * @param options {object}
+ * @param options.page {Page}
+ * @param options.evaluate {Function}
+ * @returns {Promise<ResultType>} The evaluate step's result.
+ */
+async function withOptimizerReloadRetry<ResultType>({
+  page,
+  evaluate
+}: {
+  page: Page
+  evaluate: () => Promise<ResultType>
+}): Promise<ResultType> {
+  const maxAttempts = 3
+  for (let attempt = 1; ; attempt++) {
+    await page.goto('/test/index.html')
+    try {
+      return await evaluate()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (
+        attempt < maxAttempts &&
+        message.includes('Execution context was destroyed')
+      ) {
+        continue
+      }
+      throw err
+    }
+  }
+}
 
 test('the core entry imports and exposes its public API in the browser', async ({
   page
 }) => {
-  await page.goto('/test/index.html')
-
-  const exports = await page.evaluate(async entry => {
-    // The path is passed as an argument (not a literal) so the TypeScript
-    // checker does not try to resolve the Vite-served source URL at build time.
-    const mod = await import(entry)
-    return {
-      createAuthStore: typeof mod.createAuthStore,
-      WasSessionProvider: typeof mod.WasSessionProvider,
-      useSession: typeof mod.useSession,
-      loginWithWallet: typeof mod.loginWithWallet,
-      createSyncController: typeof mod.createSyncController,
-      startWasSync: typeof mod.startWasSync,
-      parseGrants: typeof mod.parseGrants,
-      createDocumentLoader: typeof mod.createDocumentLoader,
-      DEFAULT_DB_NAME: mod.DEFAULT_DB_NAME
-    }
-  }, '/src/index.ts')
+  const exports = await withOptimizerReloadRetry({
+    page,
+    evaluate: () =>
+      page.evaluate(async entry => {
+        // The path is passed as an argument (not a literal) so the TypeScript
+        // checker does not try to resolve the Vite-served source URL at build
+        // time.
+        const mod = await import(entry)
+        return {
+          createAuthStore: typeof mod.createAuthStore,
+          WasSessionProvider: typeof mod.WasSessionProvider,
+          useSession: typeof mod.useSession,
+          loginWithWallet: typeof mod.loginWithWallet,
+          createSyncController: typeof mod.createSyncController,
+          startWasSync: typeof mod.startWasSync,
+          parseGrants: typeof mod.parseGrants,
+          createDocumentLoader: typeof mod.createDocumentLoader,
+          DEFAULT_DB_NAME: mod.DEFAULT_DB_NAME
+        }
+      }, '/src/index.ts')
+  })
 
   expect(exports.createAuthStore).toBe('function')
   expect(exports.WasSessionProvider).toBe('function')
@@ -44,18 +83,20 @@ test('the core entry imports and exposes its public API in the browser', async (
 })
 
 test('the mui subpath imports and exposes its components', async ({ page }) => {
-  await page.goto('/test/index.html')
-
-  const exports = await page.evaluate(async entry => {
-    const mod = await import(entry)
-    return {
-      ProtectedRoute: typeof mod.ProtectedRoute,
-      ReconnectBanner: typeof mod.ReconnectBanner,
-      SyncStatusChip: typeof mod.SyncStatusChip,
-      LogoutDialog: typeof mod.LogoutDialog,
-      ClearDataDialog: typeof mod.ClearDataDialog
-    }
-  }, '/src/mui/index.ts')
+  const exports = await withOptimizerReloadRetry({
+    page,
+    evaluate: () =>
+      page.evaluate(async entry => {
+        const mod = await import(entry)
+        return {
+          ProtectedRoute: typeof mod.ProtectedRoute,
+          ReconnectBanner: typeof mod.ReconnectBanner,
+          SyncStatusChip: typeof mod.SyncStatusChip,
+          LogoutDialog: typeof mod.LogoutDialog,
+          ClearDataDialog: typeof mod.ClearDataDialog
+        }
+      }, '/src/mui/index.ts')
+  })
 
   expect(exports.ProtectedRoute).toBe('function')
   expect(exports.ReconnectBanner).toBe('function')

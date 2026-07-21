@@ -1,5 +1,16 @@
 # @interop/was-react Changelog
 
+## 0.3.1 - TBD
+
+### Fixed
+
+- Revoked/expired storage access was not detected on live replication errors:
+  RxDB serializes a pull/push handler's thrown error to plain JSON before
+  wrapping it, so the typed `WasSyncAuthError` instance never appears in the
+  emitted error graph and `isAuthError` returned false -- the session stayed
+  `connected` (no reconnect banner) while the sync status chip showed an error.
+  `isAuthError` now also matches the serialized error by `name`.
+
 ## 0.3.0 - 2026-07-20
 
 ### Changed
