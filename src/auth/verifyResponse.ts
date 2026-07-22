@@ -77,11 +77,29 @@ export async function verifyLoginPresentation({
     const failures = [
       ...result.presentationResults,
       ...result.credentialResults.flatMap(c => c.results)
-    ]
-      .filter(check => check.outcome.status === 'failure')
-      .map(check => check.check)
+    ].flatMap(check =>
+      check.outcome.status === 'failure'
+        ? [{ check: check.check, problems: check.outcome.problems }]
+        : []
+    )
+    // The thrown message surfaces in the login UI; the raw presentation and
+    // the per-check problem details are console-only diagnostics.
+    console.error(
+      'Wallet presentation failed verification. Presentation:',
+      JSON.stringify(presentation, null, 2)
+    )
+    console.error('Failing checks:', JSON.stringify(failures, null, 2))
+    const summary = failures
+      .map(failure => {
+        const detail = failure.problems
+          .map(problem => problem.detail || problem.title)
+          .filter(Boolean)
+          .join('; ')
+        return detail ? `${failure.check}: ${detail}` : failure.check
+      })
+      .join(', ')
     throw new Error(
-      `Wallet presentation failed verification (${failures.join(', ') || 'unknown check'}).`
+      `Wallet presentation failed verification (${summary || 'unknown check'}).`
     )
   }
 
