@@ -1,5 +1,14 @@
 # @interop/was-react Changelog
 
+## 0.3.5 - TBD
+
+### Changed
+
+- Improve diagnostics when a wallet presentation fails verification: the thrown
+  error now includes each failing check's problem details (not just the check
+  names), and the full presentation plus the failing check results are logged to
+  the console for debugging.
+
 ## 0.3.4 - 2026-07-22
 
 ### Fixed

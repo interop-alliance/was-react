@@ -98,4 +98,6 @@ extension even though source files are `.ts` — e.g.
 ## Conventions
 
 Code style, refactoring, JSDoc, comment, and error-handling conventions live in
-@CONTRIBUTING.md -- follow them.
+@CONTRIBUTING.md -- follow them. That file's marked conventions block is the
+canonical shared core copied across `@interop/*` repos; edit it there, not in
+downstream copies.
