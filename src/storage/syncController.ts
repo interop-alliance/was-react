@@ -110,13 +110,13 @@ interface CollectionReplication {
  * {@link createSyncController}.
  */
 export class SyncController {
-  private _collections: WasCollectionConfig[]
-  private _sync: WasSyncConfig
-  private _replications: CollectionReplication[] = []
-  private _onlineHandler?: () => void
-  private _pollTimer?: ReturnType<typeof setInterval>
-  private _started = false
-  private _stopped = false
+  #collections: WasCollectionConfig[]
+  #sync: WasSyncConfig
+  #replications: CollectionReplication[] = []
+  #onlineHandler?: () => void
+  #pollTimer?: ReturnType<typeof setInterval>
+  #started = false
+  #stopped = false
 
   constructor({
     collections,
@@ -125,8 +125,8 @@ export class SyncController {
     collections: WasCollectionConfig[]
     sync?: WasSyncConfig
   }) {
-    this._collections = collections
-    this._sync = sync ?? {}
+    this.#collections = collections
+    this.#sync = sync ?? {}
   }
 
   /**
@@ -160,17 +160,17 @@ export class SyncController {
     // `stop()` is terminal: a controller stopped before `start()` ran (a logout
     // that raced an in-flight session bootstrap) must never spin up
     // replications against the now-closed database.
-    if (this._started || this._stopped) {
+    if (this.#started || this.#stopped) {
       return
     }
-    this._started = true
+    this.#started = true
     const setStatus = useSyncStatusStore.getState().setStatus
-    const batchSize = this._sync.batchSize
-    const retryMs = this._sync.retryMs
-    const pollMs = this._sync.pollMs ?? DEFAULT_SYNC_POLL_MS
+    const batchSize = this.#sync.batchSize
+    const retryMs = this.#sync.retryMs
+    const pollMs = this.#sync.pollMs ?? DEFAULT_SYNC_POLL_MS
 
     try {
-      for (const { key, id } of this._collections) {
+      for (const { key, id } of this.#collections) {
         const capability = remoteStore.collectionCapability(id)
         // A collection the grant set does not cover would otherwise sync with no
         // capability and draw a fail-closed 403, tripping the session-wide
@@ -221,18 +221,18 @@ export class SyncController {
               .$.subscribe(event => onRemoteChange(key, event))
           )
         }
-        this._replications.push({ state, subscriptions })
+        this.#replications.push({ state, subscriptions })
       }
 
-      this._onlineHandler = () => this.reSync()
-      window.addEventListener('online', this._onlineHandler)
+      this.#onlineHandler = () => this.reSync()
+      window.addEventListener('online', this.#onlineHandler)
 
       // The pull side has no server-side live stream, so an already-open session
       // would otherwise never see another device's edits. A low-frequency
       // periodic reSync polls the changes feed so multi-device edits converge
       // live (the change subscriptions above then patch the stores).
       if (pollMs > 0) {
-        this._pollTimer = setInterval(() => this.reSync(), pollMs)
+        this.#pollTimer = setInterval(() => this.reSync(), pollMs)
       }
     } catch (err) {
       console.error('Failed to start sync controller:', err)
@@ -247,7 +247,7 @@ export class SyncController {
    * @returns {void}
    */
   reSync(): void {
-    for (const { state } of this._replications) {
+    for (const { state } of this.#replications) {
       state.reSync()
     }
   }
@@ -261,16 +261,16 @@ export class SyncController {
   async stop(): Promise<void> {
     // Latch first so a concurrent `start()` (a logout racing the session
     // bootstrap) sees the controller as terminally stopped and bails.
-    this._stopped = true
-    if (this._onlineHandler) {
-      window.removeEventListener('online', this._onlineHandler)
-      this._onlineHandler = undefined
+    this.#stopped = true
+    if (this.#onlineHandler) {
+      window.removeEventListener('online', this.#onlineHandler)
+      this.#onlineHandler = undefined
     }
-    if (this._pollTimer) {
-      clearInterval(this._pollTimer)
-      this._pollTimer = undefined
+    if (this.#pollTimer) {
+      clearInterval(this.#pollTimer)
+      this.#pollTimer = undefined
     }
-    for (const { state, subscriptions } of this._replications) {
+    for (const { state, subscriptions } of this.#replications) {
       for (const subscription of subscriptions) {
         subscription.unsubscribe()
       }
@@ -280,9 +280,9 @@ export class SyncController {
         console.error('Error cancelling replication:', err)
       }
     }
-    this._replications = []
+    this.#replications = []
     useSyncStatusStore.getState().reset()
-    this._started = false
+    this.#started = false
   }
 }
 

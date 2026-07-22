@@ -63,10 +63,10 @@ export class WasRemoteStore {
   public readonly was: WasClient
   public readonly serverUrl: string
   public readonly spaceId: string
-  private readonly _byCollectionId: Record<string, IZcap>
+  readonly #byCollectionId: Record<string, IZcap>
   // Per WAS collection id: the effective visibility + declared equality
   // indexes (the registry guarantees one declaration per id).
-  private readonly _configById: Map<
+  readonly #configById: Map<
     string,
     { visibility: 'private' | 'public'; indexes?: string[] }
   >
@@ -86,8 +86,8 @@ export class WasRemoteStore {
     this.was = was
     this.serverUrl = parsed.serverUrl
     this.spaceId = parsed.spaceId
-    this._byCollectionId = parsed.byCollectionId
-    this._configById = configById
+    this.#byCollectionId = parsed.byCollectionId
+    this.#configById = configById
   }
 
   /**
@@ -141,7 +141,7 @@ export class WasRemoteStore {
    * @returns {IZcap | undefined}
    */
   collectionCapability(collectionId: string): IZcap | undefined {
-    return this._byCollectionId[collectionId]
+    return this.#byCollectionId[collectionId]
   }
 
   /**
@@ -157,10 +157,10 @@ export class WasRemoteStore {
    * @returns {Promise<MarkerResult>}
    */
   async markCollectionEncrypted(collectionId: string): Promise<MarkerResult> {
-    if (this._configById.get(collectionId)?.visibility === 'public') {
+    if (this.#configById.get(collectionId)?.visibility === 'public') {
       return { collectionId, ok: true, skipped: true }
     }
-    return this._putDescription({
+    return this.#putDescription({
       collectionId,
       description: { id: collectionId, encryption: { scheme: 'edv' } }
     })
@@ -180,7 +180,7 @@ export class WasRemoteStore {
    * @returns {Promise<MarkerResult>}
    */
   async declareCollectionIndexes(collectionId: string): Promise<MarkerResult> {
-    const config = this._configById.get(collectionId)
+    const config = this.#configById.get(collectionId)
     if (
       config?.visibility !== 'public' ||
       !config.indexes ||
@@ -188,7 +188,7 @@ export class WasRemoteStore {
     ) {
       return { collectionId, ok: true, skipped: true }
     }
-    return this._putDescription({
+    return this.#putDescription({
       collectionId,
       description: { id: collectionId, indexes: config.indexes }
     })
@@ -225,7 +225,7 @@ export class WasRemoteStore {
     limit?: number
     cursor?: string
   }): Promise<EqualityQueryPage> {
-    const config = this._configById.get(collectionId)
+    const config = this.#configById.get(collectionId)
     if (config?.visibility !== 'public') {
       throw new Error(
         `Equality queries require a public (plaintext) collection; ` +
@@ -313,7 +313,7 @@ export class WasRemoteStore {
     collectionId: string
     id: string
   }): string {
-    const config = this._configById.get(collectionId)
+    const config = this.#configById.get(collectionId)
     if (config?.visibility !== 'public') {
       throw new Error(
         `Public share URLs require a public (plaintext) collection; ` +
@@ -342,7 +342,7 @@ export class WasRemoteStore {
    * marker and the indexes declaration: invokes the collection's delegated RW
    * zcap and reports the outcome rather than throwing.
    */
-  private async _putDescription({
+  async #putDescription({
     collectionId,
     description
   }: {

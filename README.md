@@ -500,6 +500,12 @@ source on the fly; there is no standalone browser app.
 PRs accepted. If editing the Readme, please conform to the
 [standard-readme](https://github.com/RichardLitt/standard-readme) specification.
 
+See:
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) -- the directory map and the Login With
+  Wallet (App Connect) protocol.
+- [CONTRIBUTING.md](CONTRIBUTING.md) -- editor setup and code style conventions.
+
 ## License
 
 [MIT License](LICENSE.md) © 2026 Interop Alliance. </content> </invoke>

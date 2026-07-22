@@ -1,4 +1,4 @@
-  export default {
+export default {
   arrowParens: 'avoid',
   bracketSameLine: false,
   bracketSpacing: true,

@@ -84,12 +84,12 @@ export function dbNameForController({
  * the pass-through plaintext codec (public collections) and opens RxDB.
  */
 export class LocalStore {
-  private _db: RxDatabase
-  private _collections: Record<string, RxCollection<SyncedDoc>>
-  private _ciphers: Record<string, DocCipher>
-  private _configs: Record<string, WasCollectionConfig>
+  #db: RxDatabase
+  #collections: Record<string, RxCollection<SyncedDoc>>
+  #ciphers: Record<string, DocCipher>
+  #configs: Record<string, WasCollectionConfig>
   // Per-collection logical-uuid -> envelope (RxDB primary key) index.
-  private _index: Record<string, Map<string, string>>
+  #index: Record<string, Map<string, string>>
 
   private constructor({
     db,
@@ -102,11 +102,11 @@ export class LocalStore {
     ciphers: Record<string, DocCipher>
     configs: Record<string, WasCollectionConfig>
   }) {
-    this._db = db
-    this._collections = collections
-    this._ciphers = ciphers
-    this._configs = configs
-    this._index = {}
+    this.#db = db
+    this.#collections = collections
+    this.#ciphers = ciphers
+    this.#configs = configs
+    this.#index = {}
   }
 
   /**
@@ -198,8 +198,8 @@ export class LocalStore {
     })
   }
 
-  private _collection(key: string): RxCollection<SyncedDoc> {
-    const collection = this._collections[key]
+  #collection(key: string): RxCollection<SyncedDoc> {
+    const collection = this.#collections[key]
     if (!collection) {
       throw new Error(`Unknown collection "${key}".`)
     }
@@ -215,15 +215,15 @@ export class LocalStore {
    * @returns {WasCollectionConfig}
    */
   collectionConfig(key: string): WasCollectionConfig {
-    const config = this._configs[key]
+    const config = this.#configs[key]
     if (!config) {
       throw new Error(`Unknown collection "${key}".`)
     }
     return config
   }
 
-  private _cipher(key: string): DocCipher {
-    const cipher = this._ciphers[key]
+  #cipher(key: string): DocCipher {
+    const cipher = this.#ciphers[key]
     if (!cipher) {
       throw new Error(`No cipher for collection "${key}".`)
     }
@@ -234,14 +234,14 @@ export class LocalStore {
    * Builds (or rebuilds) the `uuid -> envelopeId` index for one collection by
    * decrypting every live row. Returns the index map.
    */
-  private async _ensureIndex(key: string): Promise<Map<string, string>> {
-    const existing = this._index[key]
+  async #ensureIndex(key: string): Promise<Map<string, string>> {
+    const existing = this.#index[key]
     if (existing) {
       return existing
     }
     const index = new Map<string, string>()
-    const cipher = this._cipher(key)
-    const docs = await this._collection(key).find().exec()
+    const cipher = this.#cipher(key)
+    const docs = await this.#collection(key).find().exec()
     // Decrypt rows concurrently: index building has no ordering dependency, so
     // serializing the per-row WebCrypto work would only stall the unlock path.
     const entries = await Promise.all(
@@ -261,7 +261,7 @@ export class LocalStore {
         index.set(entry.uuid, entry.envelopeId)
       }
     }
-    this._index[key] = index
+    this.#index[key] = index
     return index
   }
 
@@ -276,17 +276,17 @@ export class LocalStore {
     key: string,
     payload: T
   ): Promise<void> {
-    const cipher = this._cipher(key)
+    const cipher = this.#cipher(key)
     const { id: envelopeId, envelope } = await cipher.encrypt({
       data: payload as Json
     })
-    await this._collection(key).insert({
+    await this.#collection(key).insert({
       id: envelopeId,
       updatedAt: new Date().toISOString(),
       version: 0,
       data: envelope
     })
-    const index = await this._ensureIndex(key)
+    const index = await this.#ensureIndex(key)
     index.set(payload.id, envelopeId)
   }
 
@@ -303,7 +303,7 @@ export class LocalStore {
     key: string,
     payload: T
   ): Promise<void> {
-    const index = await this._ensureIndex(key)
+    const index = await this.#ensureIndex(key)
     const envelopeId = index.get(payload.id)
     // The entity's envelope may be gone -- another device deleted it and the
     // tombstone was pulled (which forgets the index entry), or its row was
@@ -315,7 +315,7 @@ export class LocalStore {
       await this.insertEntity(key, payload)
       return
     }
-    const doc = await this._collection(key).findOne(envelopeId).exec()
+    const doc = await this.#collection(key).findOne(envelopeId).exec()
     if (!doc) {
       index.delete(payload.id)
       await this.insertEntity(key, payload)
@@ -327,7 +327,7 @@ export class LocalStore {
       await this.insertEntity(key, payload)
       return
     }
-    const cipher = this._cipher(key)
+    const cipher = this.#cipher(key)
     const { envelope } = await cipher.encryptUpdate({
       id: envelopeId,
       data: payload as Json,
@@ -353,7 +353,7 @@ export class LocalStore {
     key: string,
     payload: T
   ): Promise<void> {
-    const index = await this._ensureIndex(key)
+    const index = await this.#ensureIndex(key)
     if (index.has(payload.id)) {
       await this.updateEntity(key, payload)
     } else {
@@ -369,12 +369,12 @@ export class LocalStore {
    * @returns {Promise<void>}
    */
   async deleteEntity(key: string, uuid: string): Promise<void> {
-    const index = await this._ensureIndex(key)
+    const index = await this.#ensureIndex(key)
     const envelopeId = index.get(uuid)
     if (!envelopeId) {
       return
     }
-    const doc = await this._collection(key).findOne(envelopeId).exec()
+    const doc = await this.#collection(key).findOne(envelopeId).exec()
     if (doc) {
       await doc.remove()
     }
@@ -390,7 +390,7 @@ export class LocalStore {
    * @returns {Promise<number>}
    */
   async countEntities(key: string): Promise<number> {
-    const docs = await this._collection(key).find().exec()
+    const docs = await this.#collection(key).find().exec()
     return docs.length
   }
 
@@ -402,9 +402,9 @@ export class LocalStore {
    * @returns {Promise<T[]>}
    */
   async listEntities<T extends EntityPayload>(key: string): Promise<T[]> {
-    const cipher = this._cipher(key)
+    const cipher = this.#cipher(key)
     const index = new Map<string, string>()
-    const docs = await this._collection(key).find().exec()
+    const docs = await this.#collection(key).find().exec()
     // Decrypt every row concurrently (the unlock hot path): the store is keyed
     // by logical uuid, so payload order does not matter and serializing the
     // per-row WebCrypto work would only add latency.
@@ -426,7 +426,7 @@ export class LocalStore {
       index.set(entry.payload.id, entry.envelopeId)
       payloads.push(entry.payload)
     }
-    this._index[key] = index
+    this.#index[key] = index
     return payloads
   }
 
@@ -446,8 +446,8 @@ export class LocalStore {
   async hydrateSingleton<
     T extends { id: string; updatedAt: string; clientId: string }
   >(key: string): Promise<T | null> {
-    const cipher = this._cipher(key)
-    const collection = this._collection(key)
+    const cipher = this.#cipher(key)
+    const collection = this.#collection(key)
     const rows = await collection.find().exec()
     const decoded: Array<{ envelopeId: string; payload: T }> = []
     for (const row of rows) {
@@ -459,7 +459,7 @@ export class LocalStore {
       decoded.push({ envelopeId, payload })
     }
     const index = new Map<string, string>()
-    this._index[key] = index
+    this.#index[key] = index
     if (decoded.length === 0) {
       return null
     }
@@ -498,7 +498,7 @@ export class LocalStore {
     key: string,
     envelope: Json
   ): Promise<T> {
-    return (await this._cipher(key).decrypt({ envelope })) as T
+    return (await this.#cipher(key).decrypt({ envelope })) as T
   }
 
   /**
@@ -512,7 +512,7 @@ export class LocalStore {
    * @returns {void}
    */
   rememberEnvelope(key: string, uuid: string, envelopeId: string): void {
-    this._index[key]?.set(uuid, envelopeId)
+    this.#index[key]?.set(uuid, envelopeId)
   }
 
   /**
@@ -523,7 +523,7 @@ export class LocalStore {
    * @returns {void}
    */
   forgetEnvelope(key: string, uuid: string): void {
-    this._index[key]?.delete(uuid)
+    this.#index[key]?.delete(uuid)
   }
 
   /**
@@ -537,7 +537,7 @@ export class LocalStore {
    * @returns {string | undefined}
    */
   envelopeIdFor(key: string, uuid: string): string | undefined {
-    return this._index[key]?.get(uuid)
+    return this.#index[key]?.get(uuid)
   }
 
   /**
@@ -548,7 +548,7 @@ export class LocalStore {
    * @returns {RxCollection<SyncedDoc>}
    */
   rxCollection(key: string): RxCollection<SyncedDoc> {
-    return this._collection(key)
+    return this.#collection(key)
   }
 
   /**
@@ -557,7 +557,7 @@ export class LocalStore {
    * @returns {Promise<void>}
    */
   async close(): Promise<void> {
-    await this._db.close()
+    await this.#db.close()
   }
 
   /**
@@ -567,7 +567,7 @@ export class LocalStore {
    * @returns {Promise<void>}
    */
   async remove(): Promise<void> {
-    await this._db.remove()
+    await this.#db.remove()
   }
 
   /**
