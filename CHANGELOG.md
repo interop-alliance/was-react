@@ -1,5 +1,12 @@
 # @interop/was-react Changelog
 
+## 0.3.3 - 2026-07-22
+
+### Changed
+
+- Update to latest `@interop/` deps, convert private fields from `_` to `#`
+  prefix.
+
 ## 0.3.2 - 2026-07-20
 
 ### Fixed
