@@ -1,5 +1,20 @@
 # @interop/was-react Changelog
 
+## 0.3.4 - TBD
+
+### Fixed
+
+- Connecting (via `login` or `connectWithGrants`) with the merge-adoption
+  default could fail for apps with many collections: the adoption collect opened
+  a fresh handle on the anonymous replica while the process-wide holder was
+  still open, so both replicas' collections were open at once -- and the
+  connected replica's open then tripped RxDB's process-wide open-collections cap
+  (error COL23; free RxDB allows 13, so any app with more than 6 collections
+  could not connect). The connect transition now tears the anonymous holder down
+  before collecting the adoptable payloads, so at most one replica's collections
+  are open at any moment; a collect failure at that point re-opens the anonymous
+  replica and rethrows, leaving `local` intact.
+
 ## 0.3.3 - 2026-07-22
 
 ### Changed
