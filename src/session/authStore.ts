@@ -642,19 +642,20 @@ export function createAuthStore({
   }
 
   /**
-   * Reads every decrypted payload out of the anonymous replica ahead of its
-   * teardown (adoption is a copy: the anonymous and connected replicas derive
-   * their ciphers from different seeds, so envelopes cannot move across).
-   * Returns null when there is nothing to adopt -- not in `local`, or every
-   * collection empty -- in which case the anonymous replica is simply left
-   * intact, exactly as an `adopt: 'leave'` login leaves it.
+   * Reads every decrypted payload out of the anonymous replica (adoption is a
+   * copy: the anonymous and connected replicas derive their ciphers from
+   * different seeds, so envelopes cannot move across). Returns null when there
+   * is nothing to adopt -- not in `local`, or every collection empty -- in
+   * which case the anonymous database is simply left in place, exactly as an
+   * `adopt: 'leave'` login leaves it.
    *
-   * Reads through a FRESH handle on the anonymous database (re-derived from the
-   * persisted anonymous seed), not the process-wide holder. Adoption runs from
-   * `login` / `connectWithGrants`, which are OFF the serialized boot/destroy
-   * lifecycle chain, so a provider unmount firing `destroy` mid-login could
-   * close the holder out from under this read; re-deriving from the seed keeps
-   * the collect independent of the holder so it can never abort the connect.
+   * Reads through a FRESH handle on the anonymous database (re-derived from
+   * the persisted anonymous seed), not the process-wide holder -- the holder
+   * has already been torn down by {@link detachAndCollect} (and even before
+   * that ordering existed, a provider unmount firing `destroy` mid-login could
+   * close the holder out from under this read; `login`/`connectWithGrants`
+   * are OFF the serialized boot/destroy lifecycle chain). Re-deriving from the
+   * seed keeps the collect independent of the holder's lifecycle.
    *
    * @returns {Promise<AdoptSource | null>}
    */
@@ -686,6 +687,38 @@ export function createAuthStore({
       return total > 0 ? { controllerDid, entities } : null
     } finally {
       await anonLocal.close()
+    }
+  }
+
+  /**
+   * The connect-transition prologue shared by `login` and `connectWithGrants`:
+   * tears the anonymous holder down FIRST and only then reads the adoptable
+   * payloads (merge only) through the fresh handle `collectAdoptable` opens.
+   * The ordering is load-bearing: the holder and the collect handle each open
+   * every configured collection, so holding both at once doubles the open-
+   * collection count and trips RxDB's process-wide open-collections cap for
+   * apps with many collections (COL23). Detaching first keeps at most one
+   * replica's collections open at any moment during the transition.
+   *
+   * After the holder is gone a collect failure would otherwise strand the
+   * session with no open store, so it re-opens the anonymous replica (nothing
+   * has been adopted yet; `local` survives intact) and rethrows.
+   *
+   * @param adopt {'merge' | 'leave'}
+   * @returns {Promise<AdoptSource | null>}
+   */
+  async function detachAndCollect(
+    adopt: 'merge' | 'leave'
+  ): Promise<AdoptSource | null> {
+    await deactivateStore()
+    if (adopt !== 'merge') {
+      return null
+    }
+    try {
+      return await collectAdoptable()
+    } catch (err) {
+      await openLocal()
+      throw err
     }
   }
 
@@ -810,13 +843,12 @@ export function createAuthStore({
             config: loginConfig,
             onPhase: phase => set({ phase })
           })
-          // The wallet succeeded: collect the anonymous replica's payloads (merge
-          // only), then -- only now -- tear it down (a cancel above leaves
-          // `local` intact). The anonymous seed and database are deleted only
-          // after the activation lands, so a failure below still falls back to an
-          // intact `local`.
-          const source = adopt === 'merge' ? await collectAdoptable() : null
-          await deactivateStore()
+          // The wallet succeeded: tear the anonymous holder down and collect
+          // its payloads (merge only) -- a cancel above leaves `local` intact.
+          // The anonymous seed and database are deleted only after the
+          // activation lands, so a failure below still falls back to an intact
+          // `local`.
+          const source = await detachAndCollect(adopt)
           await activateConnected({
             seed: outcome.seed,
             identity: outcome.identity,
@@ -863,8 +895,7 @@ export function createAuthStore({
         const expires =
           earliestExpiry(grants) ??
           new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
-        const source = adopt === 'merge' ? await collectAdoptable() : null
-        await deactivateStore()
+        const source = await detachAndCollect(adopt)
         await activateConnected({
           seed,
           identity,
