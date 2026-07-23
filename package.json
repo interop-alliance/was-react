@@ -47,6 +47,7 @@
   "sideEffects": false,
   "dependencies": {
     "@interop/data-integrity-core": "^8.3.0",
+    "@interop/wallet-core": "^0.5.0",
     "@interop/ed25519-signature": "^7.1.4",
     "@interop/ezcap": "^7.4.1",
     "@interop/security-document-loader": "^9.4.4",

@@ -1,5 +1,13 @@
 # @interop/was-react Changelog
 
+## 0.3.6 - TBD
+
+### Changed
+
+- `deriveCollectionKeys` / `CollectionKeys` / `DEFAULT_KAK_HANDLE` now delegate
+  to `@interop/wallet-core/identity` (moved there verbatim; re-exported here, so
+  existing imports keep working).
+
 ## 0.3.5 - 2026-07-22
 
 ### Changed
