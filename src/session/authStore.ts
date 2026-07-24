@@ -35,6 +35,7 @@
 import { createStore, type StoreApi } from 'zustand/vanilla'
 import type { RxStorage } from 'rxdb/plugins/core'
 import type { IZcap } from '@interop/data-integrity-core'
+import type { CollectionEncryption } from '@interop/was-client'
 import {
   DEFAULT_DB_NAME,
   DEFAULT_EXPIRY_WARNING_MS,
@@ -393,7 +394,13 @@ export function createAuthStore({
       syncController: controller,
       onRemoteChange: (key, event) =>
         void patchFromChange(registry, key, event),
-      onAuthError: () => store.getState().notifyAccessExpired()
+      onAuthError: () => store.getState().notifyAccessExpired(),
+      onMarkersFetched: markers =>
+        void sessionStore
+          .saveMarkers(markers)
+          .catch(err =>
+            console.warn('Failed to cache encryption markers:', err)
+          )
     })
     setRemoteStore(remoteStore)
     return remoteStore
@@ -478,21 +485,27 @@ export function createAuthStore({
    * @param options.seed {Uint8Array}
    * @param options.controllerDid {string}
    * @param [options.adopt] {AdoptSource}
+   * @param [options.markers] {Record<string, CollectionEncryption>}   cached
+   *   encryption markers, so a connected (incl. offline hot-restore) replica
+   *   opens epoch-aware before any live description read
    * @returns {Promise<void>}
    */
   async function openAndHydrate({
     seed,
     controllerDid,
-    adopt
+    adopt,
+    markers
   }: {
     seed: Uint8Array
     controllerDid: string
     adopt?: AdoptSource
+    markers?: Record<string, CollectionEncryption>
   }): Promise<void> {
     const local = await LocalStore.init({
       seed,
       collections: config.collections,
       dbName: dbNameForController({ dbName, controllerDid }),
+      ...(markers && { markers }),
       ...(storage && { storage })
     })
     setLocalStore(local)
@@ -554,12 +567,37 @@ export function createAuthStore({
    * @param session {ActiveSession}
    * @returns {Promise<void>}
    */
+  /**
+   * Loads the persisted encryption-marker cache (keyed by WAS collection id),
+   * or `undefined` when none is stored or it is malformed. Best-effort: a read
+   * failure falls back to opening single-key ciphers (sync refreshes them).
+   */
+  async function loadCachedMarkers(): Promise<
+    Record<string, CollectionEncryption> | undefined
+  > {
+    try {
+      const stored = await sessionStore.loadMarkers()
+      if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+        return stored as Record<string, CollectionEncryption>
+      }
+    } catch (err) {
+      console.warn('Failed to load cached encryption markers:', err)
+    }
+    return undefined
+  }
+
   async function activateConnected(session: ActiveSession): Promise<void> {
     try {
+      // Load the cached encryption markers so the connected replica opens
+      // epoch-aware: an offline hot restore then decrypts multi-recipient
+      // envelopes with no live description read; an online session refreshes
+      // them from the server once sync starts.
+      const markers = await loadCachedMarkers()
       await openAndHydrate({
         seed: session.seed,
         controllerDid: session.identity.controllerDid,
-        ...(session.adopt && { adopt: session.adopt })
+        ...(session.adopt && { adopt: session.adopt }),
+        ...(markers && { markers })
       })
       await persistAndStartSync({
         seed: session.seed,

@@ -37,6 +37,8 @@ import {
   validateCollections,
   type WasCollectionConfig
 } from '../config.js'
+import type { CollectionEncryption } from '@interop/was-client'
+import { UnknownEpochError } from '@interop/was-client/edv'
 import {
   syncedDocSchema,
   createDocCipher,
@@ -90,23 +92,41 @@ export class LocalStore {
   #configs: Record<string, WasCollectionConfig>
   // Per-collection logical-uuid -> envelope (RxDB primary key) index.
   #index: Record<string, Map<string, string>>
+  // The master seed, kept so a private collection's cipher can be re-derived
+  // when its epoch marker changes (a wallet-side rotation).
+  #seed: Uint8Array
+  // The encryption marker each private collection's current cipher was built
+  // from (keyed by collection logical key), so a marker change can be detected.
+  #markers: Record<string, CollectionEncryption | undefined>
+  // Fetches a private collection's fresh encryption marker (by WAS collection
+  // id) when a decrypt meets an unknown key epoch; injected once a remote store
+  // exists. Absent offline / local-only.
+  #epochRefresher?: (
+    collectionId: string
+  ) => Promise<CollectionEncryption | undefined>
 
   private constructor({
     db,
     collections,
     ciphers,
-    configs
+    configs,
+    seed,
+    markers
   }: {
     db: RxDatabase
     collections: Record<string, RxCollection<SyncedDoc>>
     ciphers: Record<string, DocCipher>
     configs: Record<string, WasCollectionConfig>
+    seed: Uint8Array
+    markers: Record<string, CollectionEncryption | undefined>
   }) {
     this.#db = db
     this.#collections = collections
     this.#ciphers = ciphers
     this.#configs = configs
     this.#index = {}
+    this.#seed = seed
+    this.#markers = markers
   }
 
   /**
@@ -115,10 +135,17 @@ export class LocalStore {
    * derivation entirely and gets the pass-through plaintext codec) and opens
    * one RxDB collection per entity.
    *
+   * When `markers` carries an encryption marker for a private collection (from
+   * the offline marker cache), that collection's cipher is built epoch-aware so
+   * a multi-recipient envelope decrypts before any live description read; a
+   * collection with no cached marker keeps the single-key behavior.
+   *
    * @param options {object}
    * @param options.seed {Uint8Array}   the 32-byte master seed
    * @param options.collections {WasCollectionConfig[]}   the collection registry
    *   (logical key to WAS collection id)
+   * @param [options.markers] {Record<string, CollectionEncryption>}   cached
+   *   encryption markers keyed by WAS collection id (from the offline cache)
    * @param [options.storage] {RxStorage<unknown, unknown>}   defaults to
    *   Dexie/IndexedDB; injectable for tests
    * @param [options.dbName] {string}   defaults to {@link DEFAULT_DB_NAME}
@@ -127,16 +154,20 @@ export class LocalStore {
   static async init({
     seed,
     collections,
+    markers = {},
     storage,
     dbName = DEFAULT_DB_NAME
   }: {
     seed: Uint8Array
     collections: WasCollectionConfig[]
+    markers?: Record<string, CollectionEncryption>
     storage?: RxStorage<unknown, unknown>
     dbName?: string
   }): Promise<LocalStore> {
     validateCollections(collections)
     const ciphers: Record<string, DocCipher> = {}
+    // The marker each private cipher was built from, keyed by logical key.
+    const builtMarkers: Record<string, CollectionEncryption | undefined> = {}
     for (const { key, id, visibility } of collections) {
       // A public collection is stored plaintext: no key derivation, no EDV
       // cipher -- just the pass-through codec behind the same seam.
@@ -144,6 +175,7 @@ export class LocalStore {
         ciphers[key] = createPlaintextDocCodec({ collectionId: id })
         continue
       }
+      const encryption = markers[id]
       const { keyAgreementKey, keyResolver } = await deriveCollectionKeys({
         seed,
         collectionId: id
@@ -151,8 +183,10 @@ export class LocalStore {
       ciphers[key] = await createDocCipher({
         keyAgreementKey,
         keyResolver,
-        collectionId: id
+        collectionId: id,
+        ...(encryption && { encryption })
       })
+      builtMarkers[key] = encryption
     }
 
     const db = await createRxDatabase({
@@ -171,17 +205,24 @@ export class LocalStore {
     // those fields directly off the plaintext payload.
     const collectionsConfig = Object.fromEntries(
       collections.map(({ key }) => {
-        const cipher = ciphers[key]
-        if (!cipher) {
+        if (!ciphers[key]) {
           throw new Error(`No cipher for collection "${key}".`)
         }
         return [
           key,
           {
             schema: syncedDocSchema(),
-            conflictHandler: makeLwwConflictHandler(envelope =>
-              cipher.decrypt({ envelope })
-            )
+            // Reads the CURRENT cipher for this key at decrypt time (not a
+            // captured reference), so a `rebuildCipher` after a marker change
+            // takes effect here too. `ciphers` is the same object the instance
+            // holds as `#ciphers`, so the swap is visible.
+            conflictHandler: makeLwwConflictHandler(envelope => {
+              const cipher = ciphers[key]
+              if (!cipher) {
+                throw new Error(`No cipher for collection "${key}".`)
+              }
+              return cipher.decrypt({ envelope })
+            })
           }
         ]
       })
@@ -194,7 +235,9 @@ export class LocalStore {
       db,
       collections: collectionsMap,
       ciphers,
-      configs: Object.fromEntries(collections.map(entry => [entry.key, entry]))
+      configs: Object.fromEntries(collections.map(entry => [entry.key, entry])),
+      seed,
+      markers: builtMarkers
     })
   }
 
@@ -231,6 +274,121 @@ export class LocalStore {
   }
 
   /**
+   * Installs the epoch-marker refresher: given a WAS collection id, it fetches
+   * that collection's fresh encryption marker (a live description read). Called
+   * once a remote store exists; a decrypt that meets an unknown key epoch uses
+   * it to re-read the marker and rebuild the cipher exactly once.
+   *
+   * @param refresher {(collectionId: string) => Promise<CollectionEncryption | undefined>}
+   * @returns {void}
+   */
+  setEpochRefresher(
+    refresher: (
+      collectionId: string
+    ) => Promise<CollectionEncryption | undefined>
+  ): void {
+    this.#epochRefresher = refresher
+  }
+
+  /**
+   * Decrypts an at-rest envelope through the collection's cipher, with a
+   * one-shot recovery from a stale epoch marker: when the cipher throws
+   * {@link UnknownEpochError} (an envelope written under an epoch this device has
+   * not seen -- a rekey on another device / a wallet revoke-rotation) and a
+   * refresher is installed, re-read the marker, rebuild the cipher, and retry
+   * the decrypt once. A second failure propagates rather than looping.
+   */
+  async #decryptWithRefresh(key: string, envelope: Json): Promise<Json> {
+    try {
+      return await this.#cipher(key).decrypt({ envelope })
+    } catch (err) {
+      if (!(err instanceof UnknownEpochError) || !this.#epochRefresher) {
+        throw err
+      }
+      const { id } = this.collectionConfig(key)
+      const encryption = await this.#epochRefresher(id)
+      if (!encryption) {
+        throw err
+      }
+      await this.rebuildCipher({ key, encryption })
+      // One retry only: a repeat UnknownEpochError propagates (no loop).
+      return await this.#cipher(key).decrypt({ envelope })
+    }
+  }
+
+  /**
+   * Rebuilds one private collection's cipher from a new encryption marker,
+   * re-deriving its per-collection key material from the master seed. A public
+   * (plaintext) collection has no seed-derived cipher and is a no-op. The new
+   * cipher replaces the held one in place, so the conflict handler and every
+   * read path pick it up.
+   *
+   * @param options {object}
+   * @param options.key {string}   the collection logical key
+   * @param options.encryption {CollectionEncryption}   the new marker
+   * @returns {Promise<void>}
+   */
+  async rebuildCipher({
+    key,
+    encryption
+  }: {
+    key: string
+    encryption: CollectionEncryption
+  }): Promise<void> {
+    const config = this.collectionConfig(key)
+    if (config.visibility === 'public') {
+      return
+    }
+    const { keyAgreementKey, keyResolver } = await deriveCollectionKeys({
+      seed: this.#seed,
+      collectionId: config.id
+    })
+    this.#ciphers[key] = await createDocCipher({
+      keyAgreementKey,
+      keyResolver,
+      collectionId: config.id,
+      encryption
+    })
+    this.#markers[key] = encryption
+  }
+
+  /**
+   * Applies a freshly fetched remote encryption marker (by WAS collection id):
+   * rebuilds that collection's cipher when the marker's current epoch differs
+   * from the one the current cipher was built from (a wallet-side rotation, or
+   * first-ever epochs), so subsequent writes stamp the current epoch. Returns
+   * whether a rebuild happened. Unknown / public collections are ignored.
+   *
+   * @param options {object}
+   * @param options.collectionId {string}   the WAS collection id
+   * @param options.encryption {CollectionEncryption}   the fetched marker
+   * @returns {Promise<boolean>}
+   */
+  async applyRemoteMarker({
+    collectionId,
+    encryption
+  }: {
+    collectionId: string
+    encryption: CollectionEncryption
+  }): Promise<boolean> {
+    const entry = Object.entries(this.#configs).find(
+      ([, config]) => config.id === collectionId
+    )
+    if (!entry) {
+      return false
+    }
+    const [key, config] = entry
+    if (config.visibility === 'public') {
+      return false
+    }
+    if (markersEqual(this.#markers[key], encryption)) {
+      return false
+    }
+    await this.rebuildCipher({ key, encryption })
+    return true
+  }
+
+  /**
    * Builds (or rebuilds) the `uuid -> envelopeId` index for one collection by
    * decrypting every live row. Returns the index map.
    */
@@ -240,7 +398,6 @@ export class LocalStore {
       return existing
     }
     const index = new Map<string, string>()
-    const cipher = this.#cipher(key)
     const docs = await this.#collection(key).find().exec()
     // Decrypt rows concurrently: index building has no ordering dependency, so
     // serializing the per-row WebCrypto work would only stall the unlock path.
@@ -250,9 +407,10 @@ export class LocalStore {
         if (data === undefined) {
           return null
         }
-        const payload = (await cipher.decrypt({
-          envelope: data
-        })) as EntityPayload
+        const payload = (await this.#decryptWithRefresh(
+          key,
+          data
+        )) as EntityPayload
         return { envelopeId, uuid: payload.id }
       })
     )
@@ -402,7 +560,6 @@ export class LocalStore {
    * @returns {Promise<T[]>}
    */
   async listEntities<T extends EntityPayload>(key: string): Promise<T[]> {
-    const cipher = this.#cipher(key)
     const index = new Map<string, string>()
     const docs = await this.#collection(key).find().exec()
     // Decrypt every row concurrently (the unlock hot path): the store is keyed
@@ -414,7 +571,7 @@ export class LocalStore {
         if (data === undefined) {
           return null
         }
-        const payload = (await cipher.decrypt({ envelope: data })) as T
+        const payload = (await this.#decryptWithRefresh(key, data)) as T
         return { envelopeId, payload }
       })
     )
@@ -446,7 +603,6 @@ export class LocalStore {
   async hydrateSingleton<
     T extends { id: string; updatedAt: string; clientId: string }
   >(key: string): Promise<T | null> {
-    const cipher = this.#cipher(key)
     const collection = this.#collection(key)
     const rows = await collection.find().exec()
     const decoded: Array<{ envelopeId: string; payload: T }> = []
@@ -455,7 +611,7 @@ export class LocalStore {
       if (data === undefined) {
         continue
       }
-      const payload = (await cipher.decrypt({ envelope: data })) as T
+      const payload = (await this.#decryptWithRefresh(key, data)) as T
       decoded.push({ envelopeId, payload })
     }
     const index = new Map<string, string>()
@@ -498,7 +654,7 @@ export class LocalStore {
     key: string,
     envelope: Json
   ): Promise<T> {
-    return (await this.#cipher(key).decrypt({ envelope })) as T
+    return (await this.#decryptWithRefresh(key, envelope)) as T
   }
 
   /**
@@ -589,4 +745,33 @@ export class LocalStore {
   }): Promise<void> {
     await removeRxDatabase(dbName, storage ?? getRxStorageDexie())
   }
+}
+
+/**
+ * Whether two encryption markers select the same writing epoch: same
+ * `currentEpoch` and the same ordered epoch id list. That is all a cipher rebuild
+ * turns on -- rotation only appends epochs and moves `currentEpoch` -- so a
+ * marker that matches on both needs no rebuild. A cached `undefined` (no marker
+ * built) never equals a real marker, so first-ever epochs always rebuild.
+ *
+ * @param current {CollectionEncryption | undefined}
+ * @param next {CollectionEncryption}
+ * @returns {boolean}
+ */
+function markersEqual(
+  current: CollectionEncryption | undefined,
+  next: CollectionEncryption
+): boolean {
+  if (current === undefined) {
+    return false
+  }
+  if (current.currentEpoch !== next.currentEpoch) {
+    return false
+  }
+  const currentIds = (current.epochs ?? []).map(epoch => epoch.id)
+  const nextIds = (next.epochs ?? []).map(epoch => epoch.id)
+  if (currentIds.length !== nextIds.length) {
+    return false
+  }
+  return currentIds.every((id, index) => id === nextIds[index])
 }

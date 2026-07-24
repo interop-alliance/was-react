@@ -13,6 +13,7 @@
  */
 import type { ZcapClient } from '@interop/ezcap'
 import type { RxChangeEvent } from 'rxdb/plugins/core'
+import type { CollectionEncryption } from '@interop/was-client'
 import type { SyncedDoc } from '../sync/index.js'
 import type { WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
@@ -34,6 +35,9 @@ import type { SyncController } from './syncController.js'
  *   reactive patcher for pulled/conflict-resolved remote changes
  * @param [options.onAuthError] {() => void}   fired when replication hits a
  *   401/403 (expired/revoked access) -- wired to the reconnect banner
+ * @param [options.onMarkersFetched] {(markers) => void | Promise<void>}   given
+ *   the freshly fetched per-collection encryption markers (by WAS collection
+ *   id), to refresh the offline marker cache
  * @returns {Promise<WasRemoteStore>}
  */
 export async function startWasSync({
@@ -43,7 +47,8 @@ export async function startWasSync({
   localStore,
   syncController,
   onRemoteChange,
-  onAuthError
+  onAuthError,
+  onMarkersFetched
 }: {
   parsed: ParsedGrants
   zcapClient: ZcapClient
@@ -55,6 +60,9 @@ export async function startWasSync({
     event: RxChangeEvent<SyncedDoc>
   ) => void
   onAuthError?: () => void
+  onMarkersFetched?: (
+    markers: Record<string, CollectionEncryption>
+  ) => void | Promise<void>
 }): Promise<WasRemoteStore> {
   const remoteStore = WasRemoteStore.fromGrants({
     parsed,
@@ -84,6 +92,35 @@ export async function startWasSync({
       }
     })
   )
+
+  // Fetch each granted private collection's encryption marker: rebuild that
+  // collection's cipher when its epoch roster differs from what the local store
+  // opened with (a wallet-side rotation, or first-ever epochs), and hand the
+  // fresh set to the marker-cache refresher so an offline session can rebuild
+  // its epoch-aware ciphers without a live read.
+  const privateIds = collections
+    .filter(collection => collection.visibility !== 'public')
+    .map(collection => collection.id)
+    .filter(id => parsed.byCollectionId[id] !== undefined)
+  const markers: Record<string, CollectionEncryption> = {}
+  await Promise.all(
+    privateIds.map(async collectionId => {
+      const encryption =
+        await remoteStore.readCollectionEncryption(collectionId)
+      if (encryption) {
+        markers[collectionId] = encryption
+        await localStore.applyRemoteMarker({ collectionId, encryption })
+      }
+    })
+  )
+  // Install the one-shot epoch refresher so a decrypt that meets an unseen epoch
+  // (a rotation on another device) re-reads the marker and rebuilds the cipher.
+  localStore.setEpochRefresher(collectionId =>
+    remoteStore.readCollectionEncryption(collectionId)
+  )
+  if (onMarkersFetched) {
+    await onMarkersFetched(markers)
+  }
 
   await syncController.start({
     remoteStore,

@@ -71,6 +71,71 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
       error: 'no capability'
     })
   })
+
+  it('skips the PUT when the collection already carries an epoch roster', async () => {
+    // The read (GET) returns a marker with epochs; the bare-marker PUT that
+    // would clobber it must never be attempted.
+    const { calls, zcapClient: stub } = stubZcapClient([
+      {
+        status: 200,
+        data: {
+          id: 'notes',
+          encryption: {
+            scheme: 'edv',
+            currentEpoch: 'did:key:zEpoch1',
+            epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
+          }
+        }
+      }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    const result = await store.markCollectionEncrypted('notes')
+    expect(result).toEqual({ collectionId: 'notes', ok: true, skipped: true })
+    // Exactly one round trip -- the read -- and no PUT.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ method: 'GET' })
+  })
+
+  it('PUTs the bare marker when no encryption block is present', async () => {
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 200, data: { id: 'notes' } }, // GET: unmarked
+      { status: 200 } // PUT
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    const result = await store.markCollectionEncrypted('notes')
+    expect(result).toEqual({ collectionId: 'notes', ok: true, status: 200 })
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toMatchObject({
+      method: 'PUT',
+      json: { id: 'notes', encryption: { scheme: 'edv' } }
+    })
+  })
+})
+
+describe('WasRemoteStore.readCollectionEncryption', () => {
+  it('returns the encryption marker from the collection description', async () => {
+    const marker = {
+      scheme: 'edv',
+      currentEpoch: 'did:key:zEpoch1',
+      epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
+    }
+    const { zcapClient: stub } = stubZcapClient([
+      { status: 200, data: { id: 'notes', encryption: marker } }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    expect(await store.readCollectionEncryption('notes')).toEqual(marker)
+  })
+
+  it('returns undefined for an unmarked collection and a missing capability', async () => {
+    const { zcapClient: stub } = stubZcapClient([
+      { status: 200, data: { id: 'notes' } }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    expect(await store.readCollectionEncryption('notes')).toBeUndefined()
+    // No delegated capability covers this id: no request, undefined.
+    const bare = WasRemoteStore.fromGrants({ parsed, zcapClient })
+    expect(await bare.readCollectionEncryption('ungranted')).toBeUndefined()
+  })
 })
 
 describe('WasRemoteStore.declareCollectionIndexes', () => {

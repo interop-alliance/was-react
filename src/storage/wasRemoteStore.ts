@@ -26,6 +26,7 @@
 import type { ZcapClient } from '@interop/ezcap'
 import type { IZcap } from '@interop/data-integrity-core'
 import { WasClient } from '@interop/was-client'
+import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 import { errorStatus, errorMessage } from '../sync/index.js'
 import type { WasCollectionConfig } from '../config.js'
@@ -40,8 +41,10 @@ export interface MarkerResult {
   status?: number
   error?: string
   /**
-   * True when no PUT was attempted because the collection is public
-   * (plaintext); reported as `ok` since the goal state -- no marker -- holds.
+   * True when no PUT was attempted -- the collection is public (plaintext), or
+   * it already carries an `encryption` block (e.g. an epoch roster the wallet
+   * provisioned at consent time, which a bare-marker PUT must never clobber).
+   * Reported as `ok` since the goal state holds either way.
    */
   skipped?: boolean
 }
@@ -145,6 +148,39 @@ export class WasRemoteStore {
   }
 
   /**
+   * Reads one collection's `encryption` marker from its Collection Description,
+   * invoked with that collection's delegated zcap. Returns the
+   * {@link CollectionEncryption} block (a multi-recipient marker carries key
+   * epochs) or `undefined` when the collection carries no marker. Non-fatal like
+   * the marker PUTs: returns `undefined` rather than throwing when no capability
+   * covers the collection or the read fails (offline, unauthorized), so a caller
+   * can fall back to its cached copy.
+   *
+   * @param collectionId {string}   the WAS collection id
+   * @returns {Promise<CollectionEncryption | undefined>}
+   */
+  async readCollectionEncryption(
+    collectionId: string
+  ): Promise<CollectionEncryption | undefined> {
+    const capability = this.collectionCapability(collectionId)
+    if (!capability) {
+      return undefined
+    }
+    try {
+      const response = await this.was.request({
+        capability,
+        path: `/space/${this.spaceId}/${collectionId}`,
+        method: 'GET'
+      })
+      const description = response.data as
+        { encryption?: CollectionEncryption } | undefined
+      return description?.encryption
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
    * Best-effort declaration of the `{ encryption: { scheme: 'edv' } }` marker on
    * one collection, invoked with that collection's delegated RW zcap. Non-fatal:
    * returns the outcome rather than throwing, so a server that does not authorize
@@ -153,11 +189,21 @@ export class WasRemoteStore {
    * collection is never marked (public implies plaintext): the PUT is skipped
    * and reported as `ok` + `skipped`.
    *
+   * A collection that ALREADY carries an `encryption` block is also skipped: the
+   * wallet provisions a multi-recipient epoch roster on the marker at consent
+   * time, and overwriting it with the bare `{ scheme: 'edv' }` marker would
+   * destroy that roster. The description is read first, so this method is a
+   * no-op fallback for servers/wallets that did not provision the roster.
+   *
    * @param collectionId {string}   the WAS collection id
    * @returns {Promise<MarkerResult>}
    */
   async markCollectionEncrypted(collectionId: string): Promise<MarkerResult> {
     if (this.#configById.get(collectionId)?.visibility === 'public') {
+      return { collectionId, ok: true, skipped: true }
+    }
+    const existing = await this.readCollectionEncryption(collectionId)
+    if (existing) {
       return { collectionId, ok: true, skipped: true }
     }
     return this.#putDescription({

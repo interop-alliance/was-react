@@ -1,5 +1,33 @@
 # @interop/was-react Changelog
 
+## 0.4.0 - TBD
+
+### Added
+
+- Multi-recipient (key-epoch) read support for app-provisioned encrypted
+  collections. `WasRemoteStore.readCollectionEncryption` reads a collection's
+  encryption marker via its delegated capability; on login/reconnect each
+  private collection's marker is fetched and cached (persisted alongside the
+  session seed) so an offline or hot-restored session can build its epoch-aware
+  ciphers without a live read.
+- A private collection's document cipher now routes through the marker: a
+  multi-recipient envelope decrypts from the app's own deterministic
+  per-collection key (the same key registered as its roster entry), while a
+  pre-epoch envelope keeps decrypting through the single-key path (no
+  migration). Writes on an epoch collection stamp the current epoch. A decrypt
+  that meets an unseen epoch (a rotation on another device) re-reads the marker
+  once and rebuilds the cipher; a marker whose epoch differs from the one a
+  collection opened with rebuilds its cipher so later writes use the current
+  epoch.
+
+### Changed
+
+- `WasRemoteStore.markCollectionEncrypted` now reads the collection description
+  first and skips the bare-marker PUT when any `encryption` block is already
+  present, so it can never overwrite an existing epoch roster (reported as
+  `ok` + `skipped`). It becomes a no-op fallback for servers/wallets that did
+  not provision a roster.
+
 ## 0.3.6 - 2026-07-23
 
 ### Changed

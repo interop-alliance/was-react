@@ -19,7 +19,8 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import { createEdvEncryption } from '@interop/was-client/edv'
+import type { CollectionEncryption } from '@interop/was-client'
+import { createEdvDocCipher } from '@interop/was-client/edv'
 import type { Json } from './types.js'
 
 /**
@@ -115,97 +116,42 @@ export function createPlaintextDocCodec({
  * place via `sequence` -- the mutable head-document model every entity here uses
  * (constant bump / toggle / re-categorize edits).
  *
+ * Delegates to `@interop/was-client`'s `createEdvDocCipher`: with no
+ * `encryption` marker (or a marker with no key epochs) the cipher is
+ * single-recipient (the key-agreement key encrypts and decrypts directly, the
+ * behavior every collection has had); with epochs on the marker the cipher
+ * becomes multi-recipient -- writes stamp the marker's current epoch and reads
+ * route by the envelope's recipient key id, while a pre-epoch envelope still
+ * decrypts through the single-key path (a permanent tolerance, not a migration
+ * shim). The returned cipher's shape matches {@link DocCipher} exactly; only the
+ * nominal `Json` origin differs, so it crosses the boundary with a cast.
+ *
  * @param options {object}
  * @param options.keyAgreementKey {IKeyAgreementKey}
  * @param options.keyResolver {IKeyResolver}
  * @param options.collectionId {string}   labels errors; the codec is agnostic
+ * @param [options.encryption] {CollectionEncryption}   the collection's
+ *   encryption marker; when it carries key epochs the cipher becomes
+ *   multi-recipient
  * @returns {Promise<DocCipher>}
  */
 export async function createDocCipher({
   keyAgreementKey,
   keyResolver,
-  collectionId
+  collectionId,
+  encryption
 }: {
   keyAgreementKey: IKeyAgreementKey
   keyResolver: IKeyResolver
   collectionId: string
+  encryption?: CollectionEncryption
 }): Promise<DocCipher> {
-  const provider = createEdvEncryption({
-    resolveKeys: async () => null,
-    idDerivation: 'random'
-  })
-  const codec = await provider.codecFor({
-    spaceId: 'local',
+  const cipher = await createEdvDocCipher({
+    keyAgreementKey,
+    keyResolver,
     collectionId,
-    scheme: 'edv',
-    keys: { keyAgreementKey, keyResolver }
+    idDerivation: 'random',
+    ...(encryption && { encryption })
   })
-  if (!codec) {
-    throw new Error(
-      `Could not build the EDV cipher for collection "${collectionId}".`
-    )
-  }
-
-  // Parses the codec's `EncodedWrite` (id + envelope body bytes) into the
-  // stored `{ id, envelope }` shape. Shared by the create and update paths.
-  const readEncoded = (encoded: {
-    id?: string
-    body?: Uint8Array | Blob
-  }): { id: string; envelope: Json } => {
-    if (
-      typeof encoded.id !== 'string' ||
-      !(encoded.body instanceof Uint8Array)
-    ) {
-      throw new Error(
-        `EDV encrypt for collection "${collectionId}" returned no id/envelope body.`
-      )
-    }
-    const envelope = JSON.parse(new TextDecoder().decode(encoded.body)) as Json
-    return { id: encoded.id, envelope }
-  }
-
-  return {
-    async encrypt({ data }: { data: Json }) {
-      // `encode` with no caller id is the create path: encrypt, then use the
-      // minted random id.
-      const encoded = await codec.encode({
-        data: data as Extract<Json, object>
-      })
-      return readEncoded(encoded)
-    },
-
-    async encryptUpdate({
-      id,
-      data,
-      current
-    }: {
-      id: string
-      data: Json
-      current: Json
-    }) {
-      // The update path: hand the codec the prior stored envelope so it advances
-      // `sequence` from it and re-encrypts under the same id. The codec reads
-      // `current.data` (the prior envelope) and its `etag` header (unused here;
-      // the wire `If-Match` is derived from the synced-doc `version`, not this).
-      const priorResponse = {
-        data: current,
-        json: async () => current,
-        headers: { get: () => null }
-      } as unknown as Parameters<typeof codec.encode>[0]['current']
-      const encoded = await codec.encode({
-        id,
-        data: data as Extract<Json, object>,
-        current: priorResponse
-      })
-      return readEncoded(encoded)
-    },
-
-    async decrypt({ envelope }: { envelope: Json }) {
-      const response = {
-        data: envelope,
-        json: async () => envelope
-      } as unknown as Parameters<typeof codec.decode>[0]
-      return (await codec.decode(response)) as Json
-    }
-  }
+  return cipher as unknown as DocCipher
 }

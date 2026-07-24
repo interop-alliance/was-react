@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@interop/data-integrity-core':
-        specifier: ^8.3.0
+        specifier: ^8.4.0
         version: 8.4.0
       '@interop/ed25519-signature':
         specifier: ^7.1.4
@@ -30,8 +30,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0(@interop/jsonld-signatures@11.8.3)
       '@interop/was-client':
-        specifier: ^0.19.0
-        version: 0.19.0(@interop/jsonld-signatures@11.8.3)
+        specifier: ^0.20.0
+        version: 0.20.0(@interop/jsonld-signatures@11.8.3)
       '@interop/webkms-client':
         specifier: ^14.7.1
         version: 14.7.1
@@ -780,10 +780,6 @@ packages:
 
   '@interop/wallet-core@0.5.0':
     resolution: {integrity: sha512-CVUOK2zLrRcDjCyAN44+bq+wgLbluSrbtkVbQMykND98yjn+k5PD8iRhSTw4zzpqNEjD8k61zAd4EcJWDPXzgw==}
-    engines: {node: '>=24.0'}
-
-  '@interop/was-client@0.19.0':
-    resolution: {integrity: sha512-hqS1xlISS1+/G6n1e2lfEl2H28KC4G6TDytkZWYCZr4UDwq3m/V005JtLVd+95Vg9sXftxJUaKk5txF22fIgkQ==}
     engines: {node: '>=24.0'}
 
   '@interop/was-client@0.20.0':
@@ -4321,24 +4317,6 @@ snapshots:
       '@interop/x25519-key-agreement-key': 5.2.1
       '@scure/base': 1.2.6
       jsonpath-plus: 10.4.0
-    transitivePeerDependencies:
-      - '@interop/jsonld-signatures'
-      - expo-crypto
-      - react-native-get-random-values
-
-  '@interop/was-client@0.19.0(@interop/jsonld-signatures@11.8.3)':
-    dependencies:
-      '@interop/data-integrity-core': 8.4.0
-      '@interop/ed25519-signature': 7.1.4(@interop/jsonld-signatures@11.8.3)
-      '@interop/edv-client': 17.8.0
-      '@interop/ezcap': 7.4.1
-      '@interop/http-client': 1.0.4
-      '@interop/minimal-cipher': 7.8.0
-      '@interop/storage-core': 0.3.9
-      '@interop/x25519-key-agreement-key': 5.2.1
-      '@noble/hashes': 2.2.0
-      '@scure/base': 2.2.0
-      json-canonicalize: 2.0.0
     transitivePeerDependencies:
       - '@interop/jsonld-signatures'
       - expo-crypto
