@@ -50,6 +50,7 @@ export {
 } from './identity/documentLoader.js'
 export { createSeedStore, type SeedStore } from './identity/seedStore.js'
 export {
+  APP_KEY_CREDENTIAL_TYPE,
   issueSeedCredential,
   parseSeedCredential,
   findSeedCredential,

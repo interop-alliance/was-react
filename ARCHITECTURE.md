@@ -45,18 +45,34 @@ carrying `DIDAuthentication` plus one `AppConnectQuery`:
   user's DID in advance) and minus `reason`.
 
 The wallet finds -- or on first run **mints, wallet-side** -- the app-key seed
-credential for this origin (satisfying `parseSeedCredential` unchanged:
-self-issued by the seed-derived did:key, origin-bound, seed base64url-no-pad),
-delegates the requested capabilities to its subject DID, and answers with one
-signed VP: the credential in `verifiableCredential`, the grants in the top-level
-`zcap` array, and a wallet-provided `appConnect: { firstRun: boolean }` member
-(absent or non-`true` reads as returning). `loginWithWallet` verifies the
-presentation, parses the seed credential, and runs `checkGrants` with the parsed
-subject DID as controller (skipped when the app requests no collections). A null
-CHAPI response is a user cancel (`LoginCancelledError`); a VP without an app-key
-credential is an old, pre-App-Connect wallet and throws `WalletUnsupportedError`
-(fail closed, "update Freewallet" copy). The `login()` outcome contract is
-`{ firstRun }` / `null` / reject; `LoginPhase` is `'connecting' | 'verifying'`.
+credential for this origin (satisfying `parseSeedCredential`: carrying the
+shared `AppKeyCredential` marker type, self-issued by the seed-derived did:key,
+origin-bound, seed base64url-no-pad), delegates the requested capabilities to
+its subject DID, and answers with one signed VP: the credential in
+`verifiableCredential`, the grants in the top-level `zcap` array, and a
+wallet-provided `appConnect: { firstRun: boolean }` member (absent or non-`true`
+reads as returning). `loginWithWallet` verifies the presentation, parses the
+seed credential, and runs `checkGrants` with the parsed subject DID as
+controller (skipped when the app requests no collections). A null CHAPI response
+is a user cancel (`LoginCancelledError`); a VP without an app-key credential is
+an old, pre-App-Connect wallet and throws `WalletUnsupportedError` (fail closed,
+"update Freewallet" copy). The `login()` outcome contract is `{ firstRun }` /
+`null` / reject; `LoginPhase` is `'connecting' | 'verifying'`.
+
+Every app key carries the marker type `AppKeyCredential`
+(`urn:was:AppKeyCredential` -- one stable IRI for every app, defined in the
+inline `@context`, never interpolated from `vocabBase`), and
+`parseSeedCredential` requires it. The marker turns "presents as an app key"
+into a term check rather than a shape heuristic, which is what lets a wallet
+refuse a foreign app key at store time; requiring it here keeps both sides on
+one rule. It is a self-declaration, not evidence -- a planted credential
+controls its own `type` array -- so the seed-to-DID binding stays the only thing
+that authenticates. The claim terms are shared for the same reason: `seed` and
+`origin` map to `urn:was:seed` / `urn:was:origin`, and `vocabBase` namespaces
+only the app's own type term. `findSeedCredential` deliberately still matches on
+the app type alone, so a returned credential missing the marker surfaces as a
+parse error rather than a `null` the caller would read as first run and answer
+by minting a second key.
 
 The seed never transits a server: minting happens in the wallet, delivery is the
 browser-direct CHAPI channel. Dev mode (`provisionDevGrants` /

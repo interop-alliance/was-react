@@ -28,6 +28,22 @@ import type { DocumentLoader } from './documentLoader.js'
 const VC_1_CONTEXT_URL = 'https://www.w3.org/2018/credentials/v1'
 
 /**
+ * The marker type every app key carries alongside the app's own
+ * `credentialType`, mapped to one stable IRI for every app (NOT interpolated
+ * from an app's `vocabBase`). It makes "presents as an app key" a term check
+ * rather than a shape heuristic, which is what lets the wallet refuse a
+ * foreign app key at store time.
+ *
+ * It is a self-declaration, not evidence: the `type` array of a planted
+ * credential is attacker-controlled like the rest of it. The marker makes the
+ * rule precise; the seed-to-DID binding `parseSeedCredential` enforces remains
+ * the only thing that authenticates.
+ */
+export const APP_KEY_CREDENTIAL_TYPE = 'AppKeyCredential'
+
+const APP_KEY_CREDENTIAL_TYPE_IRI = 'urn:was:AppKeyCredential'
+
+/**
  * App-supplied naming for the seed credential: the VC `type` name and the URN
  * vocabulary namespace its inline-context terms are minted under (e.g.
  * `credentialType: 'MyAppKey'`, `vocabBase: 'urn:my-app:vocab#'`).
@@ -46,9 +62,11 @@ export interface ParsedSeedCredential {
 }
 
 /**
- * Builds the inline context object binding the app's credential terms to its
- * URN vocabulary namespace, so the credential stays verifiable with no remote
- * vocabulary fetch.
+ * Builds the inline context object for the credential's terms, so it stays
+ * verifiable with no remote vocabulary fetch. The marker type and the `seed` /
+ * `origin` claims carry shared `urn:was:` IRIs -- they mean the same thing for
+ * every app, so they do not belong under a per-app `vocabBase`, which keeps
+ * only the app's own type term.
  */
 function seedContext({ credentialType, vocabBase }: SeedCredentialConfig): {
   '@protected': true
@@ -56,9 +74,10 @@ function seedContext({ credentialType, vocabBase }: SeedCredentialConfig): {
 } {
   return {
     '@protected': true,
+    [APP_KEY_CREDENTIAL_TYPE]: APP_KEY_CREDENTIAL_TYPE_IRI,
     [credentialType]: `${vocabBase}${credentialType}`,
-    seed: `${vocabBase}seed`,
-    origin: `${vocabBase}origin`,
+    seed: 'urn:was:seed',
+    origin: 'urn:was:origin',
     name: 'https://schema.org/name',
     description: 'https://schema.org/description'
   }
@@ -111,7 +130,11 @@ export async function issueSeedCredential({
   const credential = {
     '@context': [VC_1_CONTEXT_URL, seedContext(config)],
     id: `urn:uuid:${crypto.randomUUID()}`,
-    type: ['VerifiableCredential', config.credentialType],
+    type: [
+      'VerifiableCredential',
+      APP_KEY_CREDENTIAL_TYPE,
+      config.credentialType
+    ],
     name: `${appName} app key`,
     description: `The ${appName} app keeps this key in your wallet so it can open your encrypted data on this and other devices.`,
     issuer: controllerDid,
@@ -130,11 +153,17 @@ export async function issueSeedCredential({
 }
 
 /**
- * Parses a seed credential and enforces the structural contract: type,
- * self-issue (issuer === subject id), origin binding, a well-formed 32-byte
- * seed, and -- the strongest check -- that the DID derived from the embedded
- * seed IS the credential's subject/issuer DID. (The cryptographic proof on the
- * credential is verified separately at the presentation level.)
+ * Parses a seed credential and enforces the structural contract: the shared
+ * `AppKeyCredential` marker type, the app's own type, self-issue
+ * (issuer === subject id), origin binding, a well-formed 32-byte seed, and --
+ * the strongest check -- that the DID derived from the embedded seed IS the
+ * credential's subject/issuer DID. (The cryptographic proof on the credential
+ * is verified separately at the presentation level.)
+ *
+ * The marker is required, not merely tolerated: a wallet may only store a
+ * credential presenting as an app key when it binds to its own seed, so
+ * requiring the marker here keeps both sides on one rule. It weakens nothing,
+ * since the seed-to-DID binding below is the boundary either way.
  *
  * @param options {object}
  * @param options.credential {IVerifiableCredential}
@@ -157,6 +186,12 @@ export async function parseSeedCredential({
     : [credential.type]
   if (!types.includes(credentialType)) {
     throw new Error(`Credential is not a ${credentialType} credential.`)
+  }
+  if (!types.includes(APP_KEY_CREDENTIAL_TYPE)) {
+    throw new Error(
+      `${credentialType} credential does not carry the ` +
+        `${APP_KEY_CREDENTIAL_TYPE} type.`
+    )
   }
   const issuer =
     typeof credential.issuer === 'string'
@@ -196,6 +231,11 @@ export async function parseSeedCredential({
 /**
  * Finds the seed credential inside a wallet response VP, or `null` when the
  * wallet returned none (the first-run signal).
+ *
+ * Matched on the app's own type alone, deliberately: a returned credential
+ * missing the `AppKeyCredential` marker must surface as a parse error from
+ * {@link parseSeedCredential}, not as a `null` the caller would read as first
+ * run and answer by silently minting a second key.
  *
  * @param options {object}
  * @param options.presentation {IVerifiablePresentation}
