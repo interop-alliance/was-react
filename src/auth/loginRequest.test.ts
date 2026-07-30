@@ -9,7 +9,11 @@
  * wallet fills the controller; the consent screen supersedes reasons).
  */
 import { describe, expect, it } from 'vitest'
-import { buildAppConnectVpr, RW_ACTIONS } from './loginRequest.js'
+import {
+  buildAppConnectVpr,
+  RW_ACTIONS,
+  SHARED_ACTIONS
+} from './loginRequest.js'
 import type {
   IAppConnectCapabilityQuery,
   IAppConnectQuery,
@@ -137,5 +141,48 @@ describe('buildAppConnectVpr', () => {
   it('emits an empty capabilityQuery when no collections are requested', () => {
     const vpr = buildAppConnectVpr({ ...BASE, collections: [] })
     expect(capabilityQueriesOf(vpr)).toEqual([])
+  })
+
+  it('appends one read-only urn:was:shared-collection descriptor per shared id', () => {
+    const vpr = buildAppConnectVpr({
+      ...BASE,
+      collections: [{ id: 'notes' }],
+      sharedCollections: ['private-credentials', 'contacts']
+    })
+    const capabilityQuery = capabilityQueriesOf(vpr)
+    expect(capabilityQuery).toHaveLength(3)
+    // App collections first, then the shares, in declaration order.
+    expect(capabilityQuery.slice(1)).toEqual([
+      {
+        referenceId: 'private-credentials',
+        allowedAction: SHARED_ACTIONS,
+        invocationTarget: {
+          type: 'urn:was:shared-collection',
+          name: 'private-credentials'
+        }
+      },
+      {
+        referenceId: 'contacts',
+        allowedAction: SHARED_ACTIONS,
+        invocationTarget: {
+          type: 'urn:was:shared-collection',
+          name: 'contacts'
+        }
+      }
+    ])
+    // Read-only by construction: a custom RW action set never reaches a share.
+    expect(SHARED_ACTIONS).toEqual(['GET', 'HEAD'])
+  })
+
+  it('keeps shared descriptors read-only even under a custom action set', () => {
+    const vpr = buildAppConnectVpr({
+      ...BASE,
+      collections: [{ id: 'notes' }],
+      sharedCollections: ['contacts'],
+      actions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+    })
+    const capabilityQuery = capabilityQueriesOf(vpr)
+    expect(capabilityQuery[0]?.allowedAction).toEqual(RW_ACTIONS)
+    expect(capabilityQuery[1]?.allowedAction).toEqual(SHARED_ACTIONS)
   })
 })

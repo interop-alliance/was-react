@@ -68,6 +68,12 @@ export interface LoginConfig {
    */
   collections: GrantRequestCollection[]
   /**
+   * WAS collection ids of wallet-owned collections to request read-and-decrypt
+   * access to (the `urn:was:shared-collection` grant). Read-only; never
+   * replicated.
+   */
+  sharedCollections?: string[]
+  /**
    * The seed-credential type name + vocabulary namespace.
    */
   credential: SeedCredentialConfig
@@ -148,28 +154,37 @@ function appConnectFirstRun(presentation: IVerifiablePresentation): boolean {
 
 /**
  * Structurally validates the grants embedded in the wallet response against the
- * requested collections. When the app requested NO collections there is nothing
- * to delegate: `checkGrants` (which rejects an empty grant set) is skipped and
- * an empty grant set with a far-future expiry is returned instead.
+ * requested collections. When the app requested NO collections at all (neither
+ * app-owned nor shared) there is nothing to delegate: `checkGrants` (which
+ * rejects an empty grant set) is skipped and an empty grant set with a
+ * far-future expiry is returned instead.
+ *
+ * Only the app-owned collections are REQUIRED to be covered. A shared
+ * collection the wallet declined to grant is not a login failure -- the reader
+ * for it is simply not opened, with a warning -- so its id is not passed to
+ * `checkGrants`; it still reaches the routing table through `parseGrants`.
  *
  * @param options {object}
  * @param options.presentation {IVerifiablePresentation}
  * @param options.controllerDid {string}   the app-key subject DID grants must
  *   be controlled by
  * @param options.collections {GrantRequestCollection[]}
+ * @param [options.sharedCollections] {string[]}
  * @returns {CheckedGrants}
  */
 function checkGrantsForCollections({
   presentation,
   controllerDid,
-  collections
+  collections,
+  sharedCollections = []
 }: {
   presentation: IVerifiablePresentation
   controllerDid: string
   collections: GrantRequestCollection[]
+  sharedCollections?: string[]
 }): CheckedGrants {
   const collectionIds = collections.map(collection => collection.id)
-  if (collectionIds.length === 0) {
+  if (collectionIds.length === 0 && sharedCollections.length === 0) {
     return {
       grants: [],
       parsed: { serverUrl: '', spaceId: '', byCollectionId: {} },
@@ -211,7 +226,10 @@ export async function requestGrants({
     domain: window.location.origin,
     appName: config.appName,
     credential: config.credential,
-    collections: config.collections
+    collections: config.collections,
+    ...(config.sharedCollections && {
+      sharedCollections: config.sharedCollections
+    })
   })
   const presentation = await chapiGet({
     vpr,
@@ -232,7 +250,10 @@ export async function requestGrants({
   return checkGrantsForCollections({
     presentation,
     controllerDid: identity.controllerDid,
-    collections: config.collections
+    collections: config.collections,
+    ...(config.sharedCollections && {
+      sharedCollections: config.sharedCollections
+    })
   })
 }
 
@@ -264,7 +285,10 @@ export async function loginWithWallet({
     domain: window.location.origin,
     appName: config.appName,
     credential: config.credential,
-    collections: config.collections
+    collections: config.collections,
+    ...(config.sharedCollections && {
+      sharedCollections: config.sharedCollections
+    })
   })
   const presentation = await chapiGet({
     vpr,
@@ -310,7 +334,10 @@ export async function loginWithWallet({
   const checked = checkGrantsForCollections({
     presentation,
     controllerDid: parsedCredential.controllerDid,
-    collections: config.collections
+    collections: config.collections,
+    ...(config.sharedCollections && {
+      sharedCollections: config.sharedCollections
+    })
   })
   return {
     seed,

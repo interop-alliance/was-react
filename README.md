@@ -129,6 +129,70 @@ feature fails closed with older wallets. Publicness is granted at consent time
 by the wallet -- the app itself can never escalate an existing private
 collection to public.
 
+#### Shared (wallet-owned) collections
+
+`collections` above are collections this app OWNS: the wallet provisions them,
+the app writes them, and they replicate into the local replica. A third kind is
+read-only and belongs to the wallet -- one of the wallet's own encrypted
+collections (`private-credentials`, `wallet-activity`, `contacts`,
+`contacts-history`) that the user chooses to share with this app. Declare those
+separately:
+
+```ts
+sharedCollections: [{ key: 'walletCredentials', id: 'private-credentials' }]
+```
+
+A shared collection is read-only by construction. It is never replicated into
+RxDB, never written to, has no local replica, and is excluded from the sync
+bootstrap's collection-description writes. Reads go straight to the server
+through a `SharedCollectionReader`, looked up by its `key`:
+
+```ts
+const shared = useSharedCollection('walletCredentials')
+const items = (await shared?.list()) ?? []
+const one = await shared?.get(items[0].id)
+```
+
+`list()` reads the collection by paging the WAS `changes` feed, which returns
+whole pages of documents with their bodies -- and on an encrypted collection
+those bodies are the opaque EDV envelopes the reader wants, since the feed does
+not decrypt. That is one request per page rather than one per credential.
+Tombstones are skipped, so the result is the live set. A backend that does not
+support the `changes-query` feature answers 501; the reader then falls back to
+listing the resource summaries and fetching each body, warning once that the
+collection is being read the slow way. `SharedCollectionReader.open` takes an
+optional `pageSize` (default `SHARED_CHANGES_PAGE_SIZE`, 100).
+
+A collection may be app-owned or shared, never both; a registry that declares
+the same `key` or `id` in each is rejected at store open
+(`validateSharedCollections`).
+
+At login each shared collection is requested with the distinct
+`urn:was:shared-collection` descriptor type and the read-only action set
+`SHARED_ACTIONS` (`GET`/`HEAD`) -- an app never asks to write a wallet
+collection. As with `urn:was:public-collection`, a wallet that predates the type
+reports the request unsatisfiable and the feature fails closed, which is the
+point: a share fuses two axes -- the read zcap AND an entry in the collection's
+key-epoch roster -- and a wallet that granted only the zcap would hand the app
+ciphertext it cannot decrypt, surfacing as corrupt data rather than as a wallet
+that needs updating.
+
+Decryption uses the app's **identity** key-agreement key: the X25519 twin of its
+`did:key` controller (`IdentityAgents.keyAgreementKey`), which is exactly what
+the wallet derives from the controller DID when it writes the app into the
+roster, so the recipient key never travels on the wire. This is a different key
+from `deriveCollectionKeys`, the per-collection key used for the app's own
+collections.
+
+Two honest limits, the same ones the wallet's consent screen states. Access can
+be removed later, which stops future reads but cannot take back what has already
+been read. And resources written BEFORE the collection was first shared are
+sealed to the owner alone and are never re-encrypted -- they will not decrypt
+here. Both `list()` and `get()` skip such a resource with a warning rather than
+failing; a collection this app is not a recipient of at all fails at open time
+with a `SharedCollectionUnavailableError`, and the session continues without
+that reader.
+
 ### 2. Entity stores and the registry
 
 ```ts
@@ -400,7 +464,10 @@ Hooks:
   shared per-collection key exposes nothing about the master seed or the sibling
   collections. The WAS server never sees plaintext. A collection declared
   `visibility: 'public'` opts out entirely: payloads are stored plaintext (no
-  key derivation, no envelope) behind the same storage seam.
+  key derivation, no envelope) behind the same storage seam. A SHARED
+  (wallet-owned) collection is outside all of this: it never replicates and has
+  no local replica, and its envelopes are decrypted on demand with the app's
+  identity key-agreement key through the collection's key-epoch roster.
 - **Replication.** A per-session `SyncController` runs RxDB replication per
   collection over a `WasSyncPort` (signed requests authorized by the granted
   zcaps). Pull is driven by the WAS `changes` feed; a low-frequency periodic

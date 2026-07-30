@@ -44,6 +44,7 @@ import {
   type StoreRegistry,
   type WasAppConfig
 } from '../config.js'
+import type { SharedCollectionReader } from '../storage/sharedCollectionReader.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
 import { initAppSession } from '../identity/initAppSession.js'
 import type { IdentityAgents } from '../identity/agents.js'
@@ -148,6 +149,14 @@ export interface AuthState {
    */
   accessExpired: boolean
   reconnecting: boolean
+  /**
+   * The read-only readers over the wallet-owned collections the wallet shared
+   * with this app, keyed by the `sharedCollections` config `key`. Populated once
+   * replication bootstraps; empty in `local`, and cleared on logout / teardown.
+   * A shared collection the wallet declined to grant (or that this app is not a
+   * recipient of) is simply absent -- never a session failure.
+   */
+  sharedCollections: Record<string, SharedCollectionReader>
   /**
    * Attempt a zero-popup hot restore; a restore hit lands `connected`, any
    * miss/error falls to `local` (a fresh anonymous replica), never a dead login
@@ -292,6 +301,9 @@ export function createAuthStore({
       })
     })),
     credential: config.credential,
+    ...(config.sharedCollections && {
+      sharedCollections: config.sharedCollections.map(entry => entry.id)
+    }),
     documentLoader,
     ...(config.mediatorBase !== undefined && {
       mediatorBase: config.mediatorBase
@@ -377,16 +389,20 @@ export function createAuthStore({
    */
   async function beginSync({
     parsed,
-    zcapClient
+    zcapClient,
+    keyAgreementKey,
+    keyResolver
   }: {
     parsed: ParsedGrants
     zcapClient: IdentityAgents['zcapClient']
+    keyAgreementKey: IdentityAgents['keyAgreementKey']
+    keyResolver: IdentityAgents['keyResolver']
   }): Promise<unknown> {
     controller = createSyncController({
       collections: config.collections,
       ...(config.sync && { sync: config.sync })
     })
-    const remoteStore = await startWasSync({
+    const { remoteStore, sharedCollections } = await startWasSync({
       parsed,
       zcapClient,
       collections: config.collections,
@@ -394,6 +410,10 @@ export function createAuthStore({
       syncController: controller,
       onRemoteChange: (key, event) =>
         void patchFromChange(registry, key, event),
+      ...(config.sharedCollections && {
+        sharedCollections: config.sharedCollections
+      }),
+      identityKeys: { keyAgreementKey, keyResolver },
       onAuthError: () => store.getState().notifyAccessExpired(),
       onMarkersFetched: markers =>
         void sessionStore
@@ -403,6 +423,7 @@ export function createAuthStore({
           )
     })
     setRemoteStore(remoteStore)
+    store.setState({ sharedCollections })
     return remoteStore
   }
 
@@ -444,7 +465,12 @@ export function createAuthStore({
       store: sessionStore
     })
     // Replication starts in the background; a down server never blocks entry.
-    pendingSync = beginSync({ parsed, zcapClient: identity.zcapClient })
+    pendingSync = beginSync({
+      parsed,
+      zcapClient: identity.zcapClient,
+      keyAgreementKey: identity.keyAgreementKey,
+      keyResolver: identity.keyResolver
+    })
     void pendingSync.catch(err =>
       console.warn('WAS sync failed to start:', err)
     )
@@ -469,8 +495,10 @@ export function createAuthStore({
       controller = null
     }
     // The remote store belongs to the session that just stopped (a reconnect
-    // re-grant installs a fresh one via `beginSync`).
+    // re-grant installs a fresh one via `beginSync`). The shared-collection
+    // readers hold that same store and its delegated zcaps, so they go with it.
     clearRemoteStore()
+    store.setState({ sharedCollections: {} })
   }
 
   /**
@@ -504,6 +532,9 @@ export function createAuthStore({
     const local = await LocalStore.init({
       seed,
       collections: config.collections,
+      ...(config.sharedCollections && {
+        sharedCollections: config.sharedCollections
+      }),
       dbName: dbNameForController({ dbName, controllerDid }),
       ...(markers && { markers }),
       ...(storage && { storage })
@@ -854,7 +885,8 @@ export function createAuthStore({
         controllerDid: null,
         expires: null,
         accessExpired: false,
-        reconnecting: false
+        reconnecting: false,
+        sharedCollections: {}
       })
     }
 
@@ -868,6 +900,7 @@ export function createAuthStore({
       expires: null,
       accessExpired: false,
       reconnecting: false,
+      sharedCollections: {},
 
       boot: () => serializeLifecycle(bootImpl),
 

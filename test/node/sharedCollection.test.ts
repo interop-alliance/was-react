@@ -1,0 +1,564 @@
+/*!
+ * Copyright (c) 2026 Interop Alliance. All rights reserved.
+ */
+/**
+ * The app side of a shared, wallet-owned encrypted collection.
+ *
+ * Two things are proven here. First, the RECIPIENT IDENTITY: the wallet writes
+ * an epoch-roster entry derived from the app's controller `did:key` alone,
+ * while the app derives its own key from the key pair behind that DID. Both
+ * sides must land on the same `id` / `publicKeyMultibase`, or the app would
+ * hold a key that unwraps nothing. Second, the READ PATH: an epoch roster
+ * minted with an owner plus that app recipient, a payload encrypted as the
+ * owner, and the same envelope decrypted through the cipher a
+ * {@link SharedCollectionReader} builds -- over both the paged `changes`-feed
+ * fast path and the resource-by-resource fallback, and across an epoch rotation
+ * the reader has to recover from.
+ *
+ * @vitest-environment node
+ */
+import { describe, expect, it, vi } from 'vitest'
+import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
+import {
+  initRecipients,
+  ownerRecipient,
+  removeRecipient
+} from '@interop/was-client/edv'
+import { NotImplementedError } from '@interop/was-client'
+import type { CollectionEncryption } from '@interop/was-client'
+import { deriveIdentity } from '../../src/identity/agents.js'
+import { deriveCollectionKeys } from '../../src/identity/agents.js'
+import { createDocCipher } from '../../src/sync/index.js'
+import {
+  SharedCollectionReader,
+  SharedCollectionUnavailableError
+} from '../../src/storage/sharedCollectionReader.js'
+import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
+
+const APP_SEED = new Uint8Array(32).map((_, index) => (index * 7 + 3) & 0xff)
+const OWNER_SEED = new Uint8Array(32).map((_, index) => (index * 5 + 11) & 0xff)
+const EXTRA_SEED = new Uint8Array(32).map((_, index) => (index * 3 + 19) & 0xff)
+const COLLECTION_ID = 'private-credentials'
+const DID_KEY_PREFIX = 'did:key:'
+
+/**
+ * The WALLET-side derivation of a grantee's recipient key: everything it has is
+ * the grantee's Ed25519 `did:key`, whose suffix IS the `publicKeyMultibase`.
+ * Freewallet builds an `Ed25519VerificationKey` from exactly those two fields
+ * before converting; the conversion reads only `controller` and
+ * `publicKeyMultibase`, so the plain object below is the same input.
+ */
+function walletSideRecipient({ did }: { did: string }): {
+  id: string
+  publicKeyMultibase: string
+} {
+  const converted = X25519KeyAgreementKey2020.fromEd25519VerificationKey2020({
+    keyPair: {
+      controller: did,
+      publicKeyMultibase: did.slice(DID_KEY_PREFIX.length)
+    }
+  }) as unknown as { id: string; publicKeyMultibase: string }
+  return {
+    id: converted.id,
+    publicKeyMultibase: converted.publicKeyMultibase
+  }
+}
+
+/**
+ * An in-memory Collection stand-in for the recipient operations: they only ever
+ * read the description with its ETag and write the mutated one back.
+ */
+function markerCollection(
+  encryption: CollectionEncryption = { scheme: 'edv' } as CollectionEncryption
+): Parameters<typeof initRecipients>[0]['collection'] {
+  let description: Record<string, unknown> = {
+    name: COLLECTION_ID,
+    encryption
+  }
+  return {
+    async describeWithEtag() {
+      return { description: { ...description }, etag: 'etag-0' }
+    },
+    async replaceDescription(next: Record<string, unknown>) {
+      description = next
+    }
+  } as unknown as Parameters<typeof initRecipients>[0]['collection']
+}
+
+/**
+ * Mints a one-epoch roster over an in-memory collection stand-in, with the
+ * wallet owner as recipient zero and the given app recipient alongside it.
+ */
+async function mintRoster({
+  recipients
+}: {
+  recipients: Parameters<typeof initRecipients>[0]['recipients']
+}): Promise<CollectionEncryption> {
+  return initRecipients({ collection: markerCollection(), recipients })
+}
+
+/**
+ * Rotates a roster by removing one recipient, producing a marker with a SECOND
+ * epoch wrapped to everyone who remains. The wallet does exactly this when a
+ * share is withdrawn; here it is the cheapest way to obtain a genuine two-epoch
+ * marker whose current epoch a stale reader has never seen.
+ */
+async function rotateRoster({
+  marker,
+  removeKid
+}: {
+  marker: CollectionEncryption
+  removeKid: string
+}): Promise<CollectionEncryption> {
+  return removeRecipient({
+    collection: markerCollection(marker) as unknown as Parameters<
+      typeof removeRecipient
+    >[0]['collection'],
+    space: { async revoke() {} } as unknown as Parameters<
+      typeof removeRecipient
+    >[0]['space'],
+    recipientId: removeKid,
+    revoke: []
+  })
+}
+
+describe('the app-side recipient identity', () => {
+  it('derives byte-identically on both sides of a share', async () => {
+    const identity = await deriveIdentity({ seed: APP_SEED })
+    const appSide = identity.keyAgreementKey as unknown as {
+      id: string
+      type: string
+      publicKeyMultibase: string
+    }
+    const walletSide = walletSideRecipient({ did: identity.controllerDid })
+
+    expect(appSide.id).toBe(walletSide.id)
+    expect(appSide.publicKeyMultibase).toBe(walletSide.publicKeyMultibase)
+    // The shape the roster entry carries: `did:key:z6Mk...#z6LS...`.
+    expect(appSide.id).toBe(
+      `${identity.controllerDid}#${appSide.publicKeyMultibase}`
+    )
+    expect(appSide.type).toBe('X25519KeyAgreementKey2020')
+  })
+
+  it('is NOT the per-collection key used for app-owned collections', async () => {
+    const identity = await deriveIdentity({ seed: APP_SEED })
+    const { keyAgreementKey } = await deriveCollectionKeys({
+      seed: APP_SEED,
+      collectionId: COLLECTION_ID
+    })
+    const identityKey = identity.keyAgreementKey as unknown as { id: string }
+    const collectionKey = keyAgreementKey as unknown as { id: string }
+    expect(identityKey.id).not.toBe(collectionKey.id)
+  })
+
+  it('resolves only its own key id', async () => {
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({
+      seed: APP_SEED
+    })
+    const { id } = keyAgreementKey as unknown as { id: string }
+    await expect(keyResolver({ id })).resolves.toMatchObject({ id })
+    await expect(keyResolver({ id: 'did:key:zNope#zNope' })).rejects.toThrow()
+  })
+})
+
+describe('SharedCollectionReader', () => {
+  it('decrypts an owner-written envelope through the epoch roster', async () => {
+    const app = await deriveIdentity({ seed: APP_SEED })
+    const owner = await deriveIdentity({ seed: OWNER_SEED })
+    const recipient = walletSideRecipient({ did: app.controllerDid })
+    const encryption = await mintRoster({
+      recipients: [
+        ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
+        { ...recipient, type: 'X25519KeyAgreementKey2020' }
+      ]
+    })
+
+    // The wallet writes the resource as the owner, under the current epoch.
+    const ownerCipher = await createDocCipher({
+      keyAgreementKey: owner.keyAgreementKey,
+      keyResolver: owner.keyResolver,
+      collectionId: COLLECTION_ID,
+      encryption
+    })
+    const payload = { id: 'credential-1', title: 'a shared credential' }
+    const { id, envelope } = await ownerCipher.encrypt({ data: payload })
+
+    const remoteStore = fakeRemoteStore({
+      encryption,
+      resources: { [id]: envelope }
+    })
+    const reader = await SharedCollectionReader.open({
+      remoteStore,
+      keyAgreementKey: app.keyAgreementKey,
+      keyResolver: app.keyResolver,
+      collectionId: COLLECTION_ID
+    })
+
+    expect(reader.collectionId).toBe(COLLECTION_ID)
+    expect(await reader.get(id)).toEqual(payload)
+    expect(await reader.list()).toEqual([{ id, data: payload }])
+  })
+
+  it('refuses a collection with no key-epoch roster', async () => {
+    const app = await deriveIdentity({ seed: APP_SEED })
+    await expect(
+      SharedCollectionReader.open({
+        remoteStore: fakeRemoteStore({ resources: {} }),
+        keyAgreementKey: app.keyAgreementKey,
+        keyResolver: app.keyResolver,
+        collectionId: COLLECTION_ID
+      })
+    ).rejects.toThrow(SharedCollectionUnavailableError)
+  })
+
+  it('refuses a roster this app is not a recipient of', async () => {
+    const app = await deriveIdentity({ seed: APP_SEED })
+    const owner = await deriveIdentity({ seed: OWNER_SEED })
+    const encryption = await mintRoster({
+      recipients: [ownerRecipient({ keyAgreementKey: owner.keyAgreementKey })]
+    })
+    await expect(
+      SharedCollectionReader.open({
+        remoteStore: fakeRemoteStore({ encryption, resources: {} }),
+        keyAgreementKey: app.keyAgreementKey,
+        keyResolver: app.keyResolver,
+        collectionId: COLLECTION_ID
+      })
+    ).rejects.toThrow(/not a recipient of any of its key epochs/)
+  })
+
+  it('skips a body that is not an EDV envelope', async () => {
+    const app = await deriveIdentity({ seed: APP_SEED })
+    const owner = await deriveIdentity({ seed: OWNER_SEED })
+    const recipient = walletSideRecipient({ did: app.controllerDid })
+    const encryption = await mintRoster({
+      recipients: [
+        ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
+        { ...recipient, type: 'X25519KeyAgreementKey2020' }
+      ]
+    })
+    const reader = await SharedCollectionReader.open({
+      remoteStore: fakeRemoteStore({
+        encryption,
+        resources: { plain: { hello: 'world' } }
+      }),
+      keyAgreementKey: app.keyAgreementKey,
+      keyResolver: app.keyResolver,
+      collectionId: COLLECTION_ID
+    })
+    expect(await reader.list()).toEqual([])
+    expect(await reader.get('plain')).toBeUndefined()
+  })
+})
+
+describe('SharedCollectionReader.list', () => {
+  it('pages the changes feed and excludes tombstones', async () => {
+    const { app, owner, encryption, encrypt } = await sharedFixture()
+    const first = await encrypt({ id: 'credential-1', title: 'one' })
+    const second = await encrypt({ id: 'credential-2', title: 'two' })
+    const third = await encrypt({ id: 'credential-3', title: 'three' })
+    expect(owner.controllerDid).not.toBe(app.controllerDid)
+
+    const remoteStore = fakeRemoteStore({
+      encryption,
+      resources: {},
+      // Three live documents plus a tombstone, walked two per page so the
+      // checkpoint resume is exercised.
+      changes: [
+        { id: first.id, data: first.envelope },
+        { id: second.id, data: second.envelope },
+        { id: third.id, data: third.envelope },
+        { id: second.id, deleted: true }
+      ]
+    })
+    const reader = await SharedCollectionReader.open({
+      remoteStore,
+      keyAgreementKey: app.keyAgreementKey,
+      keyResolver: app.keyResolver,
+      collectionId: COLLECTION_ID,
+      // Two per page over a four-entry feed, so the checkpoint resume runs.
+      pageSize: 2
+    })
+
+    const listed = await reader.list()
+    expect(listed).toEqual([
+      { id: first.id, data: { id: 'credential-1', title: 'one' } },
+      { id: third.id, data: { id: 'credential-3', title: 'three' } }
+    ])
+    // The fast path never fetches a resource one at a time.
+    expect(remoteStore.resourceGets()).toBe(0)
+  })
+
+  it('falls back to listing plus per-resource reads without changes-query', async () => {
+    const { app, encryption, encrypt } = await sharedFixture()
+    const first = await encrypt({ id: 'credential-1', title: 'one' })
+    const second = await encrypt({ id: 'credential-2', title: 'two' })
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const remoteStore = fakeRemoteStore({
+        encryption,
+        resources: {
+          [first.id]: first.envelope,
+          [second.id]: second.envelope
+        },
+        changesNotImplemented: true
+      })
+      const reader = await SharedCollectionReader.open({
+        remoteStore,
+        keyAgreementKey: app.keyAgreementKey,
+        keyResolver: app.keyResolver,
+        collectionId: COLLECTION_ID
+      })
+
+      expect(await reader.list()).toEqual([
+        { id: first.id, data: { id: 'credential-1', title: 'one' } },
+        { id: second.id, data: { id: 'credential-2', title: 'two' } }
+      ])
+      expect(remoteStore.resourceGets()).toBe(2)
+      // Warned once about the slow path, and only once across repeat calls.
+      await reader.list()
+      const slowWarnings = warn.mock.calls.filter(call =>
+        String(call[0]).includes('slow way')
+      )
+      expect(slowWarnings).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+describe('SharedCollectionReader unknown-epoch refresh', () => {
+  it('re-reads the marker exactly once and decrypts the rotated envelope', async () => {
+    const app = await deriveIdentity({ seed: APP_SEED })
+    const owner = await deriveIdentity({ seed: OWNER_SEED })
+    const extra = await deriveIdentity({ seed: EXTRA_SEED })
+    const appRecipient = walletSideRecipient({ did: app.controllerDid })
+    const extraRecipient = walletSideRecipient({ did: extra.controllerDid })
+
+    // The roster the reader opens against, and the rotated one it has not seen.
+    const stale = await mintRoster({
+      recipients: [
+        ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
+        { ...appRecipient, type: 'X25519KeyAgreementKey2020' },
+        { ...extraRecipient, type: 'X25519KeyAgreementKey2020' }
+      ]
+    })
+    const fresh = await rotateRoster({
+      marker: stale,
+      removeKid: extraRecipient.id
+    })
+    expect(fresh.currentEpoch).not.toBe(stale.currentEpoch)
+
+    // The wallet writes under the NEW epoch, which the stale marker lacks.
+    const ownerCipher = await createDocCipher({
+      keyAgreementKey: owner.keyAgreementKey,
+      keyResolver: owner.keyResolver,
+      collectionId: COLLECTION_ID,
+      encryption: fresh
+    })
+    const payload = { id: 'credential-1', title: 'written after the rotation' }
+    const { id, envelope } = await ownerCipher.encrypt({ data: payload })
+
+    // A second envelope this app can never decrypt (sealed to the owner alone,
+    // as a pre-share resource is): it must NOT trigger a second refresh.
+    const preShareCipher = await createDocCipher({
+      keyAgreementKey: owner.keyAgreementKey,
+      keyResolver: owner.keyResolver,
+      collectionId: COLLECTION_ID
+    })
+    const preShare = await preShareCipher.encrypt({
+      data: { id: 'credential-0', title: 'written before the share' }
+    })
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const remoteStore = fakeRemoteStore({
+        // Open on the stale marker; every later read answers with the fresh one.
+        markers: [stale, fresh],
+        resources: {},
+        changes: [
+          { id: preShare.id, data: preShare.envelope },
+          { id, data: envelope }
+        ]
+      })
+      const reader = await SharedCollectionReader.open({
+        remoteStore,
+        keyAgreementKey: app.keyAgreementKey,
+        keyResolver: app.keyResolver,
+        collectionId: COLLECTION_ID
+      })
+      // One read so far: the open.
+      expect(remoteStore.encryptionReads()).toBe(1)
+
+      expect(await reader.list()).toEqual([{ id, data: payload }])
+      // Exactly one refresh: the open's read plus the unknown-epoch re-read.
+      // The undecryptable pre-share envelope did not buy another.
+      expect(remoteStore.encryptionReads()).toBe(2)
+
+      // A later unknown epoch does not refresh again either.
+      await reader.list()
+      expect(remoteStore.encryptionReads()).toBe(2)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+/**
+ * The common two-recipient setup: an owner (the wallet) and this app, a roster
+ * wrapping the current epoch to both, and an `encrypt` that writes a payload as
+ * the owner does.
+ */
+async function sharedFixture(): Promise<{
+  app: Awaited<ReturnType<typeof deriveIdentity>>
+  owner: Awaited<ReturnType<typeof deriveIdentity>>
+  encryption: CollectionEncryption
+  encrypt: (payload: {
+    id: string
+    title: string
+  }) => Promise<{ id: string; envelope: unknown }>
+}> {
+  const app = await deriveIdentity({ seed: APP_SEED })
+  const owner = await deriveIdentity({ seed: OWNER_SEED })
+  const recipient = walletSideRecipient({ did: app.controllerDid })
+  const encryption = await mintRoster({
+    recipients: [
+      ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
+      { ...recipient, type: 'X25519KeyAgreementKey2020' }
+    ]
+  })
+  const ownerCipher = await createDocCipher({
+    keyAgreementKey: owner.keyAgreementKey,
+    keyResolver: owner.keyResolver,
+    collectionId: COLLECTION_ID,
+    encryption
+  })
+  return {
+    app,
+    owner,
+    encryption,
+    encrypt: payload => ownerCipher.encrypt({ data: payload })
+  }
+}
+
+/**
+ * One entry of the fake `changes` feed: a live document with its stored body,
+ * or a tombstone.
+ */
+interface FakeChange {
+  id: string
+  data?: unknown
+  deleted?: boolean
+}
+
+/**
+ * A minimal `WasRemoteStore` stand-in: a fixed (or scripted) encryption marker
+ * plus an in-memory resource map, served through the same
+ * `was.space().collection()` handle chain the reader walks.
+ *
+ * `changes` drives the fast read path. Supply `changes` to script a feed (paged
+ * at whatever `limit` the reader asks for) or `changesNotImplemented` to make
+ * the backend answer as one without the `changes-query` feature, forcing the
+ * `list()` + `get()` fallback. With neither, the feed mirrors `resources`.
+ *
+ * `markers` scripts successive `readCollectionEncryption` answers (the last one
+ * repeats), so an unknown-epoch refresh can be observed; `encryptionReads`
+ * counts them.
+ */
+function fakeRemoteStore({
+  encryption,
+  markers,
+  resources,
+  changes,
+  changesNotImplemented = false
+}: {
+  encryption?: CollectionEncryption
+  markers?: Array<CollectionEncryption | undefined>
+  resources: Record<string, unknown>
+  changes?: FakeChange[]
+  changesNotImplemented?: boolean
+}): WasRemoteStore & {
+  encryptionReads: () => number
+  resourceGets: () => number
+} {
+  const feed: FakeChange[] =
+    changes ?? Object.entries(resources).map(([id, data]) => ({ id, data }))
+  const scripted = markers ?? [encryption]
+  let encryptionReads = 0
+  let resourceGets = 0
+
+  const collection = {
+    async list() {
+      return {
+        items: Object.keys(resources).map(id => ({ id, url: `./${id}` }))
+      }
+    },
+    async get(resourceId: string) {
+      resourceGets++
+      return resources[resourceId] ?? null
+    },
+    async changes({
+      checkpoint,
+      limit
+    }: {
+      checkpoint?: { id: string; updatedAt: string }
+      limit?: number
+    }) {
+      if (changesNotImplemented) {
+        throw new NotImplementedError(
+          'This backend does not support the "changes-query" feature.'
+        )
+      }
+      // The fake checkpoint is a feed POSITION, not a resource id: the feed can
+      // carry the same id twice (a write and its later tombstone), so an
+      // id-keyed resume would be ambiguous.
+      const start = checkpoint ? Number(checkpoint.id) : 0
+      const size = limit ?? feed.length
+      const page = feed.slice(start, start + size)
+      return {
+        documents: page.map(entry => ({
+          id: entry.id,
+          _deleted: entry.deleted === true,
+          updatedAt: '2026-07-30T00:00:00Z',
+          version: 1,
+          ...(entry.data !== undefined && { data: entry.data })
+        })),
+        checkpoint:
+          page.length > 0
+            ? {
+                id: String(start + page.length),
+                updatedAt: '2026-07-30T00:00:00Z'
+              }
+            : null
+      }
+    }
+  }
+
+  return {
+    spaceId: 'space-1',
+    was: {
+      space() {
+        return {
+          collection() {
+            return collection
+          }
+        }
+      }
+    },
+    collectionCapability() {
+      return { id: 'urn:zcap:delegated:1' }
+    },
+    async readCollectionEncryption() {
+      const marker = scripted[Math.min(encryptionReads, scripted.length - 1)]
+      encryptionReads++
+      return marker
+    },
+    encryptionReads: () => encryptionReads,
+    resourceGets: () => resourceGets
+  } as unknown as WasRemoteStore & {
+    encryptionReads: () => number
+    resourceGets: () => number
+  }
+}
