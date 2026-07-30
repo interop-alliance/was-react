@@ -2,7 +2,12 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 import { describe, expect, it } from 'vitest'
-import { validateCollections, type WasCollectionConfig } from './config.js'
+import {
+  validateCollections,
+  validateSharedCollections,
+  type SharedCollectionConfig,
+  type WasCollectionConfig
+} from './config.js'
 
 describe('validateCollections', () => {
   it('accepts an empty registry and default/explicit visibilities', () => {
@@ -114,5 +119,87 @@ describe('validateCollections', () => {
         { key: 'b', id: 'shared', visibility: 'private' }
       ])
     ).toThrow(/encrypted and public/)
+  })
+})
+
+describe('validateSharedCollections', () => {
+  const OWNED: WasCollectionConfig[] = [
+    { key: 'notes', id: 'notes' },
+    { key: 'posts', id: 'microblog-posts', visibility: 'public' }
+  ]
+
+  it('accepts an absent or disjoint shared registry', () => {
+    expect(() =>
+      validateSharedCollections({ collections: OWNED })
+    ).not.toThrow()
+    expect(() =>
+      validateSharedCollections({
+        collections: OWNED,
+        sharedCollections: [
+          { key: 'credentials', id: 'private-credentials' },
+          { key: 'contacts', id: 'contacts' }
+        ]
+      })
+    ).not.toThrow()
+  })
+
+  it('rejects an empty key or id', () => {
+    expect(() =>
+      validateSharedCollections({
+        collections: OWNED,
+        sharedCollections: [{ key: '', id: 'contacts' }]
+      })
+    ).toThrow(/empty "key"/)
+    expect(() =>
+      validateSharedCollections({
+        collections: OWNED,
+        sharedCollections: [{ key: 'contacts', id: '' }]
+      })
+    ).toThrow(/empty "id"/)
+  })
+
+  it('rejects a duplicate key or id', () => {
+    expect(() =>
+      validateSharedCollections({
+        collections: OWNED,
+        sharedCollections: [
+          { key: 'contacts', id: 'contacts' },
+          { key: 'contacts', id: 'contacts-history' }
+        ]
+      })
+    ).toThrow(/key "contacts" is declared twice/)
+    expect(() =>
+      validateSharedCollections({
+        collections: OWNED,
+        sharedCollections: [
+          { key: 'contacts', id: 'contacts' },
+          { key: 'people', id: 'contacts' }
+        ]
+      })
+    ).toThrow(/id "contacts" is declared twice/)
+  })
+
+  it('rejects a collection that is both app-owned and shared', () => {
+    expect(() =>
+      validateSharedCollections({
+        collections: OWNED,
+        sharedCollections: [{ key: 'notes', id: 'contacts' }]
+      })
+    ).toThrow(/also an app collection key/)
+    expect(() =>
+      validateSharedCollections({
+        collections: OWNED,
+        sharedCollections: [{ key: 'shared-notes', id: 'notes' }]
+      })
+    ).toThrow(/also an app collection id/)
+  })
+
+  it('rejects a non-string key (fail-closed)', () => {
+    const sharedCollections = [
+      { key: 7, id: 'contacts' }
+    ] as unknown as SharedCollectionConfig[]
+    expect(() =>
+      validateSharedCollections({ collections: OWNED, sharedCollections })
+    ).toThrow(/empty "key"/)
   })
 })

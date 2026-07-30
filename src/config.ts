@@ -13,6 +13,11 @@
  * across interoperable apps). The auth layer consumes only the `id`s; this
  * config layer owns the `{ key, id }` registry the storage layer routes on.
  *
+ * A SHARED collection ({@link SharedCollectionConfig}) is the other direction:
+ * a wallet-owned, already-encrypted collection the app is granted read-and-
+ * decrypt access to. It has the same `{ key, id }` shape but none of the
+ * replication -- no RxDB collection, no writes, no local replica.
+ *
  * The STORE REGISTRY ({@link StoreRegistry}) is the injection seam that replaces
  * the storage-layer's former hardcoded per-entity maps: an app supplies, per
  * collection key, the four handlers the rehydrate mechanism drives (hydrate the
@@ -58,6 +63,25 @@ export interface WasCollectionConfig {
    * `blinded-index` query path is not yet supported.
    */
   indexes?: string[]
+}
+
+/**
+ * One SHARED collection: a wallet-owned, already-encrypted collection the app
+ * asks the wallet for read-and-decrypt access to (the
+ * `urn:was:shared-collection` grant). It is the mirror image of
+ * {@link WasCollectionConfig}: read-only, NOT replicated into RxDB, NOT written
+ * to, and with no local replica. Reads go straight to the server through a
+ * `SharedCollectionReader`.
+ */
+export interface SharedCollectionConfig {
+  /**
+   * App-side name; the handle the app looks the reader up by.
+   */
+  key: string
+  /**
+   * WAS collection id in the wallet's Space (e.g. `private-credentials`).
+   */
+  id: string
 }
 
 /**
@@ -117,6 +141,15 @@ export interface WasAppConfig {
    * The storage collections (logical key to WAS collection id).
    */
   collections: WasCollectionConfig[]
+  /**
+   * Wallet-owned collections this app asks to be given READ-AND-DECRYPT access
+   * to (the `urn:was:shared-collection` grant). Read-only by construction: they
+   * are never replicated into RxDB, never written to, and have no local
+   * replica -- reads go straight to the server through a
+   * `SharedCollectionReader`. A collection may be app-owned (`collections`) or
+   * shared, never both.
+   */
+  sharedCollections?: SharedCollectionConfig[]
   /**
    * How the router treats the pre-connection `local` state. `'local-first'`
    * renders the app immediately over the anonymous replica (connecting a wallet
@@ -296,6 +329,62 @@ export function validateCollections(collections: WasCollectionConfig[]): void {
       )
     }
     indexesById.set(id, canonical)
+  }
+}
+
+/**
+ * Validates the shared-collection registry against the app-owned one,
+ * fail-closed. Rejects an empty `key` or `id`, a duplicate `key` or `id`, and
+ * any `key` or `id` that also appears in `collections`: a collection cannot be
+ * both app-owned (replicated, read-write, locally encrypted under the app's own
+ * per-collection key) and shared read-only (never replicated, decrypted through
+ * the wallet's epoch roster). Called by the storage layer before any replica is
+ * opened.
+ *
+ * @param options {object}
+ * @param options.collections {WasCollectionConfig[]}   the app-owned registry
+ * @param [options.sharedCollections] {SharedCollectionConfig[]}   the shared
+ *   (read-only) registry
+ * @returns {void}
+ */
+export function validateSharedCollections({
+  collections,
+  sharedCollections = []
+}: {
+  collections: WasCollectionConfig[]
+  sharedCollections?: SharedCollectionConfig[]
+}): void {
+  const ownedKeys = new Set(collections.map(entry => entry.key))
+  const ownedIds = new Set(collections.map(entry => entry.id))
+  const seenKeys = new Set<string>()
+  const seenIds = new Set<string>()
+  for (const { key, id } of sharedCollections) {
+    if (typeof key !== 'string' || key.length === 0) {
+      throw new Error('A shared collection declares an empty "key".')
+    }
+    if (typeof id !== 'string' || id.length === 0) {
+      throw new Error(`Shared collection "${key}" declares an empty "id".`)
+    }
+    if (seenKeys.has(key)) {
+      throw new Error(`Shared collection key "${key}" is declared twice.`)
+    }
+    seenKeys.add(key)
+    if (seenIds.has(id)) {
+      throw new Error(`Shared collection id "${id}" is declared twice.`)
+    }
+    seenIds.add(id)
+    if (ownedKeys.has(key)) {
+      throw new Error(
+        `Shared collection key "${key}" is also an app collection key: a ` +
+          `collection cannot be both app-owned and shared read-only.`
+      )
+    }
+    if (ownedIds.has(id)) {
+      throw new Error(
+        `Shared collection id "${id}" is also an app collection id: a ` +
+          `collection cannot be both app-owned and shared read-only.`
+      )
+    }
   }
 }
 

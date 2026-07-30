@@ -1,9 +1,43 @@
 # @interop/was-react Changelog
 
-## Unreleased - TBD
+## 0.5.0 - TBD
+
+### Added
+
+- Read-and-decrypt support for SHARED collections: one of the wallet's own
+  encrypted collections that the user chooses to let this app read. Declare them
+  in the new `WasAppConfig.sharedCollections` registry (`{ key, id }`, validated
+  by `validateSharedCollections`); they are read-only by construction -- never
+  replicated into RxDB, never written to, no local replica, and excluded from
+  the sync bootstrap's collection-description writes. Each covered collection
+  gets a `SharedCollectionReader` (`list` / `get`), exposed on the auth store as
+  `sharedCollections` and through the new `useSharedCollection(key)` hook.
+  `list()` pages the WAS `changes` feed, which returns whole pages of documents
+  with their (undecrypted) bodies, so reading a collection costs one request per
+  page rather than one per resource; tombstones are skipped so the result is the
+  live set. A backend without the `changes-query` feature falls back to a
+  listing plus per-resource reads, with a one-time warning.
+  `SHARED_CHANGES_PAGE_SIZE` is exported and `SharedCollectionReader.open` takes
+  an optional `pageSize`.
+- `buildAppConnectVpr` takes `sharedCollections` (WAS collection ids) and
+  appends one `urn:was:shared-collection` capability query per id with the new
+  read-only `SHARED_ACTIONS` (`GET`/`HEAD`) set -- an app never requests writes
+  on a wallet collection. As with `urn:was:public-collection`, a wallet that
+  predates the descriptor type reports it unsatisfiable and the request fails
+  closed, rather than degrading to a ciphertext-only read that would look like
+  corrupt data.
+- `IdentityAgents` now carries `keyAgreementKey` + `keyResolver`: the app's
+  IDENTITY key-agreement key, the X25519 twin of its `did:key` controller. That
+  is the recipient identity a wallet writes into a shared collection's key-epoch
+  roster, so the key is derived on both sides and never travels on the wire. It
+  is a distinct key from `deriveCollectionKeys`, which stays the per-collection
+  key for the app's OWN collections.
 
 ### Changed
 
+- **Breaking:** `startWasSync` now resolves to
+  `{ remoteStore, sharedCollections }` rather than the remote store alone, so
+  the bootstrapped shared-collection readers reach the caller.
 - **Breaking:** every app-key credential now carries a shared `AppKeyCredential`
   marker type (`urn:was:AppKeyCredential` -- one stable IRI for every app,
   defined in the inline `@context`), and `parseSeedCredential` requires it. The

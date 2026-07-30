@@ -15,6 +15,7 @@ export {
   useClearData,
   useHasLocalData,
   useReconnect,
+  useSharedCollection,
   useSyncStatus,
   type SyncRollup
 } from './hooks.js'

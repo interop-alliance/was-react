@@ -23,6 +23,17 @@
  * whole is likewise unsatisfiable on a wallet that predates it, so an old wallet
  * fails closed rather than degrading into a partial generic flow.
  *
+ * A SHARED collection -- one the wallet already owns and encrypts, which the app
+ * asks to read and decrypt -- uses the `urn:was:shared-collection` descriptor
+ * type, and the actions are read-only by construction ({@link SHARED_ACTIONS}):
+ * the app never requests writes on a wallet collection. Exactly like
+ * `urn:was:public-collection`, a wallet that predates the type resolves the
+ * descriptor UNSATISFIABLE and fails closed -- which is the point here. A share
+ * fuses two axes (a read zcap AND an entry in the collection's key-epoch
+ * roster), so a wallet that granted only the zcap would hand the app ciphertext
+ * it cannot decrypt; that would surface as corrupt data rather than as a wallet
+ * that needs updating.
+ *
  * `domain` must host-match the CHAPI requesting origin or the wallet refuses
  * to sign; `challenge` must be fresh per request (echoed into the DIDAuth
  * proof and checked in verifyResponse).
@@ -37,6 +48,13 @@ import type {
  * Default read/write actions requested on each app collection.
  */
 export const RW_ACTIONS = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+
+/**
+ * The actions requested on a SHARED (wallet-owned) collection: read-only, and
+ * not configurable. A shared collection belongs to the wallet, so an app never
+ * asks to write it.
+ */
+export const SHARED_ACTIONS = ['GET', 'HEAD']
 
 /**
  * One collection to request a grant for: the WAS collection id plus its
@@ -84,6 +102,9 @@ export function newChallenge(): string {
  *   type name + vocabulary namespace (match / mint)
  * @param options.collections {GrantRequestCollection[]}   the collections to
  *   request (WAS collection id + visibility)
+ * @param [options.sharedCollections] {string[]}   WAS collection ids of
+ *   wallet-owned collections to request read-and-decrypt access to; each gets a
+ *   `urn:was:shared-collection` descriptor with {@link SHARED_ACTIONS}
  * @param [options.actions] {string[]}   the RW action set (defaults to
  *   `RW_ACTIONS`)
  * @returns {IVPRDetails}
@@ -94,6 +115,7 @@ export function buildAppConnectVpr({
   appName,
   credential,
   collections,
+  sharedCollections = [],
   actions = RW_ACTIONS
 }: {
   challenge: string
@@ -101,6 +123,7 @@ export function buildAppConnectVpr({
   appName: string
   credential: SeedCredentialConfig
   collections: GrantRequestCollection[]
+  sharedCollections?: string[]
   actions?: string[]
 }): IVPRDetails {
   const capabilityQuery: IAppConnectCapabilityQuery[] = collections.map(
@@ -116,6 +139,13 @@ export function buildAppConnectVpr({
       }
     })
   )
+  for (const id of sharedCollections) {
+    capabilityQuery.push({
+      referenceId: id,
+      allowedAction: SHARED_ACTIONS,
+      invocationTarget: { type: 'urn:was:shared-collection', name: id }
+    })
+  }
   return {
     query: [
       {

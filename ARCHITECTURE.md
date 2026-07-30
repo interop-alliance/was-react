@@ -7,8 +7,9 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
 
 ## Directory map
 
-- `src/config.ts` -- the central `WasAppConfig` + `StoreRegistry` contract and
-  the `{ key, id }` collection registry the storage layer routes on.
+- `src/config.ts` -- the central `WasAppConfig` + `StoreRegistry` contract, the
+  `{ key, id }` collection registry the storage layer routes on, and the
+  separate read-only `sharedCollections` registry.
 - `src/grants.ts` -- parses granted zcaps into server URL / space id / topology.
 - `src/identity/` -- seed-derived agents + per-collection KAK derivation, the
   seed credential (issue/parse/verify), seed persistence, session bootstrap, and
@@ -20,8 +21,9 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
   here imports React): replication, doc cipher, LWW conflict handling, the
   `WasSyncPort`.
 - `src/storage/` -- the encrypted `LocalStore`, the process-wide store holder,
-  generic entity stores, the delegated remote store, the sync controller, sync
-  status, and the rehydrate mechanism.
+  generic entity stores, the delegated remote store, the read-only
+  `SharedCollectionReader`, the sync controller, sync status, and the rehydrate
+  mechanism.
 - `src/session/` -- the wallet-mode auth store factory (`createAuthStore`) and
   the shared app-ready gate.
 - `src/react/` -- the `WasSessionProvider` + the hooks (`useSession`,
@@ -78,3 +80,66 @@ The seed never transits a server: minting happens in the wallet, delivery is the
 browser-direct CHAPI channel. Dev mode (`provisionDevGrants` /
 `connectWithGrants`) still self-issues the seed credential app-side via
 `issueSeedCredential`.
+
+## The three kinds of collection
+
+Three kinds, and the distinctions are load-bearing:
+
+- **App-owned private** (`collections`, `visibility: 'private'`, the default).
+  The app provisions, writes, and replicates it. Encrypted with a per-collection
+  X25519 key HKDF-derived from the master seed (`deriveCollectionKeys`, label
+  `kak:v1:<collectionId>`). Requested with the `urn:was:collection` descriptor.
+- **App-owned public** (`collections`, `visibility: 'public'`). Plaintext and
+  world-readable; no key derivation, and the stored resource id IS the payload
+  uuid, so a public document has a stable share URL. Requested with
+  `urn:was:public-collection`.
+- **Shared, wallet-owned** (`sharedCollections`). One of the WALLET's own
+  encrypted collections that the user chooses to let this app read and decrypt.
+  Requested with `urn:was:shared-collection` and the read-only `SHARED_ACTIONS`
+  set. It is read-only by construction: no RxDB collection, no local replica, no
+  replication, no writes, and the sync bootstrap's collection-description PUTs
+  skip it. Reads go straight to the server through a `SharedCollectionReader`,
+  which fetches the stored EDV envelope raw (the `encryption: 'plaintext'`
+  handle override) and decrypts it locally.
+
+`SharedCollectionReader.list()` has two paths. The fast one pages the `changes`
+feed -- whole pages of documents with their bodies, undecrypted by the server,
+which is exactly what a reader holding its own keys wants, and the same
+primitive replication pulls with. It costs one request per page rather than one
+per resource, and skips tombstones so the result is the live set. The fallback,
+for a backend without the `changes-query` feature (501, surfaced as
+`NotImplementedError`), lists the resource summaries and fetches each body; it
+warns once per reader that the collection is being read the slow way.
+
+`validateSharedCollections` rejects a collection declared in both registries: a
+collection cannot be app-owned and shared read-only at once.
+
+### Two key identities, not one
+
+A share hands the app an entry in the collection's key-epoch roster, and the key
+in that entry is the app's **identity KAK** -- the X25519 (Montgomery) twin of
+its `did:key` controller, on `IdentityAgents.keyAgreementKey`. The wallet
+derives the same key from the controller DID alone, so the key never travels on
+the wire and no request can pair controller DID A with recipient key B.
+
+That is a DIFFERENT key from the per-collection KAK `deriveCollectionKeys`
+produces for the app's own collections. Keep them apart: the identity KAK reads
+shared wallet collections; the per-collection KAK reads app-owned ones.
+
+### Failing closed, and the honest ceiling
+
+`urn:was:shared-collection` is a distinct descriptor type rather than a flag,
+for the same reason `urn:was:public-collection` is: an unknown type already
+resolves to unsatisfiable, so a wallet that predates the feature refuses
+visibly. Silently degrading matters more here than elsewhere -- a share fuses
+the read zcap with the roster entry, and half a share is ciphertext the app
+cannot decrypt, which reads as corrupt data rather than as a wallet needing an
+update.
+
+Two limits the reader states plainly, matching the wallet's consent copy:
+removing access stops future reads but cannot take back what was already read;
+and resources written before the collection's FIRST share are single-recipient
+envelopes sealed to the owner alone, never re-encrypted, so they do not decrypt
+here. Those are skipped with a distinguishable warning rather than treated as
+corruption. Every other failure -- no covering grant, no roster, not a recipient
+-- degrades one reader with a warning and never the session.

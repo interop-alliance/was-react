@@ -175,14 +175,14 @@ async function openSyncedReplica(dbName: string): Promise<LocalStore> {
     sync: { pollMs: 500, retryMs: 500 }
   })
   controllers.push(controller)
-  remoteStore = await startWasSync({
+  ;({ remoteStore } = await startWasSync({
     parsed,
     zcapClient,
     collections: REGISTRY,
     localStore: store,
     syncController: controller,
     onRemoteChange: () => {}
-  })
+  }))
   return store
 }
 

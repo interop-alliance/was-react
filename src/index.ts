@@ -20,7 +20,9 @@ export {
   DEFAULT_EXPIRY_WATCH_MS,
   collectionKeyForId,
   validateCollections,
+  validateSharedCollections,
   type WasCollectionConfig,
+  type SharedCollectionConfig,
   type WasSyncConfig,
   type WasExpiryConfig,
   type WasAppConfig,
@@ -75,6 +77,7 @@ export {
 export { DEFAULT_MEDIATOR_BASE, loadChapi, chapiGet } from './auth/chapi.js'
 export {
   RW_ACTIONS,
+  SHARED_ACTIONS,
   newChallenge,
   buildAppConnectVpr,
   type GrantRequestCollection
@@ -137,6 +140,12 @@ export {
   type MarkerResult,
   type EqualityQueryPage
 } from './storage/wasRemoteStore.js'
+export {
+  SharedCollectionReader,
+  SharedCollectionUnavailableError,
+  SHARED_CHANGES_PAGE_SIZE,
+  type SharedResource
+} from './storage/sharedCollectionReader.js'
 export { publicUrlFor } from './storage/publicUrl.js'
 export {
   useSyncStatusStore,
@@ -155,7 +164,7 @@ export {
   SyncController,
   createSyncController
 } from './storage/syncController.js'
-export { startWasSync } from './storage/wasSync.js'
+export { startWasSync, type WasSyncBootstrap } from './storage/wasSync.js'
 
 // Session lifecycle: the session auth store factory (the four-state machine).
 export {
@@ -176,6 +185,7 @@ export {
   useClearData,
   useHasLocalData,
   useReconnect,
+  useSharedCollection,
   useSyncStatus,
   type SyncRollup,
   defineDocumentApp,

@@ -11,6 +11,7 @@ import { useStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { WasSessionContext } from './WasSessionProvider.js'
 import type { WasAuthStore } from '../session/authStore.js'
+import type { SharedCollectionReader } from '../storage/sharedCollectionReader.js'
 import {
   useSyncStatusStore,
   deriveSyncRollup,
@@ -134,6 +135,23 @@ export function useClearData(): () => Promise<void> {
 export function useHasLocalData(): () => Promise<boolean> {
   const store = useAuthStore()
   return useStore(store, state => state.hasLocalData)
+}
+
+/**
+ * The read-only reader over one wallet-owned collection the wallet shared with
+ * this app, looked up by its `sharedCollections` config `key`. Returns
+ * `undefined` until replication has bootstrapped, and stays `undefined` when the
+ * wallet declined the share (or removed it), so a component must handle its
+ * absence rather than assume the grant.
+ *
+ * @param key {string}   the shared-collection config key
+ * @returns {SharedCollectionReader | undefined}
+ */
+export function useSharedCollection(
+  key: string
+): SharedCollectionReader | undefined {
+  const store = useAuthStore()
+  return useStore(store, state => state.sharedCollections[key])
 }
 
 /**

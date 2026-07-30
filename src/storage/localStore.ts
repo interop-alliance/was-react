@@ -35,6 +35,8 @@ import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie'
 import {
   DEFAULT_DB_NAME,
   validateCollections,
+  validateSharedCollections,
+  type SharedCollectionConfig,
   type WasCollectionConfig
 } from '../config.js'
 import type { CollectionEncryption } from '@interop/was-client'
@@ -144,6 +146,10 @@ export class LocalStore {
    * @param options.seed {Uint8Array}   the 32-byte master seed
    * @param options.collections {WasCollectionConfig[]}   the collection registry
    *   (logical key to WAS collection id)
+   * @param [options.sharedCollections] {SharedCollectionConfig[]}   the shared
+   *   (read-only, wallet-owned) registry. Nothing is opened for these -- they
+   *   have no local replica -- but they are validated against the app-owned
+   *   registry here, before any replica exists
    * @param [options.markers] {Record<string, CollectionEncryption>}   cached
    *   encryption markers keyed by WAS collection id (from the offline cache)
    * @param [options.storage] {RxStorage<unknown, unknown>}   defaults to
@@ -154,17 +160,23 @@ export class LocalStore {
   static async init({
     seed,
     collections,
+    sharedCollections,
     markers = {},
     storage,
     dbName = DEFAULT_DB_NAME
   }: {
     seed: Uint8Array
     collections: WasCollectionConfig[]
+    sharedCollections?: SharedCollectionConfig[]
     markers?: Record<string, CollectionEncryption>
     storage?: RxStorage<unknown, unknown>
     dbName?: string
   }): Promise<LocalStore> {
     validateCollections(collections)
+    validateSharedCollections({
+      collections,
+      ...(sharedCollections && { sharedCollections })
+    })
     const ciphers: Record<string, DocCipher> = {}
     // The marker each private cipher was built from, keyed by logical key.
     const builtMarkers: Record<string, CollectionEncryption | undefined> = {}
