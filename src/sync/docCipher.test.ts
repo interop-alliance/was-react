@@ -3,10 +3,10 @@
  */
 /**
  * Tests for the multi-recipient (key-epoch) behavior of `createDocCipher`, the
- * per-collection encrypt/decrypt seam. Uses the app's real deterministic
- * per-collection key (`deriveCollectionKeys`) as the recipient -- exactly the
- * key the wallet registers as the app's roster entry -- so the round-trip proves
- * the shared-key contract, not a synthetic key. A marker is minted with
+ * per-collection encrypt/decrypt seam. Uses the app's real identity
+ * key-agreement key (`deriveIdentity`) as the recipient -- exactly the key the
+ * wallet registers as the app's roster entry -- so the round-trip proves the
+ * shared-key contract, not a synthetic key. A marker is minted with
  * was-client's own `initRecipients` against a tiny in-memory collection stub.
  *
  * @vitest-environment node
@@ -17,11 +17,11 @@ import {
   ownerRecipient,
   epochKeyIdFor
 } from '@interop/was-client/edv'
-import { deriveCollectionKeys } from '../identity/agents.js'
+import { deriveIdentity } from '../identity/agents.js'
 import { createDocCipher, isEncryptedEnvelope } from './docCipher.js'
 import type { Json } from './types.js'
 
-// A fixed 32-byte master seed drives deterministic per-collection derivation.
+// A fixed 32-byte master seed drives the deterministic identity derivation.
 const SEED = new Uint8Array(32).map((_, index) => (index * 5 + 1) & 0xff)
 const COLLECTION_ID = 'app-notes'
 
@@ -57,9 +57,8 @@ const DOC: Json = { id: 'note-1', title: 'hello', body: { n: 42 } }
 
 describe('createDocCipher (multi-recipient / key epochs)', () => {
   it('encrypts under the current epoch and round-trips through the epoch codec', async () => {
-    const { keyAgreementKey, keyResolver } = await deriveCollectionKeys({
-      seed: SEED,
-      collectionId: COLLECTION_ID
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({
+      seed: SEED
     })
     const encryption = await mintMarker(keyAgreementKey)
     const cipher = await createDocCipher({
@@ -78,14 +77,13 @@ describe('createDocCipher (multi-recipient / key epochs)', () => {
     ).jwe.recipients.map(recipient => recipient.header.kid)
     expect(kids).toContain(epochKeyIdFor(encryption.currentEpoch as string))
     expect(kids).not.toContain(keyAgreementKey.id)
-    // The app's own deterministic key unwraps the epoch and recovers the doc.
+    // The app's own identity key unwraps the epoch and recovers the doc.
     expect(await cipher.decrypt({ envelope })).toEqual(DOC)
   })
 
   it('still decrypts a pre-epoch (single-key) envelope when a marker is present', async () => {
-    const { keyAgreementKey, keyResolver } = await deriveCollectionKeys({
-      seed: SEED,
-      collectionId: COLLECTION_ID
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({
+      seed: SEED
     })
     // A pre-epoch envelope: encrypted straight to the key-agreement key before
     // any roster existed (no marker).

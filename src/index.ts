@@ -37,14 +37,12 @@ export {
   type ParsedGrants
 } from './grants.js'
 
-// Identity: seed-derived agents + per-collection vault keys.
+// Identity: the seed-derived agents, including the identity key-agreement key
+// every encrypted collection is read with.
 export {
   deriveIdentity,
-  deriveCollectionKeys,
   DEFAULT_IDENTITY_HANDLE,
-  DEFAULT_KAK_HANDLE,
-  type IdentityAgents,
-  type CollectionKeys
+  type IdentityAgents
 } from './identity/agents.js'
 export {
   createDocumentLoader,

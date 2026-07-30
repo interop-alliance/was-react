@@ -103,7 +103,7 @@ with documented defaults.
 A collection may also declare `visibility: 'public'`
 (`{ key: 'posts', id: 'microblog-posts', visibility: 'public' }`); the default
 is `'private'`. A public collection is world-readable and therefore PLAINTEXT:
-no per-collection key is derived, payloads are stored as-is locally and
+no encryption key is involved at all, payloads are stored as-is locally and
 remotely, and the stored resource id is the payload's own logical `id`, so a
 public document keeps a stable, shareable resource URL across edits. Be aware
 that everything in a public payload is world-readable -- including the LWW
@@ -180,9 +180,9 @@ that needs updating.
 Decryption uses the app's **identity** key-agreement key: the X25519 twin of its
 `did:key` controller (`IdentityAgents.keyAgreementKey`), which is exactly what
 the wallet derives from the controller DID when it writes the app into the
-roster, so the recipient key never travels on the wire. This is a different key
-from `deriveCollectionKeys`, the per-collection key used for the app's own
-collections.
+roster, so the recipient key never travels on the wire. It is the same key the
+app's own collections are encrypted with -- an epoch-roster recipient is always
+the X25519 twin of a controller did:key, whoever owns the collection.
 
 Two honest limits, the same ones the wallet's consent screen states. Access can
 be removed later, which stops future reads but cannot take back what has already
@@ -458,16 +458,18 @@ Hooks:
   row is `{ id, updatedAt, version, data }`, where `data` is an EDV envelope
   `{ id, sequence, jwe }`. The app reads exclusively from the in-memory entity
   stores hydrated from this replica, so it works fully offline.
-- **Envelope encryption.** Each private collection is encrypted with its own
-  X25519 key-agreement key, HKDF-derived from the master seed with the label
-  `kak:v1:<collectionId>` (`deriveCollectionKeys`). HKDF one-wayness means a
-  shared per-collection key exposes nothing about the master seed or the sibling
-  collections. The WAS server never sees plaintext. A collection declared
-  `visibility: 'public'` opts out entirely: payloads are stored plaintext (no
-  key derivation, no envelope) behind the same storage seam. A SHARED
-  (wallet-owned) collection is outside all of this: it never replicates and has
-  no local replica, and its envelopes are decrypted on demand with the app's
-  identity key-agreement key through the collection's key-epoch roster.
+- **Envelope encryption.** Every private collection is encrypted with the app's
+  identity X25519 key-agreement key -- the twin of its `did:key` controller,
+  derived once per session and shared by all of them, which is also the key a
+  wallet writes into a roster when it shares one of its OWN collections. One key
+  therefore reads everything this app touches (earlier versions derived a
+  separate HKDF key per collection; see "One key identity" in ARCHITECTURE.md
+  for why that separation was given up). The WAS server never sees plaintext. A
+  collection declared `visibility: 'public'` opts out entirely: payloads are
+  stored plaintext (no key, no envelope) behind the same storage seam. A SHARED
+  (wallet-owned) collection is outside the replica: it never replicates and has
+  no local rows, and its envelopes are decrypted on demand with that same
+  identity key through the collection's key-epoch roster.
 - **Replication.** A per-session `SyncController` runs RxDB replication per
   collection over a `WasSyncPort` (signed requests authorized by the granted
   zcaps). Pull is driven by the WAS `changes` feed; a low-frequency periodic

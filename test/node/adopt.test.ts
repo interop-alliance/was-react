@@ -13,6 +13,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { LocalStore } from '../../src/storage/localStore.js'
+import { deriveIdentity } from '../../src/identity/agents.js'
 import { mergeAdopted } from '../../src/storage/adopt.js'
 import type { WasCollectionConfig } from '../../src/config.js'
 
@@ -30,8 +31,12 @@ let dbCounter = 0
 const openStores: LocalStore[] = []
 
 async function openStore(seedByte: number): Promise<LocalStore> {
+  const { keyAgreementKey, keyResolver } = await deriveIdentity({
+    seed: new Uint8Array(32).fill(seedByte)
+  })
   const store = await LocalStore.init({
-    seed: new Uint8Array(32).fill(seedByte),
+    keyAgreementKey,
+    keyResolver,
     collections: COLLECTIONS,
     dbName: `was-react-adopt-${++dbCounter}`
   })

@@ -43,13 +43,15 @@ a refactor:
 
 - The 32-byte master seed is fed to `CapabilityAgent.fromSeed` AS-IS (raw bytes,
   never `fromSecret`).
-- The internal `keyName` values `'app-key'` (master identity) and `'kak'`
-  (per-collection key agreement) in `src/identity/agents.ts`.
-- The HKDF label `kak:v1:<collectionId>` used to derive per-collection vault
-  keys.
+- The internal `keyName` value `'app-key'` (master identity) in
+  `src/identity/agents.ts`.
+- The Ed25519-to-X25519 (Montgomery) conversion that turns the master identity
+  into the app's key-agreement key: it is the recipient identity a wallet
+  derives independently from the controller `did:key`, and every encrypted
+  collection -- app-owned or shared -- is read with it.
 
-The `handle` / `identityHandle` / `kakHandle` labels are cosmetic and safe to
-change; the seed bytes, the `keyName`s, and the HKDF label are not.
+The `handle` / `identityHandle` labels are cosmetic and safe to change; the seed
+bytes and the `keyName` are not.
 
 ### .tsx placement
 

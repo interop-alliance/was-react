@@ -11,9 +11,10 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
   `{ key, id }` collection registry the storage layer routes on, and the
   separate read-only `sharedCollections` registry.
 - `src/grants.ts` -- parses granted zcaps into server URL / space id / topology.
-- `src/identity/` -- seed-derived agents + per-collection KAK derivation, the
-  seed credential (issue/parse/verify), seed persistence, session bootstrap, and
-  the persisted app-session record.
+- `src/identity/` -- seed-derived agents (including the identity key-agreement
+  key every encrypted collection is read with), the seed credential
+  (issue/parse/verify), seed persistence, session bootstrap, and the persisted
+  app-session record.
 - `src/auth/` -- the relying-party side of Login With Wallet (App Connect):
   CHAPI wrappers, VPR construction, response verification, and the
   login/reconnect orchestration.
@@ -86,9 +87,9 @@ browser-direct CHAPI channel. Dev mode (`provisionDevGrants` /
 Three kinds, and the distinctions are load-bearing:
 
 - **App-owned private** (`collections`, `visibility: 'private'`, the default).
-  The app provisions, writes, and replicates it. Encrypted with a per-collection
-  X25519 key HKDF-derived from the master seed (`deriveCollectionKeys`, label
-  `kak:v1:<collectionId>`). Requested with the `urn:was:collection` descriptor.
+  The app provisions, writes, and replicates it. Encrypted with the app's
+  identity X25519 key-agreement key -- the same key a shared collection's roster
+  entry names. Requested with the `urn:was:collection` descriptor.
 - **App-owned public** (`collections`, `visibility: 'public'`). Plaintext and
   world-readable; no key derivation, and the stored resource id IS the payload
   uuid, so a public document has a stable share URL. Requested with
@@ -114,7 +115,7 @@ warns once per reader that the collection is being read the slow way.
 `validateSharedCollections` rejects a collection declared in both registries: a
 collection cannot be app-owned and shared read-only at once.
 
-### Two key identities, not one
+### One key identity
 
 A share hands the app an entry in the collection's key-epoch roster, and the key
 in that entry is the app's **identity KAK** -- the X25519 (Montgomery) twin of
@@ -122,9 +123,22 @@ its `did:key` controller, on `IdentityAgents.keyAgreementKey`. The wallet
 derives the same key from the controller DID alone, so the key never travels on
 the wire and no request can pair controller DID A with recipient key B.
 
-That is a DIFFERENT key from the per-collection KAK `deriveCollectionKeys`
-produces for the app's own collections. Keep them apart: the identity KAK reads
-shared wallet collections; the per-collection KAK reads app-owned ones.
+That is the SAME key the app's own collections are encrypted with. One rule
+holds everywhere: an epoch-roster recipient is the X25519 twin of a controller
+did:key, whoever owns the collection, and an app derives its key exactly once
+per session (`LocalStore.init` takes it, rather than deriving per collection).
+
+Earlier versions ran a second identity for app-owned collections -- a
+per-collection KAK, HKDF-derived from the master seed under the collection id
+(`deriveCollectionKeys`, label `kak:v1:<collectionId>`). Unifying gives up that
+HKDF domain separation: one key now reads every collection the app touches. The
+trade is deliberate. A share is also grantable to an arbitrary `did:key` where
+no app seed exists at all, so the recipient must be derivable from the
+controller DID alone; per-collection keys cannot cover that case, and only the
+identity KAK can be the single rule. And the separation bought less than it
+appears to: with key epochs the KAK only unwraps an epoch secret rather than
+being the content key, and the seed both keys derive from is persisted in the
+same process anyway.
 
 ### Failing closed, and the honest ceiling
 

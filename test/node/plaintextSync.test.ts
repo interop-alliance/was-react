@@ -164,8 +164,10 @@ afterAll(async () => {
  * in-process server (fast retry/poll so the tests converge quickly).
  */
 async function openSyncedReplica(dbName: string): Promise<LocalStore> {
+  const { keyAgreementKey, keyResolver } = await deriveIdentity({ seed: SEED })
   const store = await LocalStore.init({
-    seed: SEED,
+    keyAgreementKey,
+    keyResolver,
     collections: REGISTRY,
     dbName
   })

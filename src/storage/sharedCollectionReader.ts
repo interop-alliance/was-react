@@ -15,9 +15,9 @@
  *   the server checks at request time;
  * - **read** -- an entry in the collection's key-epoch roster, wrapped to this
  *   app's IDENTITY key-agreement key (the X25519 twin of its did:key
- *   controller, `IdentityAgents.keyAgreementKey` -- NOT a `deriveCollectionKeys`
- *   per-collection KAK, which is a different key identity used only for the
- *   app's own collections).
+ *   controller, `IdentityAgents.keyAgreementKey`). That is the same key the
+ *   app's own collections are encrypted with: one rule for every roster entry,
+ *   whoever owns the collection.
  *
  * The stored resource body IS the EDV envelope the wallet's replication moved
  * verbatim, so reads must be RAW: the handle is opened with the

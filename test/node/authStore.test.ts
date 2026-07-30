@@ -129,8 +129,10 @@ async function reopenReplica({
   seed: Uint8Array
   controllerDid: string
 }): Promise<LocalStore> {
+  const { keyAgreementKey, keyResolver } = await initAppSession({ seed })
   const store = await LocalStore.init({
-    seed,
+    keyAgreementKey,
+    keyResolver,
     collections: config.collections,
     dbName: dbNameForController({ dbName: config.dbName!, controllerDid })
   })

@@ -27,7 +27,6 @@ import {
 import { NotImplementedError } from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
 import { deriveIdentity } from '../../src/identity/agents.js'
-import { deriveCollectionKeys } from '../../src/identity/agents.js'
 import { createDocCipher } from '../../src/sync/index.js'
 import {
   SharedCollectionReader,
@@ -141,15 +140,15 @@ describe('the app-side recipient identity', () => {
     expect(appSide.type).toBe('X25519KeyAgreementKey2020')
   })
 
-  it('is NOT the per-collection key used for app-owned collections', async () => {
-    const identity = await deriveIdentity({ seed: APP_SEED })
-    const { keyAgreementKey } = await deriveCollectionKeys({
-      seed: APP_SEED,
-      collectionId: COLLECTION_ID
-    })
-    const identityKey = identity.keyAgreementKey as unknown as { id: string }
-    const collectionKey = keyAgreementKey as unknown as { id: string }
-    expect(identityKey.id).not.toBe(collectionKey.id)
+  it('is the SAME key the app reads its own collections with', async () => {
+    // One rule for every roster entry: the X25519 twin of the controller
+    // did:key, whether the collection is shared by a wallet or app-owned.
+    const first = await deriveIdentity({ seed: APP_SEED })
+    const second = await deriveIdentity({ seed: APP_SEED })
+    const firstKey = first.keyAgreementKey as unknown as { id: string }
+    const secondKey = second.keyAgreementKey as unknown as { id: string }
+    expect(firstKey.id).toBe(secondKey.id)
+    expect(firstKey.id.startsWith(`${first.controllerDid}#`)).toBe(true)
   })
 
   it('resolves only its own key id', async () => {

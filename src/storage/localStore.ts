@@ -51,7 +51,10 @@ import {
   type SyncedDoc,
   type DocCipher
 } from '../sync/index.js'
-import { deriveCollectionKeys } from '../identity/agents.js'
+import type {
+  IKeyAgreementKey,
+  IKeyResolver
+} from '@interop/data-integrity-core'
 
 // A logical entity payload: the minimum this store needs is a logical `id`
 // (uuidv7) to index and route mutable-head updates by. The rest of the payload
@@ -83,9 +86,10 @@ export function dbNameForController({
 }
 
 /**
- * The local store. Construct via {@link LocalStore.init}, which derives the
- * per-collection ciphers from the master seed (private collections) or wires
- * the pass-through plaintext codec (public collections) and opens RxDB.
+ * The local store. Construct via {@link LocalStore.init}, which builds each
+ * collection's cipher -- an EDV cipher on the app's identity KAK (private
+ * collections) or the pass-through plaintext codec (public collections) -- and
+ * opens RxDB.
  */
 export class LocalStore {
   #db: RxDatabase
@@ -94,9 +98,11 @@ export class LocalStore {
   #configs: Record<string, WasCollectionConfig>
   // Per-collection logical-uuid -> envelope (RxDB primary key) index.
   #index: Record<string, Map<string, string>>
-  // The master seed, kept so a private collection's cipher can be re-derived
+  // The app's identity KAK and its resolver: the ONE key material every
+  // private collection's cipher is built on, kept so a cipher can be rebuilt
   // when its epoch marker changes (a wallet-side rotation).
-  #seed: Uint8Array
+  #keyAgreementKey: IKeyAgreementKey
+  #keyResolver: IKeyResolver
   // The encryption marker each private collection's current cipher was built
   // from (keyed by collection logical key), so a marker change can be detected.
   #markers: Record<string, CollectionEncryption | undefined>
@@ -112,14 +118,16 @@ export class LocalStore {
     collections,
     ciphers,
     configs,
-    seed,
+    keyAgreementKey,
+    keyResolver,
     markers
   }: {
     db: RxDatabase
     collections: Record<string, RxCollection<SyncedDoc>>
     ciphers: Record<string, DocCipher>
     configs: Record<string, WasCollectionConfig>
-    seed: Uint8Array
+    keyAgreementKey: IKeyAgreementKey
+    keyResolver: IKeyResolver
     markers: Record<string, CollectionEncryption | undefined>
   }) {
     this.#db = db
@@ -127,15 +135,17 @@ export class LocalStore {
     this.#ciphers = ciphers
     this.#configs = configs
     this.#index = {}
-    this.#seed = seed
+    this.#keyAgreementKey = keyAgreementKey
+    this.#keyResolver = keyResolver
     this.#markers = markers
   }
 
   /**
-   * Opens (or creates) the store: derives a per-collection KAK + cipher from
-   * the master seed for each PRIVATE collection (a PUBLIC collection skips key
-   * derivation entirely and gets the pass-through plaintext codec) and opens
-   * one RxDB collection per entity.
+   * Opens (or creates) the store: builds one cipher per PRIVATE collection on
+   * the app's identity KAK (a PUBLIC collection gets the pass-through plaintext
+   * codec instead) and opens one RxDB collection per entity. The key material
+   * is derived ONCE, by the caller, and shared by every private collection: an
+   * epoch-roster recipient is always the X25519 twin of a controller did:key.
    *
    * When `markers` carries an encryption marker for a private collection (from
    * the offline marker cache), that collection's cipher is built epoch-aware so
@@ -143,7 +153,10 @@ export class LocalStore {
    * collection with no cached marker keeps the single-key behavior.
    *
    * @param options {object}
-   * @param options.seed {Uint8Array}   the 32-byte master seed
+   * @param options.keyAgreementKey {IKeyAgreementKey}   the app's identity KAK
+   *   (`IdentityAgents.keyAgreementKey`)
+   * @param options.keyResolver {IKeyResolver}   its one-key resolver
+   *   (`IdentityAgents.keyResolver`)
    * @param options.collections {WasCollectionConfig[]}   the collection registry
    *   (logical key to WAS collection id)
    * @param [options.sharedCollections] {SharedCollectionConfig[]}   the shared
@@ -158,14 +171,16 @@ export class LocalStore {
    * @returns {Promise<LocalStore>}
    */
   static async init({
-    seed,
+    keyAgreementKey,
+    keyResolver,
     collections,
     sharedCollections,
     markers = {},
     storage,
     dbName = DEFAULT_DB_NAME
   }: {
-    seed: Uint8Array
+    keyAgreementKey: IKeyAgreementKey
+    keyResolver: IKeyResolver
     collections: WasCollectionConfig[]
     sharedCollections?: SharedCollectionConfig[]
     markers?: Record<string, CollectionEncryption>
@@ -188,10 +203,6 @@ export class LocalStore {
         continue
       }
       const encryption = markers[id]
-      const { keyAgreementKey, keyResolver } = await deriveCollectionKeys({
-        seed,
-        collectionId: id
-      })
       ciphers[key] = await createDocCipher({
         keyAgreementKey,
         keyResolver,
@@ -248,7 +259,8 @@ export class LocalStore {
       collections: collectionsMap,
       ciphers,
       configs: Object.fromEntries(collections.map(entry => [entry.key, entry])),
-      seed,
+      keyAgreementKey,
+      keyResolver,
       markers: builtMarkers
     })
   }
@@ -329,11 +341,10 @@ export class LocalStore {
   }
 
   /**
-   * Rebuilds one private collection's cipher from a new encryption marker,
-   * re-deriving its per-collection key material from the master seed. A public
-   * (plaintext) collection has no seed-derived cipher and is a no-op. The new
-   * cipher replaces the held one in place, so the conflict handler and every
-   * read path pick it up.
+   * Rebuilds one private collection's cipher from a new encryption marker, on
+   * the same identity KAK the store was opened with. A public (plaintext)
+   * collection has no EDV cipher and is a no-op. The new cipher replaces the
+   * held one in place, so the conflict handler and every read path pick it up.
    *
    * @param options {object}
    * @param options.key {string}   the collection logical key
@@ -351,13 +362,9 @@ export class LocalStore {
     if (config.visibility === 'public') {
       return
     }
-    const { keyAgreementKey, keyResolver } = await deriveCollectionKeys({
-      seed: this.#seed,
-      collectionId: config.id
-    })
     this.#ciphers[key] = await createDocCipher({
-      keyAgreementKey,
-      keyResolver,
+      keyAgreementKey: this.#keyAgreementKey,
+      keyResolver: this.#keyResolver,
       collectionId: config.id,
       encryption
     })

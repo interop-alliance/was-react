@@ -28,13 +28,40 @@
   corrupt data.
 - `IdentityAgents` now carries `keyAgreementKey` + `keyResolver`: the app's
   IDENTITY key-agreement key, the X25519 twin of its `did:key` controller. That
-  is the recipient identity a wallet writes into a shared collection's key-epoch
-  roster, so the key is derived on both sides and never travels on the wire. It
-  is a distinct key from `deriveCollectionKeys`, which stays the per-collection
-  key for the app's OWN collections.
+  is the recipient identity a wallet writes into the key-epoch roster of any
+  collection this app reads, so the key is derived on both sides and never
+  travels on the wire.
 
 ### Changed
 
+- **Breaking:** every encrypted collection -- app-provisioned as well as shared
+  -- is now read and written with the app's IDENTITY key-agreement key, derived
+  once per session. `LocalStore.init` takes `keyAgreementKey` + `keyResolver`
+  (`IdentityAgents`) in place of the master `seed`, and no longer derives a key
+  per collection; `rebuildCipher` reuses the same key material. One rule now
+  covers every key-epoch roster entry: a recipient is the X25519 (Montgomery)
+  twin of a controller `did:key`, whether the recipient is an app or a person. A
+  share is grantable to an arbitrary `did:key` where no app seed exists, so the
+  recipient has to be derivable from the controller DID alone -- which is why
+  unification could only go this way. It also gets a client secret out of the
+  wallet's grant path: the wallet no longer needs the app seed to provision an
+  encrypted app collection.
+
+  What this costs, stated plainly: the HKDF domain separation between
+  collections is gone, and one key now reads every collection the app touches.
+  With key epochs that key only unwraps an epoch secret rather than being the
+  content key, and the seed it derives from is persisted in the same process
+  anyway, so the separation bought less than it looks like.
+
+  This is a data-migration event for any app that already stored rows under the
+  old per-collection keys: existing envelopes were sealed to a key that is no
+  longer derived, so they will not decrypt.
+
+- **Breaking:** `deriveCollectionKeys`, `DEFAULT_KAK_HANDLE`, and
+  `CollectionKeys` are no longer re-exported from `@interop/was-react` (nor from
+  `identity/agents.js`). The derivation itself is unchanged and still lives in
+  `@interop/wallet-core/identity`; it simply has no caller here. Import it from
+  there if an app still needs it.
 - **Breaking:** `startWasSync` now resolves to
   `{ remoteStore, sharedCollections }` rather than the remote store alone, so
   the bootstrapped shared-collection readers reach the caller.

@@ -21,19 +21,24 @@
  * app can supply a label for cosmetic continuity; it does not affect the
  * identity, keys, or any stored data.
  *
- * TWO DISTINCT KEY IDENTITIES live in this area, and they must not be confused:
+ * ONE KEY IDENTITY answers for encryption everywhere: the app's IDENTITY
+ * key-agreement key (KAK), derived here as the X25519 (Montgomery) twin of the
+ * did:key controller. One per app identity, and the single rule for every
+ * key-epoch roster entry -- a recipient is always the X25519 twin of a
+ * controller did:key, whether the collection is one the app provisioned or one
+ * the wallet SHARED with it. Both sides of a share derive it independently, so
+ * it never travels on the wire.
  *
- * - the app's IDENTITY key-agreement key (KAK), derived here as the X25519 twin
- *   of the did:key controller. One per app identity. It is what a wallet writes
- *   into the key-epoch roster when it SHARES one of its own encrypted
- *   collections with this app;
- * - a PER-COLLECTION KAK (`deriveCollectionKeys`), derived by HKDF from the
- *   master seed under the collection id. One per app-owned collection, used for
- *   the collections the app itself provisions.
- *
- * The per-collection key-agreement (KAK) derivation now lives in
- * `@interop/wallet-core/identity` (`deriveCollectionKeys`, along with its pinned
- * HKDF derivation inputs) and is re-exported here for compatibility.
+ * Earlier versions used a second identity for app-provisioned collections: a
+ * per-collection KAK, HKDF-derived from the master seed under the collection id
+ * (`deriveCollectionKeys`, label `kak:v1:<collectionId>`). That derivation still
+ * lives in `@interop/wallet-core/identity` but has no caller here. Unifying cost
+ * the HKDF domain separation between collections -- the identity KAK now reads
+ * every collection the app touches. In the multi-recipient model that key only
+ * unwraps an epoch secret rather than being the content key, and the seed it was
+ * derived from is persisted in the same process anyway, so the separation bought
+ * less than it looked like; what it genuinely served -- handing one collection's
+ * key to a third party -- is what key-epoch rosters replaced.
  *
  * Not test-node-safe on React Native, but fine under Node/Vitest: the crypto
  * stack (`webkms-client`, `x25519-key-agreement-key`) runs on the standard Web
@@ -48,18 +53,6 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-
-/**
- * The per-collection vault-key (KAK) derivation, its result type, and its
- * default cosmetic handle now live in `@interop/wallet-core/identity` (moved
- * there verbatim, with their pinned `kak:v1:<collectionId>` HKDF derivation
- * inputs); re-exported here so existing imports keep working.
- */
-export {
-  deriveCollectionKeys,
-  DEFAULT_KAK_HANDLE,
-  type CollectionKeys
-} from '@interop/wallet-core/identity'
 
 /**
  * Default cosmetic label for the master identity agent. Local naming only (does
@@ -79,14 +72,11 @@ const IDENTITY_KEY_NAME = 'app-key'
  * The identity KAK is the X25519 twin (Montgomery form) of the did:key
  * controller's Ed25519 key -- ONE key for the whole app identity, not one per
  * collection. It is the recipient identity a wallet writes into the key-epoch
- * roster of a collection it SHARES with this app (the wallet derives the same
- * key from the controller did:key alone, so the `id` / `publicKeyMultibase`
- * match byte-for-byte and nothing has to travel on the wire).
- *
- * Do not confuse it with `deriveCollectionKeys`, which is a DIFFERENT key
- * identity: a per-collection KAK derived by HKDF from the seed, used for the
- * app's OWN (app-provisioned) collections. Shared, wallet-owned collections use
- * the identity KAK below; app-owned collections use the per-collection KAK.
+ * roster of ANY collection this app reads: one it provisioned for the app, or
+ * one of the wallet's own that it SHARES with the app (the wallet derives the
+ * same key from the controller did:key alone, so the `id` /
+ * `publicKeyMultibase` match byte-for-byte and nothing has to travel on the
+ * wire). It is also what the local replica's EDV ciphers are built on.
  */
 export interface IdentityAgents {
   controllerDid: string
