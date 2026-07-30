@@ -4,13 +4,13 @@
 /**
  * App-session identity bootstrap: everything derivable from the master seed in
  * one call. Thin composition over the pinned derivation in `agents.ts` (which
- * is the shared-key contract: `CapabilityAgent.fromSeed` on raw bytes for the
- * identity, HKDF `info = 'kak:v1:<collectionId>'` for each collection's KAK --
- * never change either without a migration plan).
+ * is the shared-key contract: `CapabilityAgent.fromSeed` on raw bytes, keyName
+ * `app-key` -- never change it without a migration plan).
  *
- * The per-collection KAKs themselves are derived where they are consumed (the
- * local store calls `deriveCollectionKeys` per collection); this module only
- * surfaces the identity/zcap side the auth flow needs.
+ * The agents it returns carry the app's identity key-agreement key, which is
+ * the ONE key every encrypted collection is read with: the local replica's
+ * ciphers (`LocalStore.init`) and every key-epoch roster entry the wallet
+ * writes for this app alike.
  */
 import { deriveIdentity, type IdentityAgents } from './agents.js'
 

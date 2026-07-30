@@ -110,8 +110,9 @@ export function createPlaintextDocCodec({
 }
 
 /**
- * Builds a {@link DocCipher} for one collection from its derived key material
- * (the per-collection X25519 key agreement key). Keys are supplied directly (no
+ * Builds a {@link DocCipher} for one collection from the caller's derived key
+ * material (the app's identity X25519 key agreement key, the same one every
+ * other collection uses). Keys are supplied directly (no
  * keystore lookup). `idDerivation: 'random'` mints a stable random id updated in
  * place via `sequence` -- the mutable head-document model every entity here uses
  * (constant bump / toggle / re-categorize edits).

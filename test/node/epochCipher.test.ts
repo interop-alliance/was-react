@@ -6,7 +6,7 @@
  * opened single-key (no cached marker) that meets an envelope written under a
  * key epoch it has not seen (a rotation on another device) recovers by re-
  * reading the marker exactly once and rebuilding the cipher. Uses the app's
- * real deterministic per-collection key as the roster recipient, so the rebuilt
+ * real identity key-agreement key as the roster recipient, so the rebuilt
  * cipher genuinely unwraps the epoch.
  *
  * @vitest-environment node
@@ -17,7 +17,7 @@ import { initRecipients, ownerRecipient } from '@interop/was-client/edv'
 import type { CollectionEncryption } from '@interop/was-client'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { createDocCipher, type Json } from '../../src/sync/index.js'
-import { deriveCollectionKeys } from '../../src/identity/agents.js'
+import { deriveIdentity } from '../../src/identity/agents.js'
 import type { WasCollectionConfig } from '../../src/config.js'
 
 const COLLECTIONS: WasCollectionConfig[] = [{ key: 'notes', id: 'notes' }]
@@ -31,8 +31,10 @@ const openStores: LocalStore[] = []
 async function openStore(
   markers?: Record<string, CollectionEncryption>
 ): Promise<LocalStore> {
+  const { keyAgreementKey, keyResolver } = await deriveIdentity({ seed: SEED })
   const store = await LocalStore.init({
-    seed: SEED,
+    keyAgreementKey,
+    keyResolver,
     collections: COLLECTIONS,
     dbName: `epoch-test-${dbCounter++}`,
     ...(markers && { markers })
@@ -42,13 +44,10 @@ async function openStore(
 }
 
 /**
- * Mints a one-epoch marker whose sole recipient is the collection's app key.
+ * Mints a one-epoch marker whose sole recipient is the app's identity key.
  */
 async function mintMarker(): Promise<CollectionEncryption> {
-  const { keyAgreementKey } = await deriveCollectionKeys({
-    seed: SEED,
-    collectionId: COLLECTION_ID
-  })
+  const { keyAgreementKey } = await deriveIdentity({ seed: SEED })
   let description: Record<string, unknown> = {
     name: 'notes',
     encryption: { scheme: 'edv' }
@@ -79,9 +78,8 @@ describe('LocalStore epoch-marker refresh', () => {
   it('recovers from an unknown epoch with a single marker re-fetch', async () => {
     // Build an epoch envelope with the marker cipher (what another device wrote).
     const encryption = await mintMarker()
-    const { keyAgreementKey, keyResolver } = await deriveCollectionKeys({
-      seed: SEED,
-      collectionId: COLLECTION_ID
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({
+      seed: SEED
     })
     const markerCipher = await createDocCipher({
       keyAgreementKey,

@@ -5,8 +5,8 @@
  * The local-to-connected adoption merge: copies the anonymous replica's
  * decrypted payloads into the freshly opened connected replica. A copy
  * (decrypt with the anonymous cipher, re-encrypt with the connected cipher) is
- * the only possible mechanism -- the two replicas derive their per-collection
- * keys from different seeds, so envelopes are not portable across them.
+ * the only possible mechanism -- the two replicas derive their keys from
+ * different seeds, so envelopes are not portable across them.
  *
  * Merge policy, per logical uuid (deterministic, replica-independent):
  * - no connected doc under that uuid: insert.

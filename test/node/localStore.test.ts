@@ -2,9 +2,9 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Round-trip tests for the local encrypted store: real per-collection X25519
- * keys drive the was-client EDV codec end to end through RxDB (Dexie storage on
- * fake-indexeddb). Asserts create / list / in-place update (envelope id stable,
+ * Round-trip tests for the local encrypted store: the app's real identity
+ * X25519 key drives the was-client EDV codec end to end through RxDB (Dexie
+ * storage on fake-indexeddb). Asserts create / list / in-place update (envelope id stable,
  * sequence advances) / delete, and that the at-rest row is ciphertext only. A
  * second block covers PUBLIC (plaintext) collections: payloads stored as-is
  * under their own logical id, alongside a private collection in the same store.
@@ -14,6 +14,7 @@
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { LocalStore } from '../../src/storage/localStore.js'
+import { deriveIdentity } from '../../src/identity/agents.js'
 import type { WasCollectionConfig } from '../../src/config.js'
 
 // A neutral test collection registry (not any app's real collections).
@@ -27,7 +28,7 @@ const MIXED: WasCollectionConfig[] = [
 ]
 const PUBLIC_COLLECTION = 'posts'
 
-// A fixed 32-byte master seed drives deterministic per-collection key derivation.
+// A fixed 32-byte master seed drives the deterministic identity derivation.
 const SEED = new Uint8Array(32).map((_, index) => (index * 7 + 3) & 0xff)
 
 interface NoteDoc {
@@ -43,12 +44,21 @@ interface NoteDoc {
 let dbCounter = 0
 const openStores: LocalStore[] = []
 
+/**
+ * The app's identity KAK + resolver, derived once from the fixed test seed:
+ * the key material every private collection's cipher is built on.
+ */
+async function identityKeys() {
+  const { keyAgreementKey, keyResolver } = await deriveIdentity({ seed: SEED })
+  return { keyAgreementKey, keyResolver }
+}
+
 async function openStore(
   dbName: string,
   collections: WasCollectionConfig[] = COLLECTIONS
 ): Promise<LocalStore> {
   const store = await LocalStore.init({
-    seed: SEED,
+    ...(await identityKeys()),
     collections,
     dbName
   })
@@ -410,7 +420,7 @@ describe('LocalStore public (plaintext) collections', () => {
   it('rejects a registry mapping one WAS id to both visibilities', async () => {
     await expect(
       LocalStore.init({
-        seed: SEED,
+        ...(await identityKeys()),
         collections: [
           { key: 'a', id: 'shared' },
           { key: 'b', id: 'shared', visibility: 'public' }

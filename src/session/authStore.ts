@@ -502,16 +502,16 @@ export function createAuthStore({
   }
 
   /**
-   * Opens the encrypted replica under `seed` (a per-controller database name),
-   * installs it as the process-wide store, and hydrates every entity store.
+   * Opens the encrypted replica under `identity` (its identity KAK encrypts
+   * every private collection; its controller DID names the database), installs
+   * it as the process-wide store, and hydrates every entity store.
    * Shared by `openLocal` and the connected activation. When `adopt` is given
    * (a connected activation following a merge login), the collected anonymous
    * payloads are LWW-merged in BEFORE the hydrate -- and before sync starts --
    * so the entity stores and the first push both see them as ordinary rows.
    *
    * @param options {object}
-   * @param options.seed {Uint8Array}
-   * @param options.controllerDid {string}
+   * @param options.identity {IdentityAgents}
    * @param [options.adopt] {AdoptSource}
    * @param [options.markers] {Record<string, CollectionEncryption>}   cached
    *   encryption markers, so a connected (incl. offline hot-restore) replica
@@ -519,23 +519,25 @@ export function createAuthStore({
    * @returns {Promise<void>}
    */
   async function openAndHydrate({
-    seed,
-    controllerDid,
+    identity,
     adopt,
     markers
   }: {
-    seed: Uint8Array
-    controllerDid: string
+    identity: IdentityAgents
     adopt?: AdoptSource
     markers?: Record<string, CollectionEncryption>
   }): Promise<void> {
     const local = await LocalStore.init({
-      seed,
+      keyAgreementKey: identity.keyAgreementKey,
+      keyResolver: identity.keyResolver,
       collections: config.collections,
       ...(config.sharedCollections && {
         sharedCollections: config.sharedCollections
       }),
-      dbName: dbNameForController({ dbName, controllerDid }),
+      dbName: dbNameForController({
+        dbName,
+        controllerDid: identity.controllerDid
+      }),
       ...(markers && { markers }),
       ...(storage && { storage })
     })
@@ -576,7 +578,7 @@ export function createAuthStore({
   async function openLocal(): Promise<void> {
     const { seed, created } = await loadOrCreateAnonSeed()
     const identity = await initAppSession({ seed })
-    await openAndHydrate({ seed, controllerDid: identity.controllerDid })
+    await openAndHydrate({ identity })
     if (created && config.seedLocal) {
       await config.seedLocal()
     }
@@ -625,8 +627,7 @@ export function createAuthStore({
       // them from the server once sync starts.
       const markers = await loadCachedMarkers()
       await openAndHydrate({
-        seed: session.seed,
-        controllerDid: session.identity.controllerDid,
+        identity: session.identity,
         ...(session.adopt && { adopt: session.adopt }),
         ...(markers && { markers })
       })
@@ -737,8 +738,10 @@ export function createAuthStore({
     if (!seed) {
       return null
     }
+    const { keyAgreementKey, keyResolver } = await initAppSession({ seed })
     const anonLocal = await LocalStore.init({
-      seed,
+      keyAgreementKey,
+      keyResolver,
       collections: config.collections,
       dbName: dbNameForController({ dbName, controllerDid }),
       ...(storage && { storage })
