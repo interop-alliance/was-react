@@ -94,8 +94,11 @@ export const config: WasAppConfig = {
 `collections` maps each app-side `key` (the local RxDB collection handle) to a
 WAS collection `id` (a deliberately unprefixed, generic name shared across
 interoperable apps). `credential` names the self-issued seed credential the
-first-run flow mints. All other fields (`mediatorBase`, `dbName`,
-`storageKeyPrefix`, `sync`, `expiry`) are optional with documented defaults.
+first-run flow mints; its `vocabBase` namespaces the app's own type term only,
+since every app key also carries the shared `AppKeyCredential` marker type and
+its `seed` / `origin` claims under `urn:was:` IRIs. All other fields
+(`mediatorBase`, `dbName`, `storageKeyPrefix`, `sync`, `expiry`) are optional
+with documented defaults.
 
 A collection may also declare `visibility: 'public'`
 (`{ key: 'posts', id: 'microblog-posts', visibility: 'public' }`); the default
@@ -330,7 +333,8 @@ Login is driven by CHAPI Verifiable Presentation Requests (VPRs). The
    dismissed store would silently break cross-device recovery.
 4. **Returning login: recover and verify.** When the probe returns the seed
    credential, `parseSeedCredential` recovers the seed and cryptographically
-   verifies the credential is self-issued, origin-bound, and seed-to-DID bound.
+   verifies the credential carries the shared `AppKeyCredential` marker type and
+   is self-issued, origin-bound, and seed-to-DID bound.
 5. **Derive identity.** The stable `did:key` controller and its signer are
    derived deterministically from the seed via `CapabilityAgent.fromSeed`
    (`initAppSession` / `deriveIdentity`). The same seed yields the same identity

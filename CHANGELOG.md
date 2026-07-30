@@ -1,5 +1,29 @@
 # @interop/was-react Changelog
 
+## Unreleased - TBD
+
+### Changed
+
+- **Breaking:** every app-key credential now carries a shared `AppKeyCredential`
+  marker type (`urn:was:AppKeyCredential` -- one stable IRI for every app,
+  defined in the inline `@context`), and `parseSeedCredential` requires it. The
+  marker makes "presents as an app key" a term check rather than a shape
+  heuristic, which is what lets a wallet refuse a foreign app key at store time
+  instead of storing it and quietly ignoring it. It is a self-declaration, not
+  evidence -- a planted credential controls its own `type` array -- so the
+  seed-to-DID binding remains the only check that authenticates. Requiring it on
+  both sides means a credential can only reach the delegation path by carrying
+  it. An app key issued by an earlier version (or a wallet that predates the
+  marker) no longer parses; `findSeedCredential` still finds it by the app's own
+  type, so this surfaces as a visible parse error rather than a silent re-mint.
+  `APP_KEY_CREDENTIAL_TYPE` is exported.
+- **Breaking:** an app key's `seed` and `origin` claims now carry shared
+  `urn:was:seed` / `urn:was:origin` IRIs instead of ones namespaced under the
+  app's `vocabBase`: they mean the same thing in every app, so two apps' keys no
+  longer make semantically identical claims under different IRIs. The JSON shape
+  is unchanged (`credentialSubject.seed` / `.origin` keep their keys);
+  `vocabBase` now namespaces only the app's own type term.
+
 ## 0.4.0 - 2026-07-23
 
 ### Added

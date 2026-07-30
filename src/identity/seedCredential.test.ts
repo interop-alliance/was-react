@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 import { verifyCredential } from '@interop/verifier-core'
 import type { IVerifiableCredential } from '@interop/data-integrity-core'
 import {
+  APP_KEY_CREDENTIAL_TYPE,
   base64urlToBytes,
   bytesToBase64url,
   findSeedCredential,
@@ -63,7 +64,11 @@ describe('issueSeedCredential', () => {
       documentLoader
     })
 
-    expect(credential.type).toContain(CONFIG.credentialType)
+    expect(credential.type).toEqual([
+      'VerifiableCredential',
+      APP_KEY_CREDENTIAL_TYPE,
+      CONFIG.credentialType
+    ])
     expect(credential.issuer).toBe(controllerDid)
     const subject = credential.credentialSubject as {
       id: string
@@ -97,6 +102,28 @@ describe('issueSeedCredential', () => {
     >
     expect(context.name).toBe('https://schema.org/name')
     expect(context.description).toBe('https://schema.org/description')
+  })
+
+  it('defines the marker and the shared claim terms in the inline context', async () => {
+    const credential = await issueSeedCredential({
+      seed: randomSeed(),
+      origin: ORIGIN,
+      appName: APP_NAME,
+      config: CONFIG,
+      documentLoader
+    })
+    const context = (credential['@context'] as unknown[])[1] as Record<
+      string,
+      unknown
+    >
+    // The marker and the claim terms are the SAME IRIs for every app; only the
+    // app's own type term comes from its `vocabBase`.
+    expect(context[APP_KEY_CREDENTIAL_TYPE]).toBe('urn:was:AppKeyCredential')
+    expect(context.seed).toBe('urn:was:seed')
+    expect(context.origin).toBe('urn:was:origin')
+    expect(context[CONFIG.credentialType]).toBe(
+      `${CONFIG.vocabBase}${CONFIG.credentialType}`
+    )
   })
 
   it('issues a cryptographically verifiable credential', async () => {
@@ -219,6 +246,30 @@ describe('parseSeedCredential', () => {
     ).rejects.toThrow(/not a TestAppKey/)
   })
 
+  it('rejects a credential without the AppKeyCredential marker', async () => {
+    const credential = await issueSeedCredential({
+      seed: randomSeed(),
+      origin: ORIGIN,
+      appName: APP_NAME,
+      config: CONFIG,
+      documentLoader
+    })
+    // Otherwise a perfect app key: strip only the marker.
+    const tampered = {
+      ...credential,
+      type: (credential.type as string[]).filter(
+        term => term !== APP_KEY_CREDENTIAL_TYPE
+      )
+    } as IVerifiableCredential
+    await expect(
+      parseSeedCredential({
+        credential: tampered,
+        origin: ORIGIN,
+        config: CONFIG
+      })
+    ).rejects.toThrow(/AppKeyCredential/)
+  })
+
   it('rejects a malformed seed', async () => {
     const credential = await issueSeedCredential({
       seed: randomSeed(),
@@ -271,6 +322,34 @@ describe('findSeedCredential', () => {
         credentialType: CONFIG.credentialType
       })
     ).toBe(credential)
+  })
+
+  it('still finds a credential missing the marker, so parsing can refuse it', async () => {
+    const credential = await issueSeedCredential({
+      seed: randomSeed(),
+      origin: ORIGIN,
+      appName: APP_NAME,
+      config: CONFIG,
+      documentLoader
+    })
+    const unmarked = {
+      ...credential,
+      type: (credential.type as string[]).filter(
+        term => term !== APP_KEY_CREDENTIAL_TYPE
+      )
+    } as IVerifiableCredential
+    const vp = {
+      '@context': ['https://www.w3.org/2018/credentials/v1'],
+      type: ['VerifiablePresentation'],
+      verifiableCredential: [unmarked]
+    } as never
+    // Not null: a null here would read as first run and mint a second key.
+    expect(
+      findSeedCredential({
+        presentation: vp,
+        credentialType: CONFIG.credentialType
+      })
+    ).toBe(unmarked)
   })
 
   it('returns null when the VP carries no app key (first-run signal)', () => {
