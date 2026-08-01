@@ -415,11 +415,11 @@ export function createAuthStore({
       }),
       identityKeys: { keyAgreementKey, keyResolver },
       onAuthError: () => store.getState().notifyAccessExpired(),
-      onMarkersFetched: markers =>
+      onDescriptorsFetched: descriptors =>
         void sessionStore
-          .saveMarkers(markers)
+          .saveDescriptors(descriptors)
           .catch(err =>
-            console.warn('Failed to cache encryption markers:', err)
+            console.warn('Failed to cache encryption descriptors:', err)
           )
     })
     setRemoteStore(remoteStore)
@@ -513,19 +513,19 @@ export function createAuthStore({
    * @param options {object}
    * @param options.identity {IdentityAgents}
    * @param [options.adopt] {AdoptSource}
-   * @param [options.markers] {Record<string, CollectionEncryption>}   cached
-   *   encryption markers, so a connected (incl. offline hot-restore) replica
+   * @param [options.descriptors] {Record<string, CollectionEncryption>}   cached
+   *   encryption descriptors, so a connected (incl. offline hot-restore) replica
    *   opens epoch-aware before any live description read
    * @returns {Promise<void>}
    */
   async function openAndHydrate({
     identity,
     adopt,
-    markers
+    descriptors
   }: {
     identity: IdentityAgents
     adopt?: AdoptSource
-    markers?: Record<string, CollectionEncryption>
+    descriptors?: Record<string, CollectionEncryption>
   }): Promise<void> {
     const local = await LocalStore.init({
       keyAgreementKey: identity.keyAgreementKey,
@@ -538,7 +538,7 @@ export function createAuthStore({
         dbName,
         controllerDid: identity.controllerDid
       }),
-      ...(markers && { markers }),
+      ...(descriptors && { descriptors }),
       ...(storage && { storage })
     })
     setLocalStore(local)
@@ -601,35 +601,35 @@ export function createAuthStore({
    * @returns {Promise<void>}
    */
   /**
-   * Loads the persisted encryption-marker cache (keyed by WAS collection id),
+   * Loads the persisted encryption-descriptor cache (keyed by WAS collection id),
    * or `undefined` when none is stored or it is malformed. Best-effort: a read
    * failure falls back to opening single-key ciphers (sync refreshes them).
    */
-  async function loadCachedMarkers(): Promise<
+  async function loadCachedDescriptors(): Promise<
     Record<string, CollectionEncryption> | undefined
   > {
     try {
-      const stored = await sessionStore.loadMarkers()
+      const stored = await sessionStore.loadDescriptors()
       if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
         return stored as Record<string, CollectionEncryption>
       }
     } catch (err) {
-      console.warn('Failed to load cached encryption markers:', err)
+      console.warn('Failed to load cached encryption descriptors:', err)
     }
     return undefined
   }
 
   async function activateConnected(session: ActiveSession): Promise<void> {
     try {
-      // Load the cached encryption markers so the connected replica opens
+      // Load the cached encryption descriptors so the connected replica opens
       // epoch-aware: an offline hot restore then decrypts multi-recipient
       // envelopes with no live description read; an online session refreshes
       // them from the server once sync starts.
-      const markers = await loadCachedMarkers()
+      const descriptors = await loadCachedDescriptors()
       await openAndHydrate({
         identity: session.identity,
         ...(session.adopt && { adopt: session.adopt }),
-        ...(markers && { markers })
+        ...(descriptors && { descriptors })
       })
       await persistAndStartSync({
         seed: session.seed,

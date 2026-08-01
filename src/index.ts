@@ -135,7 +135,7 @@ export {
 export { createEntityStore, type EntityStore } from './storage/entityStore.js'
 export {
   WasRemoteStore,
-  type MarkerResult,
+  type DeclarationResult,
   type EqualityQueryPage
 } from './storage/wasRemoteStore.js'
 export {

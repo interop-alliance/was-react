@@ -14,7 +14,7 @@
 const SESSION_STORE = 'session'
 const SEED_RECORD = 'seed'
 const SESSION_RECORD = 'record'
-const MARKERS_RECORD = 'markers'
+const DESCRIPTORS_RECORD = 'descriptors'
 
 /**
  * The bound seed-store operations returned by `createSeedStore`.
@@ -37,17 +37,17 @@ export interface SeedStore {
    */
   loadRecord(): Promise<unknown | null>
   /**
-   * Persists the collection-encryption marker cache (keyed by WAS collection
+   * Persists the collection-encryption descriptor cache (keyed by WAS collection
    * id), so an offline / hot-restore session can rebuild its epoch-aware
    * ciphers without a live description read.
    */
-  saveMarkers(markers: unknown): Promise<void>
+  saveDescriptors(descriptors: unknown): Promise<void>
   /**
-   * Loads the persisted marker cache, or `null`.
+   * Loads the persisted descriptor cache, or `null`.
    */
-  loadMarkers(): Promise<unknown | null>
+  loadDescriptors(): Promise<unknown | null>
   /**
-   * Wipes the seed, the session record, and the marker cache (logout).
+   * Wipes the seed, the session record, and the descriptor cache (logout).
    */
   clearSeedStore(): Promise<void>
 }
@@ -121,21 +121,23 @@ export function createSeedStore({
       )
       return stored ?? null
     },
-    async saveMarkers(markers: unknown): Promise<void> {
+    async saveDescriptors(descriptors: unknown): Promise<void> {
       await withSessionStore('readwrite', store =>
-        store.put(markers, MARKERS_RECORD)
+        store.put(descriptors, DESCRIPTORS_RECORD)
       )
     },
-    async loadMarkers(): Promise<unknown | null> {
+    async loadDescriptors(): Promise<unknown | null> {
       const stored = await withSessionStore('readonly', store =>
-        store.get(MARKERS_RECORD)
+        store.get(DESCRIPTORS_RECORD)
       )
       return stored ?? null
     },
     async clearSeedStore(): Promise<void> {
       await withSessionStore('readwrite', store => store.delete(SEED_RECORD))
       await withSessionStore('readwrite', store => store.delete(SESSION_RECORD))
-      await withSessionStore('readwrite', store => store.delete(MARKERS_RECORD))
+      await withSessionStore('readwrite', store =>
+        store.delete(DESCRIPTORS_RECORD)
+      )
     }
   }
 }

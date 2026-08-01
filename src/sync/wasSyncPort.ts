@@ -37,7 +37,7 @@ import {
  * Extracts an HTTP status from a raw ky/ezcap error. `was.request()` rejects on
  * any non-2xx with `err.status` set (see `@interop/http-client`'s error
  * normaliser); this reads it defensively from either location. Shared with the
- * remote store's marker PUT and the dev-grant provisioner, which need the raw
+ * remote store's descriptor PUT and the dev-grant provisioner, which need the raw
  * status for diagnostics rather than the mapped sync error.
  *
  * @param err {unknown}
@@ -53,7 +53,7 @@ export function errorStatus(err: unknown): number | undefined {
 /**
  * Normalizes an unknown caught error into a display string: the `Error`'s
  * `message` when it is one, else its `String(...)` coercion. Shared by the
- * remote store's marker PUT and the session activation error path.
+ * remote store's descriptor PUT and the session activation error path.
  *
  * @param err {unknown}
  * @returns {string}

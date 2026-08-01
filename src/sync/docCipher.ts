@@ -118,10 +118,10 @@ export function createPlaintextDocCodec({
  * (constant bump / toggle / re-categorize edits).
  *
  * Delegates to `@interop/was-client`'s `createEdvDocCipher`: with no
- * `encryption` marker (or a marker with no key epochs) the cipher is
+ * `encryption` descriptor (or a descriptor with no key epochs) the cipher is
  * single-recipient (the key-agreement key encrypts and decrypts directly, the
- * behavior every collection has had); with epochs on the marker the cipher
- * becomes multi-recipient -- writes stamp the marker's current epoch and reads
+ * behavior every collection has had); with epochs on the descriptor the cipher
+ * becomes multi-recipient -- writes stamp the descriptor's current epoch and reads
  * route by the envelope's recipient key id, while a pre-epoch envelope still
  * decrypts through the single-key path (a permanent tolerance, not a migration
  * shim). The returned cipher's shape matches {@link DocCipher} exactly; only the
@@ -132,7 +132,7 @@ export function createPlaintextDocCodec({
  * @param options.keyResolver {IKeyResolver}
  * @param options.collectionId {string}   labels errors; the codec is agnostic
  * @param [options.encryption] {CollectionEncryption}   the collection's
- *   encryption marker; when it carries key epochs the cipher becomes
+ *   encryption descriptor; when it carries key epochs the cipher becomes
  *   multi-recipient
  * @returns {Promise<DocCipher>}
  */

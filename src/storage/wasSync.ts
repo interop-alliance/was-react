@@ -66,9 +66,9 @@ export interface WasSyncBootstrap {
  * @param [options.identityKeys.keyResolver] {IKeyResolver}
  * @param [options.onAuthError] {() => void}   fired when replication hits a
  *   401/403 (expired/revoked access) -- wired to the reconnect banner
- * @param [options.onMarkersFetched] {(markers) => void | Promise<void>}   given
- *   the freshly fetched per-collection encryption markers (by WAS collection
- *   id), to refresh the offline marker cache
+ * @param [options.onDescriptorsFetched] {(descriptors) => void | Promise<void>}   given
+ *   the freshly fetched per-collection encryption descriptors (by WAS collection
+ *   id), to refresh the offline descriptor cache
  * @returns {Promise<WasSyncBootstrap>}
  */
 export async function startWasSync({
@@ -81,7 +81,7 @@ export async function startWasSync({
   sharedCollections = [],
   identityKeys,
   onAuthError,
-  onMarkersFetched
+  onDescriptorsFetched
 }: {
   parsed: ParsedGrants
   zcapClient: ZcapClient
@@ -98,8 +98,8 @@ export async function startWasSync({
     keyResolver: IKeyResolver
   }
   onAuthError?: () => void
-  onMarkersFetched?: (
-    markers: Record<string, CollectionEncryption>
+  onDescriptorsFetched?: (
+    descriptors: Record<string, CollectionEncryption>
   ) => void | Promise<void>
 }): Promise<WasSyncBootstrap> {
   const remoteStore = WasRemoteStore.fromGrants({
@@ -112,17 +112,17 @@ export async function startWasSync({
   // replicate into an unmarked collection just the same, and a query against
   // undeclared indexes fails with a descriptive 400). Each helper skips the
   // collections it does not apply to (reported ok + skipped): the encryption
-  // marker skips public collections, the indexes declaration skips private
+  // descriptor skips public collections, the indexes declaration skips private
   // ones and public ones with no declared indexes.
   const sharedIds = new Set(sharedCollections.map(entry => entry.id))
   await Promise.all(
     Object.keys(parsed.byCollectionId)
       .filter(collectionId => !sharedIds.has(collectionId))
       .map(async collectionId => {
-        const marker = await remoteStore.markCollectionEncrypted(collectionId)
-        if (!marker.ok) {
+        const declared = await remoteStore.markCollectionEncrypted(collectionId)
+        if (!declared.ok) {
           console.warn(
-            `Encryption marker PUT not authorized for "${collectionId}" (status ${marker.status ?? 'n/a'}).`
+            `Encryption descriptor PUT not authorized for "${collectionId}" (status ${declared.status ?? 'n/a'}).`
           )
         }
         const indexes = await remoteStore.declareCollectionIndexes(collectionId)
@@ -134,33 +134,33 @@ export async function startWasSync({
       })
   )
 
-  // Fetch each granted private collection's encryption marker: rebuild that
+  // Fetch each granted private collection's encryption descriptor: rebuild that
   // collection's cipher when its epoch roster differs from what the local store
   // opened with (a wallet-side rotation, or first-ever epochs), and hand the
-  // fresh set to the marker-cache refresher so an offline session can rebuild
+  // fresh set to the descriptor-cache refresher so an offline session can rebuild
   // its epoch-aware ciphers without a live read.
   const privateIds = collections
     .filter(collection => collection.visibility !== 'public')
     .map(collection => collection.id)
     .filter(id => parsed.byCollectionId[id] !== undefined)
-  const markers: Record<string, CollectionEncryption> = {}
+  const descriptors: Record<string, CollectionEncryption> = {}
   await Promise.all(
     privateIds.map(async collectionId => {
       const encryption =
         await remoteStore.readCollectionEncryption(collectionId)
       if (encryption) {
-        markers[collectionId] = encryption
-        await localStore.applyRemoteMarker({ collectionId, encryption })
+        descriptors[collectionId] = encryption
+        await localStore.applyRemoteDescriptor({ collectionId, encryption })
       }
     })
   )
   // Install the one-shot epoch refresher so a decrypt that meets an unseen epoch
-  // (a rotation on another device) re-reads the marker and rebuilds the cipher.
+  // (a rotation on another device) re-reads the descriptor and rebuilds the cipher.
   localStore.setEpochRefresher(collectionId =>
     remoteStore.readCollectionEncryption(collectionId)
   )
-  if (onMarkersFetched) {
-    await onMarkersFetched(markers)
+  if (onDescriptorsFetched) {
+    await onDescriptorsFetched(descriptors)
   }
 
   // Shared collections stay entirely out of replication: one read-only reader

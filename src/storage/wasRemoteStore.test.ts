@@ -44,7 +44,7 @@ function stubZcapClient(responses: Array<{ status: number; data?: unknown }>) {
 }
 
 describe('WasRemoteStore.markCollectionEncrypted', () => {
-  it('skips the marker PUT for a public collection (ok + skipped)', async () => {
+  it('skips the descriptor PUT for a public collection (ok + skipped)', async () => {
     const store = WasRemoteStore.fromGrants({
       parsed,
       zcapClient,
@@ -73,7 +73,7 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
   })
 
   it('skips the PUT when the collection already carries an epoch roster', async () => {
-    // The read (GET) returns a marker with epochs; the bare-marker PUT that
+    // The read (GET) returns a descriptor with epochs; the bare-descriptor PUT that
     // would clobber it must never be attempted.
     const { calls, zcapClient: stub } = stubZcapClient([
       {
@@ -96,7 +96,7 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
     expect(calls[0]).toMatchObject({ method: 'GET' })
   })
 
-  it('PUTs the bare marker when no encryption block is present', async () => {
+  it('PUTs the bare descriptor when no encryption block is present', async () => {
     const { calls, zcapClient: stub } = stubZcapClient([
       { status: 200, data: { id: 'notes' } }, // GET: unmarked
       { status: 200 } // PUT
@@ -113,17 +113,17 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
 })
 
 describe('WasRemoteStore.readCollectionEncryption', () => {
-  it('returns the encryption marker from the collection description', async () => {
-    const marker = {
+  it('returns the encryption descriptor from the collection description', async () => {
+    const descriptor = {
       scheme: 'edv',
       currentEpoch: 'did:key:zEpoch1',
       epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
     }
     const { zcapClient: stub } = stubZcapClient([
-      { status: 200, data: { id: 'notes', encryption: marker } }
+      { status: 200, data: { id: 'notes', encryption: descriptor } }
     ])
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
-    expect(await store.readCollectionEncryption('notes')).toEqual(marker)
+    expect(await store.readCollectionEncryption('notes')).toEqual(descriptor)
   })
 
   it('returns undefined for an unmarked collection and a missing capability', async () => {

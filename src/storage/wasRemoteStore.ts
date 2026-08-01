@@ -12,11 +12,11 @@
  *   the seed-derived controller the grants were delegated to);
  * - per-collection capability routing, so each sync request invokes the exact
  *   collection grant;
- * - a best-effort encryption-marker PUT (whether a delegated collection-scoped
+ * - a best-effort encryption-descriptor PUT (whether a delegated collection-scoped
  *   RW zcap authorizes writing the collection description). It is non-fatal
  *   either way -- envelopes replicate into an unmarked (plaintext) collection
  *   just the same. A PUBLIC collection is never marked: public implies
- *   plaintext, so the marker PUT is skipped outright;
+ *   plaintext, so the descriptor PUT is skipped outright;
  * - the sibling best-effort `indexes` declaration PUT for public collections
  *   that declare equality-indexed attributes, plus the equality query verb
  *   itself ({@link WasRemoteStore.queryCollectionByEquality}): the canonical
@@ -33,9 +33,9 @@ import type { WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
 
 /**
- * The outcome of a best-effort encryption-marker PUT, for diagnostics.
+ * The outcome of a best-effort encryption-descriptor PUT, for diagnostics.
  */
-export interface MarkerResult {
+export interface DeclarationResult {
   collectionId: string
   ok: boolean
   status?: number
@@ -43,7 +43,7 @@ export interface MarkerResult {
   /**
    * True when no PUT was attempted -- the collection is public (plaintext), or
    * it already carries an `encryption` block (e.g. an epoch roster the wallet
-   * provisioned at consent time, which a bare-marker PUT must never clobber).
+   * provisioned at consent time, which a bare-descriptor PUT must never clobber).
    * Reported as `ok` since the goal state holds either way.
    */
   skipped?: boolean
@@ -148,11 +148,11 @@ export class WasRemoteStore {
   }
 
   /**
-   * Reads one collection's `encryption` marker from its Collection Description,
+   * Reads one collection's `encryption` descriptor from its Collection Description,
    * invoked with that collection's delegated zcap. Returns the
-   * {@link CollectionEncryption} block (a multi-recipient marker carries key
-   * epochs) or `undefined` when the collection carries no marker. Non-fatal like
-   * the marker PUTs: returns `undefined` rather than throwing when no capability
+   * {@link CollectionEncryption} block (a multi-recipient descriptor carries key
+   * epochs) or `undefined` when the collection carries no descriptor. Non-fatal like
+   * the descriptor PUTs: returns `undefined` rather than throwing when no capability
    * covers the collection or the read fails (offline, unauthorized), so a caller
    * can fall back to its cached copy.
    *
@@ -181,7 +181,7 @@ export class WasRemoteStore {
   }
 
   /**
-   * Best-effort declaration of the `{ encryption: { scheme: 'edv' } }` marker on
+   * Best-effort declaration of the `{ encryption: { scheme: 'edv' } }` descriptor on
    * one collection, invoked with that collection's delegated RW zcap. Non-fatal:
    * returns the outcome rather than throwing, so a server that does not authorize
    * a delegated description write leaves replication untouched (the collection
@@ -190,15 +190,17 @@ export class WasRemoteStore {
    * and reported as `ok` + `skipped`.
    *
    * A collection that ALREADY carries an `encryption` block is also skipped: the
-   * wallet provisions a multi-recipient epoch roster on the marker at consent
-   * time, and overwriting it with the bare `{ scheme: 'edv' }` marker would
+   * wallet provisions a multi-recipient epoch roster on the descriptor at consent
+   * time, and overwriting it with the bare `{ scheme: 'edv' }` descriptor would
    * destroy that roster. The description is read first, so this method is a
    * no-op fallback for servers/wallets that did not provision the roster.
    *
    * @param collectionId {string}   the WAS collection id
-   * @returns {Promise<MarkerResult>}
+   * @returns {Promise<DeclarationResult>}
    */
-  async markCollectionEncrypted(collectionId: string): Promise<MarkerResult> {
+  async markCollectionEncrypted(
+    collectionId: string
+  ): Promise<DeclarationResult> {
     if (this.#configById.get(collectionId)?.visibility === 'public') {
       return { collectionId, ok: true, skipped: true }
     }
@@ -218,14 +220,16 @@ export class WasRemoteStore {
    * with that collection's delegated RW zcap. The server rejects
    * `filter[attr]=value` queries on undeclared attributes fail-closed, so a
    * public collection that wants `store.query()` must announce its `indexes`
-   * here. Non-fatal like the encryption marker: returns the outcome rather
+   * here. Non-fatal like the encryption descriptor: returns the outcome rather
    * than throwing. Skipped (reported `ok` + `skipped`) for a private
    * collection or one that declares no indexes.
    *
    * @param collectionId {string}   the WAS collection id
-   * @returns {Promise<MarkerResult>}
+   * @returns {Promise<DeclarationResult>}
    */
-  async declareCollectionIndexes(collectionId: string): Promise<MarkerResult> {
+  async declareCollectionIndexes(
+    collectionId: string
+  ): Promise<DeclarationResult> {
     const config = this.#configById.get(collectionId)
     if (
       config?.visibility !== 'public' ||
@@ -385,7 +389,7 @@ export class WasRemoteStore {
 
   /**
    * The shared best-effort collection-description PUT behind the encryption
-   * marker and the indexes declaration: invokes the collection's delegated RW
+   * descriptor and the indexes declaration: invokes the collection's delegated RW
    * zcap and reports the outcome rather than throwing.
    */
   async #putDescription({
@@ -394,7 +398,7 @@ export class WasRemoteStore {
   }: {
     collectionId: string
     description: Record<string, unknown>
-  }): Promise<MarkerResult> {
+  }): Promise<DeclarationResult> {
     const capability = this.collectionCapability(collectionId)
     if (!capability) {
       return { collectionId, ok: false, error: 'no capability' }

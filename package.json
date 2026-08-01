@@ -53,8 +53,8 @@
     "@interop/security-document-loader": "^9.5.0",
     "@interop/vc": "^11.0.6",
     "@interop/verifier-core": "^3.5.0",
-    "@interop/wallet-core": "^0.5.0",
-    "@interop/was-client": "^0.22.0",
+    "@interop/wallet-core": "^0.8.0",
+    "@interop/was-client": "^0.23.0",
     "@interop/webkms-client": "^14.7.1",
     "@interop/x25519-key-agreement-key": "^5.2.1",
     "@scure/base": "^2.2.0",
@@ -110,7 +110,7 @@
     "typescript-eslint": "^8.59.4",
     "vite": "^8.0.14",
     "vitest": "^4.1.7",
-    "was-teaching-server": "^0.14.0",
+    "was-teaching-server": "^0.16.0",
     "zustand": "^5.0.12"
   },
   "publishConfig": {

@@ -8,14 +8,14 @@
  *   1. derives a throwaway "provisioner" identity (stands in for the wallet that
  *      owns the Space) and the app's own controller DID from the supplied seed;
  *   2. creates a Space (owned by the provisioner) and the requested collections,
- *      PLAINTEXT -- deliberately WITHOUT an encryption marker, mirroring what a
+ *      PLAINTEXT -- deliberately WITHOUT an encryption descriptor, mirroring what a
  *      wallet does when it provisions RP-requested collections;
  *   3. delegates a per-collection read/write zcap to the app's controller DID;
  *   4. returns the signed grants and (optionally) writes them to a JSON file the
  *      app loads in dev-sync mode;
  *   5. optionally probes the open question: does the delegated, collection-scoped
  *      RW zcap authorize an RP-side PUT of the collection description carrying the
- *      { encryption: { scheme: 'edv' } } marker?
+ *      { encryption: { scheme: 'edv' } } descriptor?
  *
  * Node only (uses `fs`); consumed through the package `./dev` subpath.
  */
@@ -69,7 +69,7 @@ export interface ProvisionDevGrantsResult {
   provisionerDid: string
   /**
    * Present only when `probe` was requested: the result of PUTting the
-   * encryption marker with the app's delegated RW zcap.
+   * encryption descriptor with the app's delegated RW zcap.
    */
   probe?: {
     authorized: boolean
@@ -128,7 +128,7 @@ async function provisionerClient({
  * @param [options.actions] {ActionInput[]}   the RW action set delegated per
  *   collection (defaults to the auth layer's `RW_ACTIONS`)
  * @param [options.probe] {boolean}   when true, probe whether the delegated RW
- *   zcap authorizes a PUT of the `{ encryption: { scheme: 'edv' } }` marker
+ *   zcap authorizes a PUT of the `{ encryption: { scheme: 'edv' } }` descriptor
  * @param [options.log] {(message: string) => void}   progress sink (defaults to
  *   a no-op; the CLI passes `console.log`)
  * @returns {Promise<ProvisionDevGrantsResult>}
@@ -192,7 +192,7 @@ export async function provisionDevGrants({
 
   const grants: IDelegatedZcap[] = []
   for (const id of collections) {
-    // Plaintext collection (no encryption marker) -- mirrors wallet provisioning.
+    // Plaintext collection (no encryption descriptor) -- mirrors wallet provisioning.
     await space.createCollection({ id, name: id })
     const zcap = await provisioner.grant({
       to: appDid,
@@ -222,14 +222,14 @@ export async function provisionDevGrants({
     return result
   }
 
-  // --- Encryption-marker probe ---------------------------------------------
+  // --- Encryption-descriptor probe ---------------------------------------------
   // Using the app's OWN delegated RW zcap (not the provisioner root key),
-  // attempt to PUT the collection description with the edv marker.
+  // attempt to PUT the collection description with the edv descriptor.
   const appWas = new WasClient({ serverUrl, zcapClient: appZcapClient })
   const probeCollectionId = collections[0]!
   const probeCapability = grants[0]!
   log(
-    `\nEncryption-marker probe on "${probeCollectionId}" (delegated RW zcap):`
+    `\nEncryption-descriptor probe on "${probeCollectionId}" (delegated RW zcap):`
   )
   try {
     const response = await appWas.request({

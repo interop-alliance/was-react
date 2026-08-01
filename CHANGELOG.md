@@ -1,5 +1,29 @@
 # @interop/was-react Changelog
 
+## 0.7.0 - TBD
+
+### Changed
+
+- **BREAKING**: Renamed the collection-encryption "marker" surface to
+  "encryption descriptor", following the WAS spec's wording (the object is the
+  `encryption` member of a Collection Description, so "descriptor" names it by
+  what it describes). Renamed exports: `LocalStore.applyRemoteMarker` to
+  `applyRemoteDescriptor`, `LocalStore.open({ markers })` to `{ descriptors }`,
+  `SeedStore.saveMarkers` / `loadMarkers` to `saveDescriptors` /
+  `loadDescriptors`, `startWasSync({ onMarkersFetched })` to
+  `{ onDescriptorsFetched }`, and `activateSession({ markers })` to
+  `{ descriptors }`. `MarkerResult` -- the outcome type shared by
+  `markCollectionEncrypted()` and `declareCollectionIndexes()` -- is renamed to
+  the neutral `DeclarationResult` rather than an encryption-specific name, since
+  the indexes declaration has nothing to do with encryption. The persisted
+  offline-cache record key in the session IndexedDB moves from `markers` to
+  `descriptors` with no migration: an orphaned cached entry is refetched on the
+  next connected sync. The `AppKeyCredential` marker type and the App Connect
+  response marker are different senses of the word and are unchanged.
+- Bumped `@interop/wallet-core` to `^0.8.0` and `@interop/was-client` to
+  `^0.23.0`, the releases carrying the same rename upstream (the wire format is
+  unchanged -- the word never crosses the wire).
+
 ## 0.6.0 - 2026-08-01
 
 ### Added

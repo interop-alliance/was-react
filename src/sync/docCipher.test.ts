@@ -6,7 +6,7 @@
  * per-collection encrypt/decrypt seam. Uses the app's real identity
  * key-agreement key (`deriveIdentity`) as the recipient -- exactly the key the
  * wallet registers as the app's roster entry -- so the round-trip proves the
- * shared-key contract, not a synthetic key. A marker is minted with
+ * shared-key contract, not a synthetic key. A descriptor is minted with
  * was-client's own `initRecipients` against a tiny in-memory collection stub.
  *
  * @vitest-environment node
@@ -26,11 +26,11 @@ const SEED = new Uint8Array(32).map((_, index) => (index * 5 + 1) & 0xff)
 const COLLECTION_ID = 'app-notes'
 
 /**
- * Mints a one-epoch encryption marker whose sole recipient is the given
+ * Mints a one-epoch encryption descriptor whose sole recipient is the given
  * key-agreement key, via was-client's `initRecipients` driven against an
  * in-memory collection whose description write is a no-op CAS.
  */
-async function mintMarker(
+async function mintDescriptor(
   keyAgreementKey: Parameters<typeof ownerRecipient>[0]['keyAgreementKey']
 ) {
   let description: Record<string, unknown> = {
@@ -60,7 +60,7 @@ describe('createDocCipher (multi-recipient / key epochs)', () => {
     const { keyAgreementKey, keyResolver } = await deriveIdentity({
       seed: SEED
     })
-    const encryption = await mintMarker(keyAgreementKey)
+    const encryption = await mintDescriptor(keyAgreementKey)
     const cipher = await createDocCipher({
       keyAgreementKey,
       keyResolver,
@@ -81,12 +81,12 @@ describe('createDocCipher (multi-recipient / key epochs)', () => {
     expect(await cipher.decrypt({ envelope })).toEqual(DOC)
   })
 
-  it('still decrypts a pre-epoch (single-key) envelope when a marker is present', async () => {
+  it('still decrypts a pre-epoch (single-key) envelope when a descriptor is present', async () => {
     const { keyAgreementKey, keyResolver } = await deriveIdentity({
       seed: SEED
     })
     // A pre-epoch envelope: encrypted straight to the key-agreement key before
-    // any roster existed (no marker).
+    // any roster existed (no descriptor).
     const singleKey = await createDocCipher({
       keyAgreementKey,
       keyResolver,
@@ -96,7 +96,7 @@ describe('createDocCipher (multi-recipient / key epochs)', () => {
 
     // The epoch-aware cipher must still read it via the direct codec (a
     // permanent tolerance, not a migration).
-    const encryption = await mintMarker(keyAgreementKey)
+    const encryption = await mintDescriptor(keyAgreementKey)
     const epochCipher = await createDocCipher({
       keyAgreementKey,
       keyResolver,

@@ -23,7 +23,7 @@
  * verbatim, so reads must be RAW: the handle is opened with the
  * `encryption: 'plaintext'` override (the `WasClient`'s own encryption provider
  * is a deliberate no-op keystore) and the envelope is decrypted locally with a
- * cipher built from the collection's `encryption` marker.
+ * cipher built from the collection's `encryption` descriptor.
  *
  * The honest ceiling, the same one the wallet's consent screen states:
  *
@@ -93,8 +93,8 @@ export class SharedCollectionReader {
   readonly #keyAgreementKey: IKeyAgreementKey
   readonly #keyResolver: IKeyResolver
   #cipher: DocCipher
-  // Whether an unknown-epoch marker refresh has already run for this reader. An
-  // epoch rotation emits no change-feed entry, so a stale marker is the
+  // Whether an unknown-epoch descriptor refresh has already run for this reader. An
+  // epoch rotation emits no change-feed entry, so a stale descriptor is the
   // expected failure mode; one refresh per reader is enough to recover, and the
   // cap keeps a genuinely undecryptable envelope from looping.
   #refreshed = false
@@ -127,11 +127,11 @@ export class SharedCollectionReader {
   }
 
   /**
-   * Opens a reader over one shared collection: reads its `encryption` marker
+   * Opens a reader over one shared collection: reads its `encryption` descriptor
    * through the delegated zcap and builds the epoch-aware cipher from it.
    *
    * Throws {@link SharedCollectionUnavailableError} when the collection carries
-   * no marker or a marker with no key epochs (it is not multi-recipient, so this
+   * no descriptor or a descriptor with no key epochs (it is not multi-recipient, so this
    * app cannot be a recipient of it), and likewise when the cipher cannot unwrap
    * any epoch (this app is not, or is no longer, in the roster).
    *
@@ -310,9 +310,9 @@ export class SharedCollectionReader {
   /**
    * Decrypts one fetched body, tolerating the two expected non-results: a body
    * that is not an EDV envelope at all, and a pre-share single-recipient
-   * envelope. An {@link UnknownEpochError} drives one marker re-read + cipher
+   * envelope. An {@link UnknownEpochError} drives one descriptor re-read + cipher
    * rebuild + retry (an epoch rotation emits no change-feed entry, so a stale
-   * marker is the expected failure mode).
+   * descriptor is the expected failure mode).
    */
   async #decryptBody({
     id,
@@ -348,7 +348,7 @@ export class SharedCollectionReader {
   }
 
   /**
-   * Re-reads the collection's `encryption` marker and rebuilds the cipher from
+   * Re-reads the collection's `encryption` descriptor and rebuilds the cipher from
    * it. Used once per reader on an unknown epoch.
    */
   async #rebuildCipher(): Promise<void> {

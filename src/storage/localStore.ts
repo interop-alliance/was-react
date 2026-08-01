@@ -100,13 +100,13 @@ export class LocalStore {
   #index: Record<string, Map<string, string>>
   // The app's identity KAK and its resolver: the ONE key material every
   // private collection's cipher is built on, kept so a cipher can be rebuilt
-  // when its epoch marker changes (a wallet-side rotation).
+  // when its epoch descriptor changes (a wallet-side rotation).
   #keyAgreementKey: IKeyAgreementKey
   #keyResolver: IKeyResolver
-  // The encryption marker each private collection's current cipher was built
-  // from (keyed by collection logical key), so a marker change can be detected.
-  #markers: Record<string, CollectionEncryption | undefined>
-  // Fetches a private collection's fresh encryption marker (by WAS collection
+  // The encryption descriptor each private collection's current cipher was built
+  // from (keyed by collection logical key), so a descriptor change can be detected.
+  #descriptors: Record<string, CollectionEncryption | undefined>
+  // Fetches a private collection's fresh encryption descriptor (by WAS collection
   // id) when a decrypt meets an unknown key epoch; injected once a remote store
   // exists. Absent offline / local-only.
   #epochRefresher?: (
@@ -120,7 +120,7 @@ export class LocalStore {
     configs,
     keyAgreementKey,
     keyResolver,
-    markers
+    descriptors
   }: {
     db: RxDatabase
     collections: Record<string, RxCollection<SyncedDoc>>
@@ -128,7 +128,7 @@ export class LocalStore {
     configs: Record<string, WasCollectionConfig>
     keyAgreementKey: IKeyAgreementKey
     keyResolver: IKeyResolver
-    markers: Record<string, CollectionEncryption | undefined>
+    descriptors: Record<string, CollectionEncryption | undefined>
   }) {
     this.#db = db
     this.#collections = collections
@@ -137,7 +137,7 @@ export class LocalStore {
     this.#index = {}
     this.#keyAgreementKey = keyAgreementKey
     this.#keyResolver = keyResolver
-    this.#markers = markers
+    this.#descriptors = descriptors
   }
 
   /**
@@ -147,10 +147,10 @@ export class LocalStore {
    * is derived ONCE, by the caller, and shared by every private collection: an
    * epoch-roster recipient is always the X25519 twin of a controller did:key.
    *
-   * When `markers` carries an encryption marker for a private collection (from
-   * the offline marker cache), that collection's cipher is built epoch-aware so
+   * When `descriptors` carries an encryption descriptor for a private collection (from
+   * the offline descriptor cache), that collection's cipher is built epoch-aware so
    * a multi-recipient envelope decrypts before any live description read; a
-   * collection with no cached marker keeps the single-key behavior.
+   * collection with no cached descriptor keeps the single-key behavior.
    *
    * @param options {object}
    * @param options.keyAgreementKey {IKeyAgreementKey}   the app's identity KAK
@@ -163,8 +163,8 @@ export class LocalStore {
    *   (read-only, wallet-owned) registry. Nothing is opened for these -- they
    *   have no local replica -- but they are validated against the app-owned
    *   registry here, before any replica exists
-   * @param [options.markers] {Record<string, CollectionEncryption>}   cached
-   *   encryption markers keyed by WAS collection id (from the offline cache)
+   * @param [options.descriptors] {Record<string, CollectionEncryption>}   cached
+   *   encryption descriptors keyed by WAS collection id (from the offline cache)
    * @param [options.storage] {RxStorage<unknown, unknown>}   defaults to
    *   Dexie/IndexedDB; injectable for tests
    * @param [options.dbName] {string}   defaults to {@link DEFAULT_DB_NAME}
@@ -175,7 +175,7 @@ export class LocalStore {
     keyResolver,
     collections,
     sharedCollections,
-    markers = {},
+    descriptors = {},
     storage,
     dbName = DEFAULT_DB_NAME
   }: {
@@ -183,7 +183,7 @@ export class LocalStore {
     keyResolver: IKeyResolver
     collections: WasCollectionConfig[]
     sharedCollections?: SharedCollectionConfig[]
-    markers?: Record<string, CollectionEncryption>
+    descriptors?: Record<string, CollectionEncryption>
     storage?: RxStorage<unknown, unknown>
     dbName?: string
   }): Promise<LocalStore> {
@@ -193,8 +193,9 @@ export class LocalStore {
       ...(sharedCollections && { sharedCollections })
     })
     const ciphers: Record<string, DocCipher> = {}
-    // The marker each private cipher was built from, keyed by logical key.
-    const builtMarkers: Record<string, CollectionEncryption | undefined> = {}
+    // The descriptor each private cipher was built from, keyed by logical key.
+    const builtDescriptors: Record<string, CollectionEncryption | undefined> =
+      {}
     for (const { key, id, visibility } of collections) {
       // A public collection is stored plaintext: no key derivation, no EDV
       // cipher -- just the pass-through codec behind the same seam.
@@ -202,14 +203,14 @@ export class LocalStore {
         ciphers[key] = createPlaintextDocCodec({ collectionId: id })
         continue
       }
-      const encryption = markers[id]
+      const encryption = descriptors[id]
       ciphers[key] = await createDocCipher({
         keyAgreementKey,
         keyResolver,
         collectionId: id,
         ...(encryption && { encryption })
       })
-      builtMarkers[key] = encryption
+      builtDescriptors[key] = encryption
     }
 
     const db = await createRxDatabase({
@@ -236,7 +237,7 @@ export class LocalStore {
           {
             schema: syncedDocSchema(),
             // Reads the CURRENT cipher for this key at decrypt time (not a
-            // captured reference), so a `rebuildCipher` after a marker change
+            // captured reference), so a `rebuildCipher` after a descriptor change
             // takes effect here too. `ciphers` is the same object the instance
             // holds as `#ciphers`, so the swap is visible.
             conflictHandler: makeLwwConflictHandler(envelope => {
@@ -261,7 +262,7 @@ export class LocalStore {
       configs: Object.fromEntries(collections.map(entry => [entry.key, entry])),
       keyAgreementKey,
       keyResolver,
-      markers: builtMarkers
+      descriptors: builtDescriptors
     })
   }
 
@@ -298,10 +299,10 @@ export class LocalStore {
   }
 
   /**
-   * Installs the epoch-marker refresher: given a WAS collection id, it fetches
-   * that collection's fresh encryption marker (a live description read). Called
+   * Installs the epoch-descriptor refresher: given a WAS collection id, it fetches
+   * that collection's fresh encryption descriptor (a live description read). Called
    * once a remote store exists; a decrypt that meets an unknown key epoch uses
-   * it to re-read the marker and rebuild the cipher exactly once.
+   * it to re-read the descriptor and rebuild the cipher exactly once.
    *
    * @param refresher {(collectionId: string) => Promise<CollectionEncryption | undefined>}
    * @returns {void}
@@ -316,10 +317,10 @@ export class LocalStore {
 
   /**
    * Decrypts an at-rest envelope through the collection's cipher, with a
-   * one-shot recovery from a stale epoch marker: when the cipher throws
+   * one-shot recovery from a stale epoch descriptor: when the cipher throws
    * {@link UnknownEpochError} (an envelope written under an epoch this device has
    * not seen -- a rekey on another device / a wallet revoke-rotation) and a
-   * refresher is installed, re-read the marker, rebuild the cipher, and retry
+   * refresher is installed, re-read the descriptor, rebuild the cipher, and retry
    * the decrypt once. A second failure propagates rather than looping.
    */
   async #decryptWithRefresh(key: string, envelope: Json): Promise<Json> {
@@ -341,14 +342,14 @@ export class LocalStore {
   }
 
   /**
-   * Rebuilds one private collection's cipher from a new encryption marker, on
+   * Rebuilds one private collection's cipher from a new encryption descriptor, on
    * the same identity KAK the store was opened with. A public (plaintext)
    * collection has no EDV cipher and is a no-op. The new cipher replaces the
    * held one in place, so the conflict handler and every read path pick it up.
    *
    * @param options {object}
    * @param options.key {string}   the collection logical key
-   * @param options.encryption {CollectionEncryption}   the new marker
+   * @param options.encryption {CollectionEncryption}   the new descriptor
    * @returns {Promise<void>}
    */
   async rebuildCipher({
@@ -368,22 +369,22 @@ export class LocalStore {
       collectionId: config.id,
       encryption
     })
-    this.#markers[key] = encryption
+    this.#descriptors[key] = encryption
   }
 
   /**
-   * Applies a freshly fetched remote encryption marker (by WAS collection id):
-   * rebuilds that collection's cipher when the marker's current epoch differs
+   * Applies a freshly fetched remote encryption descriptor (by WAS collection id):
+   * rebuilds that collection's cipher when the descriptor's current epoch differs
    * from the one the current cipher was built from (a wallet-side rotation, or
    * first-ever epochs), so subsequent writes stamp the current epoch. Returns
    * whether a rebuild happened. Unknown / public collections are ignored.
    *
    * @param options {object}
    * @param options.collectionId {string}   the WAS collection id
-   * @param options.encryption {CollectionEncryption}   the fetched marker
+   * @param options.encryption {CollectionEncryption}   the fetched descriptor
    * @returns {Promise<boolean>}
    */
-  async applyRemoteMarker({
+  async applyRemoteDescriptor({
     collectionId,
     encryption
   }: {
@@ -400,7 +401,7 @@ export class LocalStore {
     if (config.visibility === 'public') {
       return false
     }
-    if (markersEqual(this.#markers[key], encryption)) {
+    if (descriptorsEqual(this.#descriptors[key], encryption)) {
       return false
     }
     await this.rebuildCipher({ key, encryption })
@@ -767,17 +768,17 @@ export class LocalStore {
 }
 
 /**
- * Whether two encryption markers select the same writing epoch: same
+ * Whether two encryption descriptors select the same writing epoch: same
  * `currentEpoch` and the same ordered epoch id list. That is all a cipher rebuild
  * turns on -- rotation only appends epochs and moves `currentEpoch` -- so a
- * marker that matches on both needs no rebuild. A cached `undefined` (no marker
- * built) never equals a real marker, so first-ever epochs always rebuild.
+ * descriptor that matches on both needs no rebuild. A cached `undefined` (no descriptor
+ * built) never equals a real descriptor, so first-ever epochs always rebuild.
  *
  * @param current {CollectionEncryption | undefined}
  * @param next {CollectionEncryption}
  * @returns {boolean}
  */
-function markersEqual(
+function descriptorsEqual(
   current: CollectionEncryption | undefined,
   next: CollectionEncryption
 ): boolean {

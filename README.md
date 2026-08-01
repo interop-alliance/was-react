@@ -558,7 +558,7 @@ A throwaway "provisioner" identity owns the created Space (a genuine
 cross-identity delegation, as in the real wallet-to-relying-party flow), and a
 per-collection RW zcap is delegated to the app DID derived from `seed`. Pass
 `--probe` (or `probe: true`) to check whether the delegated zcap authorizes
-PUTting the EDV encryption marker.
+PUTting the EDV encryption descriptor.
 
 ## Testing
 

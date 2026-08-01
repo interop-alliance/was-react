@@ -67,7 +67,7 @@ function walletSideRecipient({ did }: { did: string }): {
  * An in-memory Collection stand-in for the recipient operations: they only ever
  * read the description with its ETag and write the mutated one back.
  */
-function markerCollection(
+function descriptorCollection(
   encryption: CollectionEncryption = { scheme: 'edv' } as CollectionEncryption
 ): Parameters<typeof initRecipients>[0]['collection'] {
   let description: Record<string, unknown> = {
@@ -93,24 +93,24 @@ async function mintRoster({
 }: {
   recipients: Parameters<typeof initRecipients>[0]['recipients']
 }): Promise<CollectionEncryption> {
-  return initRecipients({ collection: markerCollection(), recipients })
+  return initRecipients({ collection: descriptorCollection(), recipients })
 }
 
 /**
- * Rotates a roster by removing one recipient, producing a marker with a SECOND
+ * Rotates a roster by removing one recipient, producing a descriptor with a SECOND
  * epoch wrapped to everyone who remains. The wallet does exactly this when a
  * share is withdrawn; here it is the cheapest way to obtain a genuine two-epoch
- * marker whose current epoch a stale reader has never seen.
+ * descriptor whose current epoch a stale reader has never seen.
  */
 async function rotateRoster({
-  marker,
+  descriptor,
   removeKid
 }: {
-  marker: CollectionEncryption
+  descriptor: CollectionEncryption
   removeKid: string
 }): Promise<CollectionEncryption> {
   return removeRecipient({
-    collection: markerCollection(marker) as unknown as Parameters<
+    collection: descriptorCollection(descriptor) as unknown as Parameters<
       typeof removeRecipient
     >[0]['collection'],
     space: { async revoke() {} } as unknown as Parameters<
@@ -329,7 +329,7 @@ describe('SharedCollectionReader.list', () => {
 })
 
 describe('SharedCollectionReader unknown-epoch refresh', () => {
-  it('re-reads the marker exactly once and decrypts the rotated envelope', async () => {
+  it('re-reads the descriptor exactly once and decrypts the rotated envelope', async () => {
     const app = await deriveIdentity({ seed: APP_SEED })
     const owner = await deriveIdentity({ seed: OWNER_SEED })
     const extra = await deriveIdentity({ seed: EXTRA_SEED })
@@ -345,12 +345,12 @@ describe('SharedCollectionReader unknown-epoch refresh', () => {
       ]
     })
     const fresh = await rotateRoster({
-      marker: stale,
+      descriptor: stale,
       removeKid: extraRecipient.id
     })
     expect(fresh.currentEpoch).not.toBe(stale.currentEpoch)
 
-    // The wallet writes under the NEW epoch, which the stale marker lacks.
+    // The wallet writes under the NEW epoch, which the stale descriptor lacks.
     const ownerCipher = await createDocCipher({
       keyAgreementKey: owner.keyAgreementKey,
       keyResolver: owner.keyResolver,
@@ -374,8 +374,8 @@ describe('SharedCollectionReader unknown-epoch refresh', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const remoteStore = fakeRemoteStore({
-        // Open on the stale marker; every later read answers with the fresh one.
-        markers: [stale, fresh],
+        // Open on the stale descriptor; every later read answers with the fresh one.
+        descriptors: [stale, fresh],
         resources: {},
         changes: [
           { id: preShare.id, data: preShare.envelope },
@@ -453,7 +453,7 @@ interface FakeChange {
 }
 
 /**
- * A minimal `WasRemoteStore` stand-in: a fixed (or scripted) encryption marker
+ * A minimal `WasRemoteStore` stand-in: a fixed (or scripted) encryption descriptor
  * plus an in-memory resource map, served through the same
  * `was.space().collection()` handle chain the reader walks.
  *
@@ -462,19 +462,19 @@ interface FakeChange {
  * the backend answer as one without the `changes-query` feature, forcing the
  * `list()` + `get()` fallback. With neither, the feed mirrors `resources`.
  *
- * `markers` scripts successive `readCollectionEncryption` answers (the last one
+ * `descriptors` scripts successive `readCollectionEncryption` answers (the last one
  * repeats), so an unknown-epoch refresh can be observed; `encryptionReads`
  * counts them.
  */
 function fakeRemoteStore({
   encryption,
-  markers,
+  descriptors,
   resources,
   changes,
   changesNotImplemented = false
 }: {
   encryption?: CollectionEncryption
-  markers?: Array<CollectionEncryption | undefined>
+  descriptors?: Array<CollectionEncryption | undefined>
   resources: Record<string, unknown>
   changes?: FakeChange[]
   changesNotImplemented?: boolean
@@ -484,7 +484,7 @@ function fakeRemoteStore({
 } {
   const feed: FakeChange[] =
     changes ?? Object.entries(resources).map(([id, data]) => ({ id, data }))
-  const scripted = markers ?? [encryption]
+  const scripted = descriptors ?? [encryption]
   let encryptionReads = 0
   let resourceGets = 0
 
@@ -550,9 +550,10 @@ function fakeRemoteStore({
       return { id: 'urn:zcap:delegated:1' }
     },
     async readCollectionEncryption() {
-      const marker = scripted[Math.min(encryptionReads, scripted.length - 1)]
+      const descriptor =
+        scripted[Math.min(encryptionReads, scripted.length - 1)]
       encryptionReads++
-      return marker
+      return descriptor
     },
     encryptionReads: () => encryptionReads,
     resourceGets: () => resourceGets

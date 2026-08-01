@@ -3,9 +3,9 @@
  */
 /**
  * Tests the epoch-aware read path on the local store: a private collection
- * opened single-key (no cached marker) that meets an envelope written under a
+ * opened single-key (no cached descriptor) that meets an envelope written under a
  * key epoch it has not seen (a rotation on another device) recovers by re-
- * reading the marker exactly once and rebuilding the cipher. Uses the app's
+ * reading the descriptor exactly once and rebuilding the cipher. Uses the app's
  * real identity key-agreement key as the roster recipient, so the rebuilt
  * cipher genuinely unwraps the epoch.
  *
@@ -29,7 +29,7 @@ let dbCounter = 0
 const openStores: LocalStore[] = []
 
 async function openStore(
-  markers?: Record<string, CollectionEncryption>
+  descriptors?: Record<string, CollectionEncryption>
 ): Promise<LocalStore> {
   const { keyAgreementKey, keyResolver } = await deriveIdentity({ seed: SEED })
   const store = await LocalStore.init({
@@ -37,16 +37,16 @@ async function openStore(
     keyResolver,
     collections: COLLECTIONS,
     dbName: `epoch-test-${dbCounter++}`,
-    ...(markers && { markers })
+    ...(descriptors && { descriptors })
   })
   openStores.push(store)
   return store
 }
 
 /**
- * Mints a one-epoch marker whose sole recipient is the app's identity key.
+ * Mints a one-epoch descriptor whose sole recipient is the app's identity key.
  */
-async function mintMarker(): Promise<CollectionEncryption> {
+async function mintDescriptor(): Promise<CollectionEncryption> {
   const { keyAgreementKey } = await deriveIdentity({ seed: SEED })
   let description: Record<string, unknown> = {
     name: 'notes',
@@ -74,23 +74,23 @@ afterEach(async () => {
   }
 })
 
-describe('LocalStore epoch-marker refresh', () => {
-  it('recovers from an unknown epoch with a single marker re-fetch', async () => {
-    // Build an epoch envelope with the marker cipher (what another device wrote).
-    const encryption = await mintMarker()
+describe('LocalStore epoch-descriptor refresh', () => {
+  it('recovers from an unknown epoch with a single descriptor re-fetch', async () => {
+    // Build an epoch envelope with the descriptor cipher (what another device wrote).
+    const encryption = await mintDescriptor()
     const { keyAgreementKey, keyResolver } = await deriveIdentity({
       seed: SEED
     })
-    const markerCipher = await createDocCipher({
+    const descriptorCipher = await createDocCipher({
       keyAgreementKey,
       keyResolver,
       collectionId: COLLECTION_ID,
       encryption
     })
     const payload = { id: 'note-1', title: 'from another device' }
-    const { id, envelope } = await markerCipher.encrypt({ data: payload })
+    const { id, envelope } = await descriptorCipher.encrypt({ data: payload })
 
-    // Open a store WITHOUT the marker (single-key) and drop the epoch envelope
+    // Open a store WITHOUT the descriptor (single-key) and drop the epoch envelope
     // straight into its RxDB collection, as replication would.
     const store = await openStore()
     await store.rxCollection(COLLECTION_KEY).insert({
@@ -100,7 +100,7 @@ describe('LocalStore epoch-marker refresh', () => {
       data: envelope as unknown as Json
     })
 
-    // A refresher that hands back the marker; the single-key cipher hits an
+    // A refresher that hands back the descriptor; the single-key cipher hits an
     // UnknownEpochError, refreshes once, rebuilds, and decrypts.
     const refresher = vi.fn(async () => encryption)
     store.setEpochRefresher(refresher)
@@ -113,8 +113,8 @@ describe('LocalStore epoch-marker refresh', () => {
     expect(refresher).toHaveBeenCalledWith(COLLECTION_ID)
   })
 
-  it('opens epoch-aware from a cached marker (no refresh needed)', async () => {
-    const encryption = await mintMarker()
+  it('opens epoch-aware from a cached descriptor (no refresh needed)', async () => {
+    const encryption = await mintDescriptor()
     const store = await openStore({ [COLLECTION_ID]: encryption })
     const refresher = vi.fn(async () => encryption)
     store.setEpochRefresher(refresher)
@@ -128,16 +128,19 @@ describe('LocalStore epoch-marker refresh', () => {
     expect(refresher).not.toHaveBeenCalled()
   })
 
-  it('applyRemoteMarker rebuilds only when the epoch changes', async () => {
-    const encryption = await mintMarker()
+  it('applyRemoteDescriptor rebuilds only when the epoch changes', async () => {
+    const encryption = await mintDescriptor()
     const store = await openStore({ [COLLECTION_ID]: encryption })
-    // Same marker: no rebuild.
+    // Same descriptor: no rebuild.
     expect(
-      await store.applyRemoteMarker({ collectionId: COLLECTION_ID, encryption })
+      await store.applyRemoteDescriptor({
+        collectionId: COLLECTION_ID,
+        encryption
+      })
     ).toBe(false)
     // Unknown collection id: ignored.
     expect(
-      await store.applyRemoteMarker({ collectionId: 'nope', encryption })
+      await store.applyRemoteDescriptor({ collectionId: 'nope', encryption })
     ).toBe(false)
   })
 })
