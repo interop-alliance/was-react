@@ -15,7 +15,7 @@
  *
  * Only collection-scoped capabilities are requested (no whole-space grant). A
  * `visibility: 'public'` collection is requested with the distinct descriptor
- * type `urn:was:public-collection` (the wallet provisions it plaintext with a
+ * type `https://w3id.org/byoe#public-collection` (the wallet provisions it plaintext with a
  * collection-level public-read policy and renders a world-readable consent
  * warning); wallets that predate the type render it UNSATISFIABLE, which is the
  * intended fail-closed behavior -- an older wallet must not silently provision a
@@ -24,10 +24,10 @@
  * fails closed rather than degrading into a partial generic flow.
  *
  * A SHARED collection -- one the wallet already owns and encrypts, which the app
- * asks to read and decrypt -- uses the `urn:was:shared-collection` descriptor
+ * asks to read and decrypt -- uses the `https://w3id.org/byoe#shared-collection` descriptor
  * type, and the actions are read-only by construction ({@link SHARED_ACTIONS}):
  * the app never requests writes on a wallet collection. Exactly like
- * `urn:was:public-collection`, a wallet that predates the type resolves the
+ * `https://w3id.org/byoe#public-collection`, a wallet that predates the type resolves the
  * descriptor UNSATISFIABLE and fails closed -- which is the point here. A share
  * fuses two axes (a read zcap AND an entry in the collection's key-epoch
  * roster), so a wallet that granted only the zcap would hand the app ciphertext
@@ -67,7 +67,7 @@ export interface GrantRequestCollection {
   id: string
   /**
    * Who can read the collection; selects the descriptor type
-   * (`urn:was:collection` for `'private'`/unset, `urn:was:public-collection`
+   * (`https://w3id.org/byoe#collection` for `'private'`/unset, `https://w3id.org/byoe#public-collection`
    * for `'public'`).
    */
   visibility?: 'private' | 'public'
@@ -90,8 +90,8 @@ export function newChallenge(): string {
  * shape MINUS `controller` (the wallet fills it with the app-key subject DID)
  * and MINUS `reason` (the App Connect consent screen supersedes per-grant
  * reasons). A `visibility: 'public'` collection uses the
- * `urn:was:public-collection` descriptor type; everything else uses
- * `urn:was:collection`.
+ * `https://w3id.org/byoe#public-collection` descriptor type; everything else uses
+ * `https://w3id.org/byoe#collection`.
  *
  * @param options {object}
  * @param options.challenge {string}
@@ -104,7 +104,7 @@ export function newChallenge(): string {
  *   request (WAS collection id + visibility)
  * @param [options.sharedCollections] {string[]}   WAS collection ids of
  *   wallet-owned collections to request read-and-decrypt access to; each gets a
- *   `urn:was:shared-collection` descriptor with {@link SHARED_ACTIONS}
+ *   `https://w3id.org/byoe#shared-collection` descriptor with {@link SHARED_ACTIONS}
  * @param [options.actions] {string[]}   the RW action set (defaults to
  *   `RW_ACTIONS`)
  * @returns {IVPRDetails}
@@ -133,8 +133,8 @@ export function buildAppConnectVpr({
       invocationTarget: {
         type:
           visibility === 'public'
-            ? 'urn:was:public-collection'
-            : 'urn:was:collection',
+            ? 'https://w3id.org/byoe#public-collection'
+            : 'https://w3id.org/byoe#collection',
         name: id
       }
     })
@@ -143,7 +143,10 @@ export function buildAppConnectVpr({
     capabilityQuery.push({
       referenceId: id,
       allowedAction: SHARED_ACTIONS,
-      invocationTarget: { type: 'urn:was:shared-collection', name: id }
+      invocationTarget: {
+        type: 'https://w3id.org/byoe#shared-collection',
+        name: id
+      }
     })
   }
   return {

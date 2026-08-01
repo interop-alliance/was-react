@@ -22,6 +22,7 @@ import type {
   IVerifiableCredential,
   IVerifiablePresentation
 } from '@interop/data-integrity-core'
+import { CONTEXT_V1 } from 'byoe-context'
 import { deriveIdentity } from './agents.js'
 import type { DocumentLoader } from './documentLoader.js'
 
@@ -41,7 +42,13 @@ const VC_1_CONTEXT_URL = 'https://www.w3.org/2018/credentials/v1'
  */
 export const APP_KEY_CREDENTIAL_TYPE = 'AppKeyCredential'
 
-const APP_KEY_CREDENTIAL_TYPE_IRI = 'urn:was:AppKeyCredential'
+/**
+ * The shared BYOE term IRIs, taken from the published context rather than
+ * restated here.
+ */
+const BYOE_TERMS = CONTEXT_V1['@context']
+
+const APP_KEY_CREDENTIAL_TYPE_IRI = BYOE_TERMS.AppKeyCredential
 
 /**
  * App-supplied naming for the seed credential: the VC `type` name and the URN
@@ -64,9 +71,10 @@ export interface ParsedSeedCredential {
 /**
  * Builds the inline context object for the credential's terms, so it stays
  * verifiable with no remote vocabulary fetch. The marker type and the `seed` /
- * `origin` claims carry shared `urn:was:` IRIs -- they mean the same thing for
- * every app, so they do not belong under a per-app `vocabBase`, which keeps
- * only the app's own type term.
+ * `origin` claims carry shared `https://w3id.org/byoe#` IRIs (imported from
+ * `byoe-context`) -- they mean the same thing for every app, so they do not
+ * belong under a per-app `vocabBase`, which keeps only the app's own type
+ * term.
  */
 function seedContext({ credentialType, vocabBase }: SeedCredentialConfig): {
   '@protected': true
@@ -76,10 +84,10 @@ function seedContext({ credentialType, vocabBase }: SeedCredentialConfig): {
     '@protected': true,
     [APP_KEY_CREDENTIAL_TYPE]: APP_KEY_CREDENTIAL_TYPE_IRI,
     [credentialType]: `${vocabBase}${credentialType}`,
-    seed: 'urn:was:seed',
-    origin: 'urn:was:origin',
-    name: 'https://schema.org/name',
-    description: 'https://schema.org/description'
+    seed: BYOE_TERMS.seed,
+    origin: BYOE_TERMS.origin,
+    name: BYOE_TERMS.name,
+    description: BYOE_TERMS.description
   }
 }
 

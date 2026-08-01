@@ -58,14 +58,14 @@ const documentLoader = createDocumentLoader()
 
 const ZCAP_TERM_CONTEXT = {
   '@protected': true,
-  zcap: { '@id': 'urn:freewallet:vocab#zcap', '@container': '@set' }
+  zcap: { '@id': 'https://w3id.org/byoe#zcap', '@container': '@set' }
 } as const
 
 // Mirrors the wallet's actual composeVp term (wallet-core's
 // DEFAULT_VOCAB_BASE_IRI), so this fixture drifts with the real wire IRI.
 const APP_CONNECT_TERM_CONTEXT = {
   '@protected': true,
-  appConnect: { '@id': 'urn:freewallet:vocab#appConnect', '@type': '@json' }
+  appConnect: { '@id': 'https://w3id.org/byoe#appConnect', '@type': '@json' }
 } as const
 
 interface WalletIdentity {

@@ -118,9 +118,11 @@ describe('issueSeedCredential', () => {
     >
     // The marker and the claim terms are the SAME IRIs for every app; only the
     // app's own type term comes from its `vocabBase`.
-    expect(context[APP_KEY_CREDENTIAL_TYPE]).toBe('urn:was:AppKeyCredential')
-    expect(context.seed).toBe('urn:was:seed')
-    expect(context.origin).toBe('urn:was:origin')
+    expect(context[APP_KEY_CREDENTIAL_TYPE]).toBe(
+      'https://w3id.org/byoe#AppKeyCredential'
+    )
+    expect(context.seed).toBe('https://w3id.org/byoe#seed')
+    expect(context.origin).toBe('https://w3id.org/byoe#origin')
     expect(context[CONFIG.credentialType]).toBe(
       `${CONFIG.vocabBase}${CONFIG.credentialType}`
     )

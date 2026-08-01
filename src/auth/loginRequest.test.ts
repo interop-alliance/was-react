@@ -78,7 +78,7 @@ describe('buildAppConnectVpr', () => {
     )
     for (const entry of capabilityQuery) {
       expect(entry.invocationTarget).toEqual({
-        type: 'urn:was:collection',
+        type: 'https://w3id.org/byoe#collection',
         name: entry.referenceId
       })
       expect(entry.allowedAction).toEqual(RW_ACTIONS)
@@ -89,8 +89,8 @@ describe('buildAppConnectVpr', () => {
   })
 
   it(
-    'emits urn:was:public-collection for visibility: public and keeps ' +
-      'private collections on urn:was:collection',
+    'emits https://w3id.org/byoe#public-collection for visibility: public and keeps ' +
+      'private collections on https://w3id.org/byoe#collection',
     () => {
       const vpr = buildAppConnectVpr({
         ...BASE,
@@ -103,9 +103,12 @@ describe('buildAppConnectVpr', () => {
       const capabilityQuery = capabilityQueriesOf(vpr)
 
       expect(capabilityQuery.map(entry => entry.invocationTarget)).toEqual([
-        { type: 'urn:was:public-collection', name: 'microblog-posts' },
-        { type: 'urn:was:collection', name: 'drafts' },
-        { type: 'urn:was:collection', name: 'notes' }
+        {
+          type: 'https://w3id.org/byoe#public-collection',
+          name: 'microblog-posts'
+        },
+        { type: 'https://w3id.org/byoe#collection', name: 'drafts' },
+        { type: 'https://w3id.org/byoe#collection', name: 'notes' }
       ])
       // Public collections get the same RW zcap request: public covers only
       // unauthenticated reads; writes stay capability-only.
@@ -115,14 +118,14 @@ describe('buildAppConnectVpr', () => {
     }
   )
 
-  it('requests no whole-space (urn:was:space) query', () => {
+  it('requests no whole-space (https://w3id.org/byoe#space) query', () => {
     const vpr = buildAppConnectVpr({ ...BASE, collections: [{ id: 'notes' }] })
     const capabilityQuery = capabilityQueriesOf(vpr)
 
     const hasSpaceQuery = capabilityQuery.some(
       entry =>
         typeof entry.invocationTarget === 'object' &&
-        entry.invocationTarget.type === 'urn:was:space'
+        entry.invocationTarget.type === 'https://w3id.org/byoe#space'
     )
     expect(hasSpaceQuery).toBe(false)
   })
@@ -143,7 +146,7 @@ describe('buildAppConnectVpr', () => {
     expect(capabilityQueriesOf(vpr)).toEqual([])
   })
 
-  it('appends one read-only urn:was:shared-collection descriptor per shared id', () => {
+  it('appends one read-only https://w3id.org/byoe#shared-collection descriptor per shared id', () => {
     const vpr = buildAppConnectVpr({
       ...BASE,
       collections: [{ id: 'notes' }],
@@ -157,7 +160,7 @@ describe('buildAppConnectVpr', () => {
         referenceId: 'private-credentials',
         allowedAction: SHARED_ACTIONS,
         invocationTarget: {
-          type: 'urn:was:shared-collection',
+          type: 'https://w3id.org/byoe#shared-collection',
           name: 'private-credentials'
         }
       },
@@ -165,7 +168,7 @@ describe('buildAppConnectVpr', () => {
         referenceId: 'contacts',
         allowedAction: SHARED_ACTIONS,
         invocationTarget: {
-          type: 'urn:was:shared-collection',
+          type: 'https://w3id.org/byoe#shared-collection',
           name: 'contacts'
         }
       }

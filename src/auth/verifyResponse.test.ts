@@ -51,7 +51,7 @@ const documentLoader = createDocumentLoader()
 
 const ZCAP_TERM_CONTEXT = {
   '@protected': true,
-  zcap: { '@id': 'urn:freewallet:vocab#zcap', '@container': '@set' }
+  zcap: { '@id': 'https://w3id.org/byoe#zcap', '@container': '@set' }
 } as const
 
 interface WalletIdentity {

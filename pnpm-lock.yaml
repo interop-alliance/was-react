@@ -30,8 +30,8 @@ importers:
         specifier: ^3.5.0
         version: 3.5.0
       '@interop/wallet-core':
-        specifier: ^0.8.0
-        version: 0.8.0(@interop/jsonld-signatures@11.8.3)
+        specifier: ^0.9.0
+        version: 0.9.0(@interop/jsonld-signatures@11.8.3)
       '@interop/was-client':
         specifier: ^0.23.0
         version: 0.23.0(@interop/jsonld-signatures@11.8.3)
@@ -44,6 +44,9 @@ importers:
       '@scure/base':
         specifier: ^2.2.0
         version: 2.2.0
+      byoe-context:
+        specifier: ^0.1.0
+        version: 0.1.0
       credential-handler-polyfill:
         specifier: ^4.1.0
         version: 4.1.0
@@ -789,8 +792,8 @@ packages:
     resolution: {integrity: sha512-lklhwfHxutcoNes1BU6fgaqIQbNd00mmmyvPqoKWXD09RxkNRbcSvJ5iDjjyVYUw58mBq0rNjhT1SmQyJMMjtw==}
     engines: {node: '>=24.0'}
 
-  '@interop/wallet-core@0.8.0':
-    resolution: {integrity: sha512-KVPP7uc4F/OiePXmpCPwncnezwpi6e1NxL30V1jF5N23oUfPzfv1/oyAPX5L6AdZ0AUw5VcEEALMG/AUQH1LzQ==}
+  '@interop/wallet-core@0.9.0':
+    resolution: {integrity: sha512-qFVwV91GeDKbNkv3TOHowZ9gDEK8+0Ef9txaxJ9i12SMwzzXbSMUennUiCHuNipRlZ3197hu+fXoYSzmhXWTug==}
     engines: {node: '>=24.0'}
 
   '@interop/was-client@0.23.0':
@@ -4355,7 +4358,7 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
-  '@interop/wallet-core@0.8.0(@interop/jsonld-signatures@11.8.3)':
+  '@interop/wallet-core@0.9.0(@interop/jsonld-signatures@11.8.3)':
     dependencies:
       '@interop/data-integrity-core': 8.4.0
       '@interop/data-integrity-proof': 3.4.2

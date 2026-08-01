@@ -1,5 +1,20 @@
 # @interop/was-react Changelog
 
+## 0.8.0 - TBD
+
+### Changed
+
+- **BREAKING**: All BYOE-layer wire vocabulary moves from the retired `urn:was:`
+  / `urn:freewallet:vocab#` schemes to the shared `https://w3id.org/byoe#`
+  namespace. The app-key credential's marker type and claim terms now expand to
+  `https://w3id.org/byoe#AppKeyCredential` / `#seed` / `#origin` (imported from
+  the published `byoe-context` package), and `buildAppConnectVpr` emits the
+  `https://w3id.org/byoe#collection` / `#public-collection` /
+  `#shared-collection` descriptor types. Matching is literal string equality on
+  both sides, so this release pairs with the wallet-side renames
+  (`@interop/wallet-core` 0.9.0 and the matching Freewallet build); token
+  spellings and JSON keys are unchanged.
+
 ## 0.7.0 - 2026-08-01
 
 ### Changed
