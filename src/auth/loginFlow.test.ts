@@ -61,9 +61,11 @@ const ZCAP_TERM_CONTEXT = {
   zcap: { '@id': 'urn:freewallet:vocab#zcap', '@container': '@set' }
 } as const
 
+// Mirrors the wallet's actual composeVp term (wallet-core's
+// DEFAULT_VOCAB_BASE_IRI), so this fixture drifts with the real wire IRI.
 const APP_CONNECT_TERM_CONTEXT = {
   '@protected': true,
-  appConnect: { '@id': 'urn:was:appconnect#appConnect', '@type': '@json' }
+  appConnect: { '@id': 'urn:freewallet:vocab#appConnect', '@type': '@json' }
 } as const
 
 interface WalletIdentity {

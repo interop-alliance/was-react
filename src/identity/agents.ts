@@ -31,8 +31,8 @@
  *
  * Earlier versions used a second identity for app-provisioned collections: a
  * per-collection KAK, HKDF-derived from the master seed under the collection id
- * (`deriveCollectionKeys`, label `kak:v1:<collectionId>`). That derivation still
- * lives in `@interop/wallet-core/identity` but has no caller here. Unifying cost
+ * (`deriveCollectionKeys`, label `kak:v1:<collectionId>`). That derivation has
+ * been removed from `@interop/wallet-core/identity`. Unifying cost
  * the HKDF domain separation between collections -- the identity KAK now reads
  * every collection the app touches. In the multi-recipient model that key only
  * unwraps an epoch secret rather than being the content key, and the seed it was

@@ -379,38 +379,44 @@ The MUI entry supplies a router gate and status UI on top of this; see
 
 ## Login flow
 
-Login is driven by CHAPI Verifiable Presentation Requests (VPRs). The
-`useLogin().login()` action (backed by `loginWithWallet`) runs the flow, with a
-`phase` string surfaced for a progress line (`probing` to `storing-key` to
-`requesting-grants` to `verifying`):
+Login is a single CHAPI exchange -- App Connect. The `useLogin().login()` action
+(backed by `loginWithWallet`) runs the flow, with a `phase` string surfaced for
+a progress line (`connecting` to `verifying`):
 
 1. **CHAPI polyfill loads lazily.** The `credential-handler-polyfill` is loaded
    on demand the first time a wallet request is made, not at import time.
-2. **Probe (popup #1).** A VPR asking for DIDAuthentication plus the app's seed
-   credential is sent to the wallet. No credential returned means this is a
-   first run.
-3. **First run: mint and store the seed.** A fresh 32-byte master seed is
-   generated (`crypto.getRandomValues`), a seed credential is self-issued
-   (`issueSeedCredential`, using the configured `credentialType` and `vocabBase`
-   plus the app `origin` anti-phishing bind), and stored in the wallet via
-   `chapiStore`. The flow blocks until the wallet confirms the store -- a
-   dismissed store would silently break cross-device recovery.
-4. **Returning login: recover and verify.** When the probe returns the seed
-   credential, `parseSeedCredential` recovers the seed and cryptographically
-   verifies the credential carries the shared `AppKeyCredential` marker type and
-   is self-issued, origin-bound, and seed-to-DID bound.
-5. **Derive identity.** The stable `did:key` controller and its signer are
+2. **One popup.** A VPR carrying a `DIDAuthentication` query plus one
+   `AppConnectQuery` -- the app's display name, `credentialType`, and
+   `vocabBase`, a `capabilityQuery` entry per configured collection, and a
+   `urn:was:shared-collection` entry per shared collection -- is sent via
+   `navigator.credentials.get` (`buildAppConnectVpr`). A `null` response is a
+   user cancel (`LoginCancelledError`), not an error.
+3. **The wallet matches or mints.** On a first run the wallet generates the
+   32-byte seed itself, self-issues the origin-bound app-key credential, and
+   stores it in its own credential store under the same consent; on a returning
+   visit it matches the stored credential by the shared `AppKeyCredential`
+   marker type, the app's `credentialType`, the requesting origin, and the
+   seed-to-subject binding. The app never mints, and there is no second popup.
+4. **Verify the response.** `verifyLoginPresentation` checks the VP and embedded
+   proofs (purpose `authentication`, matching domain and challenge). A
+   presentation that verifies but carries no seed credential means the wallet
+   predates App Connect: the flow fails closed with `WalletUnsupportedError`
+   rather than degrading into a partial generic flow.
+5. **Recover the seed.** `parseSeedCredential` verifies the returned credential
+   carries the `AppKeyCredential` marker type and is self-issued, origin-bound,
+   and seed-to-DID bound, then recovers the seed.
+6. **Derive identity.** The stable `did:key` controller and its signer are
    derived deterministically from the seed via `CapabilityAgent.fromSeed`
    (`initAppSession` / `deriveIdentity`). The same seed yields the same identity
    on every device.
-6. **Request grants (popup #2).** `buildGrantsVpr` requests a per-collection
-   read/write zcap (plus a read-only space grant) for the controller DID. The
-   wallet provisions the collections and returns a signed presentation.
-7. **Verify the response.** `verifyLoginPresentation` checks the VP and embedded
-   proofs (purpose `authentication`, matching domain and challenge), and
-   `checkGrants` asserts every zcap is controlled by the app DID, shares one
-   space on a single WAS host, and is unexpired. The wallet decides where the
-   user's Space lives; the sync layer derives its target from the grants.
+7. **Check grants.** The delegated zcaps ride in the same presentation's
+   top-level `zcap` array. `checkGrants` asserts every zcap is controlled by the
+   app DID, shares one space on a single WAS host, covers each configured
+   collection's required actions, and is unexpired. A declined shared-collection
+   grant never fails the login. The wallet decides where the user's Space lives;
+   the sync layer derives its target from the grants. The wallet-provided
+   `appConnect: { firstRun }` member surfaces as the `{ firstRun }` the
+   `login()` promise resolves with.
 8. **Activate.** The session (seed, grants, earliest expiry) is persisted to
    IndexedDB, the encrypted local store is opened, the entity stores hydrate,
    and background WAS sync starts.

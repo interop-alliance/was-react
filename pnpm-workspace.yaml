@@ -3,3 +3,4 @@ allowBuilds:
   esbuild: true
 minimumReleaseAgeExclude:
   - '@interop/*'
+  - byoe-context@0.1.0

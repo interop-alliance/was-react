@@ -1,5 +1,31 @@
 # @interop/was-react Changelog
 
+## 0.6.0 - TBD
+
+### Added
+
+- did:webvh resolution in the app document loader. `createDocumentLoader` now
+  composes `@interop/security-document-loader`'s default did:key + did:web
+  resolver set with the `@interop/did-method-webvh` driver, so a wallet may
+  present its Login With Wallet VP holder as a did:webvh (proof verification
+  method `<did:webvh>#<key>`) and `verifyLoginPresentation` resolves it.
+  Resolution is VERIFIED resolution -- the driver's default history-log verifier
+  (hash chain + entry proofs) is active, and a tampered or forged `did.jsonl`
+  fails closed. did:key / did:web resolution is unchanged, and did:webvh DIDs on
+  `localhost` resolve over plain http for local dev, matching did:web.
+  Backward-compatible: apps should pick up this release before any wallet
+  switches its VP holder to a did:webvh.
+
+### Fixed
+
+- README's "Login flow" section documented the removed three-popup flow (probe /
+  store-key / request-grants); rewritten to the shipped single-popup App Connect
+  exchange, including the `WalletUnsupportedError` fail-closed path and the
+  `{ firstRun }` login result.
+- The login-flow test wallet's `appConnect` context term now uses the IRI the
+  real wallet emits (`urn:freewallet:vocab#appConnect`), so the fixture drifts
+  with the actual wire term instead of coining its own.
+
 ## 0.5.0 - 2026-07-30
 
 ### Added
