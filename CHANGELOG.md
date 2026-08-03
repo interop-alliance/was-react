@@ -1,5 +1,12 @@
 # @interop/was-react Changelog
 
+## 0.8.1 - TBD
+
+### Changed
+
+- Update to `byoe-context@0.2.0` (adds the `LoginCredential` and
+  `preferredUsername` terms to the App Connect context).
+
 ## 0.8.0 - 2026-08-01
 
 ### Changed
