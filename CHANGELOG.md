@@ -1,5 +1,24 @@
 # @interop/was-react Changelog
 
+## 0.8.2 - 2026-08-03
+
+### Fixed
+
+- `connectWithGrants` now runs on the same serialized lifecycle chain as
+  `boot`/`destroy`, with a connected-state guard. Fired from a mount-time
+  effect (its typical call site, e.g. a dev-connect hook), it raced a dev-mode
+  remount's queued destroy/boot pair, which tore down and re-opened the
+  anonymous replica underneath the in-flight connect -- nondeterministically
+  dropping the local data the `adopt: 'merge'` collect was meant to carry into
+  the connected replica. `login` deliberately stays off the chain: it blocks
+  on a wallet popup that must not stall a queued destroy, and being
+  user-driven it never runs as part of the mount race.
+
+### Changed
+
+- Update to `@interop/wallet-core@0.16.0` and `@interop/was-client@0.26.0`
+  (additive upstream releases; no API changes here).
+
 ## 0.8.1 - 2026-08-03
 
 ### Changed

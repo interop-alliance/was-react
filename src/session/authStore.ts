@@ -341,9 +341,11 @@ export function createAuthStore({
   // completion before the next begins: destroy always tears down a fully-open
   // session, and a queued boot re-opens cleanly on top of it. Neither routine
   // awaits user interaction (boot starts replication in the background, never
-  // blocking on it), so the chain cannot deadlock. Login and the other
-  // user-driven transitions stay off this chain -- they are guarded by their own
-  // flags and never run as part of the mount/unmount race.
+  // blocking on it), so the chain cannot deadlock. `connectWithGrants` rides
+  // the same chain (fired from mount-time effects, it IS part of this race --
+  // see its comment); `login` and the other user-driven transitions stay off
+  // it -- they are guarded by their own flags and never run as part of the
+  // mount/unmount race.
   let lifecycle: Promise<void> = Promise.resolve()
   function serializeLifecycle(task: () => Promise<void>): Promise<void> {
     const run = lifecycle.then(task, task)
@@ -964,29 +966,47 @@ export function createAuthStore({
       },
 
       connectWithGrants: async ({ seed, grants, adopt = 'merge' }) => {
-        const identity = await initAppSession({ seed })
-        const parsed = parseGrants(grants)
-        const expires =
-          earliestExpiry(grants) ??
-          new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
-        const source = await detachAndCollect(adopt)
-        await activateConnected({
-          seed,
-          identity,
-          parsed,
-          grants,
-          expires,
-          ...(source && { adopt: source })
-        })
-        if (source) {
-          await discardAnonReplica(source.controllerDid)
-        }
-        set({
-          status: 'connected',
-          controllerDid: identity.controllerDid,
-          expires,
-          error: null,
-          accessExpired: false
+        // Serialized with boot/destroy, unlike `login`: connectWithGrants is
+        // typically fired from an effect at mount, exactly when a dev-mode
+        // remount's queued destroy/boot pair is still draining the lifecycle
+        // chain. Run off the chain, that pair tears down and re-opens the
+        // anonymous replica UNDERNEATH the in-flight connect, and the adoption
+        // collect races it -- nondeterministically dropping the local data the
+        // merge was meant to carry over. Nothing here awaits user interaction
+        // (the grants are already in hand), so the chain cannot deadlock;
+        // `login` stays off it because it blocks on a wallet popup that must
+        // not stall a queued destroy, and being user-driven it never runs as
+        // part of the mount race. The connected guard makes a double-fired
+        // connect (dev-mode double effects again) a no-op instead of a
+        // re-activation.
+        await serializeLifecycle(async () => {
+          if (get().status === 'connected') {
+            return
+          }
+          const identity = await initAppSession({ seed })
+          const parsed = parseGrants(grants)
+          const expires =
+            earliestExpiry(grants) ??
+            new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
+          const source = await detachAndCollect(adopt)
+          await activateConnected({
+            seed,
+            identity,
+            parsed,
+            grants,
+            expires,
+            ...(source && { adopt: source })
+          })
+          if (source) {
+            await discardAnonReplica(source.controllerDid)
+          }
+          set({
+            status: 'connected',
+            controllerDid: identity.controllerDid,
+            expires,
+            error: null,
+            accessExpired: false
+          })
         })
       },
 

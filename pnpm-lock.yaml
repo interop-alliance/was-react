@@ -30,11 +30,11 @@ importers:
         specifier: ^3.5.2
         version: 3.5.2
       '@interop/wallet-core':
-        specifier: ^0.14.0
-        version: 0.14.0(@interop/jsonld-signatures@11.8.4)
+        specifier: ^0.16.0
+        version: 0.16.0(@interop/jsonld-signatures@11.8.4)
       '@interop/was-client':
-        specifier: ^0.25.0
-        version: 0.25.0(@interop/jsonld-signatures@11.8.4)
+        specifier: ^0.26.0
+        version: 0.26.0(@interop/jsonld-signatures@11.8.4)
       '@interop/webkms-client':
         specifier: ^14.7.1
         version: 14.7.1
@@ -772,6 +772,10 @@ packages:
     resolution: {integrity: sha512-ru9imW5H4a9l/cPxtsJF5cWBksVJsvyMpNcIxjknn269k72OR22v+n+AbVyBWdoqb7H5Evcs3XpFXjHmR91P5A==}
     engines: {node: '>=24.0'}
 
+  '@interop/social-core@0.7.0':
+    resolution: {integrity: sha512-Xd1cF8xt8pb1Bm/NnT1+IgwOlT7zKWYVM+TWgTMZAA+IpsqLqrxlQgJfAJfdIYeDy4oobrX/DxSF5Ey1P8TG7A==}
+    engines: {node: '>=24.0'}
+
   '@interop/storage-core@0.3.12':
     resolution: {integrity: sha512-INgMphM5sEhrLonwrE1HZcvm+k+aKIQdwCi/hOuJfnylT5Qdfr0ovzY0ax8veEKqRKmi8k9lmlayTbr/D2q99A==}
     engines: {node: '>=22.0'}
@@ -788,12 +792,12 @@ packages:
     resolution: {integrity: sha512-QPPl0k14Mk3m+bvNTi92rQOgT0kvDb1mOVguzxuWQ2pwl1NwDmpryy8qofdFgtkGITrnYz9qUZFAwk+9306H5Q==}
     engines: {node: '>=24.0'}
 
-  '@interop/wallet-core@0.14.0':
-    resolution: {integrity: sha512-xNJlrmfNI6GLJV1ad09DbPASXdAaSHsBNiR3kXP1Vr4i6rwkmT9t3gErFcr4XX0gI3/GVoTLXUbq3Ij6I6Ia4g==}
+  '@interop/wallet-core@0.16.0':
+    resolution: {integrity: sha512-ba3fNAz6E+dv5DxSPSb8Rlx45xekfL28pqa8rzC8c107jAKefecit1z4HJO617J/YjCgbd9LnjnuWwGnVRGOzw==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-client@0.25.0':
-    resolution: {integrity: sha512-vKzo1QffmXZ00YfRqtO5Re8GbDB+rCBPdLPKM6dQzEsjFPoWVOsUfYDWc8sFfx/+N3LfflkkBvKZ4geGhPvtpA==}
+  '@interop/was-client@0.26.0':
+    resolution: {integrity: sha512-MDswY1IcrUxsk6jKUCUC3qvBIahyelA2SgeWiiLCqU4rgX5nxEL9/gHwRaI1+LuLZBvxYsH+QOMw9ZMYoWj0IA==}
     engines: {node: '>=24.0'}
 
   '@interop/webkms-client@14.7.1':
@@ -4291,6 +4295,8 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
+  '@interop/social-core@0.7.0': {}
+
   '@interop/storage-core@0.3.12':
     dependencies:
       '@interop/data-integrity-core': 8.4.0
@@ -4331,7 +4337,7 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
-  '@interop/wallet-core@0.14.0(@interop/jsonld-signatures@11.8.4)':
+  '@interop/wallet-core@0.16.0(@interop/jsonld-signatures@11.8.4)':
     dependencies:
       '@interop/data-integrity-core': 8.4.0
       '@interop/data-integrity-proof': 3.4.3
@@ -4340,8 +4346,9 @@ snapshots:
       '@interop/ed25519-verification-key': 8.0.3
       '@interop/ezcap': 7.4.1
       '@interop/security-document-loader': 9.5.1
+      '@interop/social-core': 0.7.0
       '@interop/vc': 11.0.6
-      '@interop/was-client': 0.25.0(@interop/jsonld-signatures@11.8.4)
+      '@interop/was-client': 0.26.0(@interop/jsonld-signatures@11.8.4)
       '@interop/webkms-client': 14.7.1
       '@interop/x25519-key-agreement-key': 5.2.1
       '@noble/hashes': 2.2.0
@@ -4352,7 +4359,7 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-client@0.25.0(@interop/jsonld-signatures@11.8.4)':
+  '@interop/was-client@0.26.0(@interop/jsonld-signatures@11.8.4)':
     dependencies:
       '@interop/data-integrity-core': 8.4.0
       '@interop/ed25519-signature': 7.1.4(@interop/jsonld-signatures@11.8.4)
