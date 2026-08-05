@@ -60,19 +60,30 @@ interface WalletIdentity {
 }
 
 let wallet: WalletIdentity
+// A second, attacker-minted did:key: a signer that is NOT the wallet, used to
+// mint the validly-signed non-authentication proof of the mixed-proof tests.
+let attacker: WalletIdentity
 let appDid: string
 let appSeed: Uint8Array
 
-beforeAll(async () => {
+/**
+ * Mints a fresh did:key identity plus its Ed25519Signature2020 suite.
+ */
+async function mockIdentity(handle: string): Promise<WalletIdentity> {
   const agent = await CapabilityAgent.fromSeed({
     seed: crypto.getRandomValues(new Uint8Array(32)),
-    handle: 'mock-wallet',
+    handle,
     keyName: 'wallet-key'
   })
-  wallet = {
+  return {
     holder: agent.id,
     suite: new Ed25519Signature2020({ signer: agent.getSigner() })
   }
+}
+
+beforeAll(async () => {
+  wallet = await mockIdentity('mock-wallet')
+  attacker = await mockIdentity('mock-attacker')
   appSeed = crypto.getRandomValues(new Uint8Array(32))
   appDid = (await deriveIdentity({ seed: appSeed })).controllerDid
 })
@@ -112,19 +123,17 @@ function fullGrantSet(): IZcap[] {
 }
 
 /**
- * Signs a wallet-style VP with optional embedded VC and zcap array.
+ * Builds the UNSIGNED wallet-style VP with an optional embedded VC and zcap
+ * array. Split out of {@link walletVp} so one document can be signed more than
+ * once (the mixed-proof-set tests).
  */
-async function walletVp({
-  challenge,
-  domain = ORIGIN,
+function unsignedVp({
   credential,
   zcaps
 }: {
-  challenge: string
-  domain?: string
   credential?: IVerifiableCredential
   zcaps?: IZcap[]
-}): Promise<IVerifiablePresentation> {
+}): vc.Presentation {
   const presentation = vc.createPresentation({
     holder: wallet.holder,
     ...(credential && { verifiableCredential: [credential] }),
@@ -139,13 +148,40 @@ async function walletVp({
     ]
     presentation.zcap = zcaps
   }
+  return presentation as unknown as vc.Presentation
+}
+
+/**
+ * Signs a wallet-style VP with optional embedded VC and zcap array.
+ */
+async function walletVp({
+  challenge,
+  domain = ORIGIN,
+  credential,
+  zcaps
+}: {
+  challenge: string
+  domain?: string
+  credential?: IVerifiableCredential
+  zcaps?: IZcap[]
+}): Promise<IVerifiablePresentation> {
   return (await vc.signPresentation({
-    presentation: presentation as unknown as vc.Presentation,
+    presentation: unsignedVp({
+      ...(credential && { credential }),
+      ...(zcaps && { zcaps })
+    }),
     challenge,
     domain,
     documentLoader,
     suite: wallet.suite
   })) as IVerifiablePresentation
+}
+
+/**
+ * The proof (or proof set) on a signed presentation.
+ */
+function proofOf(presentation: unknown): Record<string, unknown> {
+  return (presentation as { proof: Record<string, unknown> }).proof
 }
 
 describe('verifyLoginPresentation', () => {
@@ -172,6 +208,100 @@ describe('verifyLoginPresentation', () => {
       })
     ).resolves.toBeUndefined()
     expect(grantsOf(presentation)).toHaveLength(TEST_COLLECTIONS.length)
+  })
+
+  it('accepts a single authentication proof', async () => {
+    const challenge = crypto.randomUUID()
+    const presentation = await walletVp({ challenge })
+    expect(Array.isArray(proofOf(presentation))).toBe(false)
+    expect(proofOf(presentation).proofPurpose).toBe('authentication')
+    await expect(
+      verifyLoginPresentation({
+        presentation,
+        challenge,
+        domain: ORIGIN,
+        documentLoader
+      })
+    ).resolves.toBeUndefined()
+  })
+
+  it('rejects a proof set led by an attacker-signed assertion proof', async () => {
+    // The mixed-proof attack: a VALIDLY SIGNED assertionMethod proof (minted
+    // by an attacker's own did:key) FIRST, and a fabricated authentication
+    // proof -- right challenge and domain, garbage signature -- second. A
+    // crypto layer that read `proof[0]` alone would select
+    // AssertionProofPurpose for the whole set and never signature-check the
+    // fabricated proof; verifier-core >= 3.5.3 scans every proof, selects
+    // AuthenticationProofPurpose, and the garbage signature fails the
+    // presentation at the crypto layer. (The library's own purpose backstop
+    // is exercised by the trailing-assertion test below, where crypto
+    // passes.)
+    const challenge = crypto.randomUUID()
+    const unsigned = unsignedVp({ zcaps: fullGrantSet() })
+    const assertionSigned = await vc.signPresentation({
+      presentation: structuredClone(unsigned),
+      documentLoader,
+      purpose: new vc.CredentialIssuancePurpose(),
+      suite: attacker.suite
+    })
+    const authSigned = await vc.signPresentation({
+      presentation: structuredClone(unsigned),
+      challenge,
+      domain: ORIGIN,
+      documentLoader,
+      suite: attacker.suite
+    })
+    const fabricated = {
+      ...proofOf(authSigned),
+      proofValue: `z${'3'.repeat(86)}`
+    }
+    const mixed = {
+      ...(authSigned as object),
+      proof: [proofOf(assertionSigned), fabricated]
+    } as unknown as IVerifiablePresentation
+
+    await expect(
+      verifyLoginPresentation({
+        presentation: mixed,
+        challenge,
+        domain: ORIGIN,
+        documentLoader
+      })
+    ).rejects.toThrow(/Invalid signature/)
+  })
+
+  it('rejects a proof set with a trailing assertion proof', async () => {
+    // The same set the other way round: the authentication proof leads (so the
+    // crypto layer selects AuthenticationProofPurpose and the set verifies),
+    // and the non-authentication proof still fails the set closed.
+    const challenge = crypto.randomUUID()
+    const unsigned = unsignedVp({ zcaps: fullGrantSet() })
+    const authSigned = await vc.signPresentation({
+      presentation: structuredClone(unsigned),
+      challenge,
+      domain: ORIGIN,
+      documentLoader,
+      suite: wallet.suite
+    })
+    const assertionSigned = await vc.signPresentation({
+      presentation: structuredClone(unsigned),
+      documentLoader,
+      purpose: new vc.CredentialIssuancePurpose(),
+      suite: attacker.suite
+    })
+    const mixed = {
+      ...(authSigned as object),
+      proof: [proofOf(authSigned), proofOf(assertionSigned)]
+    } as unknown as IVerifiablePresentation
+
+    await expect(
+      verifyLoginPresentation({
+        presentation: mixed,
+        challenge,
+        domain: ORIGIN,
+        documentLoader
+      })
+    ).rejects.toThrow(/non-authentication proof/)
   })
 
   it('rejects a challenge mismatch', async () => {

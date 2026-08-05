@@ -1,18 +1,92 @@
 # @interop/was-react Changelog
 
+## 0.8.3 - TBD
+
+### Fixed
+
+- **Security**: `verifyLoginPresentation` now rejects a response VP whose
+  presentation-level proof set contains any non-`authentication` proof, and
+  checks the challenge/domain on every proof. Previously the challenge check
+  could bind to a proof the crypto layer never signature-verified (proof
+  ordering decided which purpose was enforced), so a captured VP could be
+  replayed against a fresh challenge by appending an unsigned authentication
+  proof. The root fix lands in `@interop/verifier-core` (its presentation
+  purpose is now selected by scanning all proofs, not `proof[0]`); the check
+  here fails closed even against an older verifier-core.
+- **Security**: `reconnect` now compares the re-granted `serverUrl` / `spaceId`
+  against the live session's persisted record and refuses on a mismatch, instead
+  of silently re-pointing the encrypted replica at a different server or space.
+  Switching storage requires an explicit logout + login.
+- A shared-only app (`collections: []`, non-empty `sharedCollections`) now
+  completes login when the user declines the share: the wallet's empty grant set
+  is accepted with a warning and no reader is opened, instead of the whole login
+  failing with "The wallet returned no storage grants."
+- The LWW conflict handler now distinguishes "no LWW stamp" (a tombstone or
+  absent body) from "could not decrypt": an undecryptable side is never scored
+  as the loser (an undecryptable master is adopted rather than overwritten by an
+  older local payload; an undecryptable local row is re-asserted rather than
+  dropped), and each case is logged. Its decrypt also routes through the
+  epoch-refreshing path, so a master written under an unseen key epoch recovers
+  via a descriptor re-read instead of failing.
+- Two push-path defects that dropped writes while reporting success: clearing a
+  resource's `custom` metadata is now written to the server (a `/meta` PUT of
+  the cleared state) instead of silently skipped, and a `/meta` 412 that follows
+  a successful content write now preserves the acked content version instead of
+  discarding it (which left the local row's `If-Match` stale).
+- A single resource-scoped `/meta` 404 (a metadata push racing a remote delete)
+  no longer flips the whole session to "access expired": the row is corroborated
+  against the changes feed and resolved as remote-deleted, and the session
+  escalates only when the feed read is itself denied.
+- `remotePayloadWins` (LWW) now compares `updatedAt` chronologically (parsed to
+  epoch ms) instead of lexically, so mixed ISO-8601 precision (`...05Z` vs
+  `...05.400Z`) and offset forms (`+00:00`) order correctly; unparseable stamps
+  lose to parseable ones, with a documented lexical fallback when neither
+  parses.
+- Content pushes now send the `WAS-Key-Epoch` header: the `DocCipher` seam no
+  longer drops the `epoch` the was-client cipher returns, the local row and the
+  `changes`-feed wire type carry it, and `putContent` stamps it -- so a
+  spec-following third-party reader gets the correct pre-decrypt key hint.
+- `patchFromChange` captures the local store before its decrypt `await` and
+  bails when the holder was closed or swapped across it, so a pull burst in
+  flight across a logout/login teardown neither throws an unhandled rejection
+  nor writes the previous session's data into the new replica.
+- A failed sync bootstrap now surfaces: the session records a "Sync failed to
+  start" error and the per-collection statuses report `error` in the sync
+  rollup, instead of resolving silently as "Local only"; the controller's
+  failure path no longer latches its terminal stop, so sync can be started again
+  on the same session.
+- Two login-path races: the adopted-anonymous-replica cleanup now runs after the
+  connected status lands and is best-effort (a cleanup failure no longer leaves
+  the session reporting `local` over a live connected session), and the
+  `adopt: 'merge'` collect decides off a pre-login state snapshot (a provider
+  unmount while the wallet popup is open no longer makes the merge silently
+  adopt nothing).
+- The proactive grant-expiry warning fires on the first check: the immediate
+  near-expiry probe is deferred until after the caller has set
+  `status: 'connected'`, so restoring a session already inside the warning
+  window raises the reconnect banner immediately instead of waiting a full watch
+  interval.
+- A share revoked mid-session now degrades its `SharedCollectionReader` with a
+  warning (skipping the resources it can no longer decrypt) instead of rejecting
+  the whole `list()` and discarding already-decrypted resources.
+- The CHAPI path no longer dereferences `import.meta.env` unguarded, so non-Vite
+  consumers (webpack / Rspack / Parcel, Node SSR) no longer crash at login;
+  without it the e2e bridge simply stays off (Vite is not a required toolchain,
+  now stated in the README).
+
 ## 0.8.2 - 2026-08-03
 
 ### Fixed
 
 - `connectWithGrants` now runs on the same serialized lifecycle chain as
-  `boot`/`destroy`, with a connected-state guard. Fired from a mount-time
-  effect (its typical call site, e.g. a dev-connect hook), it raced a dev-mode
+  `boot`/`destroy`, with a connected-state guard. Fired from a mount-time effect
+  (its typical call site, e.g. a dev-connect hook), it raced a dev-mode
   remount's queued destroy/boot pair, which tore down and re-opened the
   anonymous replica underneath the in-flight connect -- nondeterministically
   dropping the local data the `adopt: 'merge'` collect was meant to carry into
-  the connected replica. `login` deliberately stays off the chain: it blocks
-  on a wallet popup that must not stall a queued destroy, and being
-  user-driven it never runs as part of the mount race.
+  the connected replica. `login` deliberately stays off the chain: it blocks on
+  a wallet popup that must not stall a queued destroy, and being user-driven it
+  never runs as part of the mount race.
 
 ### Changed
 

@@ -336,7 +336,25 @@ export class SharedCollectionReader {
     } catch (err) {
       if (err instanceof UnknownEpochError && !this.#refreshed) {
         this.#refreshed = true
-        await this.#rebuildCipher()
+        // The recovery itself may fail: `buildSharedCipher` throws
+        // `SharedCollectionUnavailableError` when the refreshed descriptor no
+        // longer lists this app (access removed mid-session -- removing a
+        // share rotates the epoch off this app's key), and the descriptor
+        // re-read can fail outright. Per the documented contract, that
+        // degrades THIS READER with a warning -- `list()` still returns what
+        // it could decrypt -- rather than rejecting the whole listing (the
+        // same warn-and-skip the open-time path already applies).
+        try {
+          await this.#rebuildCipher()
+        } catch (rebuildErr) {
+          console.warn(
+            `Shared collection "${this.collectionId}" could not refresh its ` +
+              `key-epoch roster; access may have been removed. Skipping ` +
+              `resources sealed under the unknown epoch. ` +
+              `${errorMessage(rebuildErr)}`
+          )
+          return this.#skipUndecryptable({ id, err: rebuildErr })
+        }
         try {
           return await this.#cipher.decrypt({ envelope: body })
         } catch (retryErr) {

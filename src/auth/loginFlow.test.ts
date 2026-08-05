@@ -242,3 +242,99 @@ describe('loginWithWallet (App Connect)', () => {
     ).rejects.toBeInstanceOf(LoginCancelledError)
   })
 })
+
+describe('App Connect grant checking', () => {
+  it('completes a shared-only login whose share the user declined', async () => {
+    // No app-owned collections, one requested share -- and the wallet returned
+    // no grants at all (the user declined the share). Declining is not a login
+    // failure: the login completes with no remote storage.
+    const credential = await appKeyCredential()
+    mockGet.mockImplementation(async ({ vpr }) =>
+      walletVp({ challenge: vpr.challenge as string, credential })
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const outcome = await loginWithWallet({
+      config: {
+        ...loginConfig,
+        collections: [],
+        sharedCollections: ['wallet-notes']
+      }
+    })
+
+    expect(outcome.identity.controllerDid).toBe(appDid)
+    expect(outcome.grants).toEqual([])
+    expect(outcome.parsed).toEqual({
+      serverUrl: '',
+      spaceId: '',
+      byCollectionId: {}
+    })
+    // A nominal far-future expiry, so the near-expiry watch never fires.
+    expect(new Date(outcome.expires).getTime()).toBeGreaterThan(Date.now())
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('wallet-notes'))
+  })
+
+  it('completes a login that requests nothing, without warning', async () => {
+    const credential = await appKeyCredential()
+    mockGet.mockImplementation(async ({ vpr }) =>
+      walletVp({ challenge: vpr.challenge as string, credential })
+    )
+    // Cleared explicitly: `console.warn` may already be spied (and carry calls)
+    // from an earlier test in this file.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    warn.mockClear()
+
+    const outcome = await loginWithWallet({
+      config: { ...loginConfig, collections: [] }
+    })
+
+    expect(outcome.grants).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('still rejects when app-owned collections came back with no grants', async () => {
+    const credential = await appKeyCredential()
+    mockGet.mockImplementation(async ({ vpr }) =>
+      walletVp({ challenge: vpr.challenge as string, credential })
+    )
+
+    await expect(loginWithWallet({ config: loginConfig })).rejects.toThrow(
+      /no storage grants/
+    )
+  })
+
+  it('still rejects when an app-owned collection is uncovered', async () => {
+    // Not the empty-grant shortcut: grants came back, just not for `projects`.
+    const credential = await appKeyCredential()
+    mockGet.mockImplementation(async ({ vpr }) =>
+      walletVp({
+        challenge: vpr.challenge as string,
+        credential,
+        zcaps: [grantFor('notes')]
+      })
+    )
+
+    await expect(loginWithWallet({ config: loginConfig })).rejects.toThrow(
+      /No grant covers the "projects"/
+    )
+  })
+
+  it('does not require a declined share to be covered', async () => {
+    // The app-owned collections are granted; the requested share is not.
+    const credential = await appKeyCredential()
+    mockGet.mockImplementation(async ({ vpr }) =>
+      walletVp({
+        challenge: vpr.challenge as string,
+        credential,
+        zcaps: COLLECTIONS.map(collection => grantFor(collection.id))
+      })
+    )
+
+    const outcome = await loginWithWallet({
+      config: { ...loginConfig, sharedCollections: ['wallet-notes'] }
+    })
+
+    expect(outcome.grants).toHaveLength(COLLECTIONS.length)
+    expect(outcome.parsed.spaceId).toBe('e2e-space')
+  })
+})

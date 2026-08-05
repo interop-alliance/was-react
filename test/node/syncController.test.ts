@@ -4,8 +4,10 @@
 /**
  * SyncController lifecycle unit tests (jsdom, for `window`): the terminal-stop
  * latch (a `stop()` that raced an in-flight bootstrap keeps a later `start()` a
- * no-op) and the skip-uncovered-collections behavior (a collection the grant set
- * does not cover is flagged and skipped rather than replicated capability-less).
+ * no-op), the skip-uncovered-collections behavior (a collection the grant set
+ * does not cover is flagged and skipped rather than replicated capability-less),
+ * and the failed bring-up (a throw during `start()` unwinds, flags every
+ * collection as errored, rethrows, and leaves the controller re-startable).
  *
  * @vitest-environment jsdom
  */
@@ -14,7 +16,10 @@ import {
   SyncController,
   isAuthError
 } from '../../src/storage/syncController.js'
-import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
+import {
+  deriveSyncRollup,
+  useSyncStatusStore
+} from '../../src/storage/syncStatusStore.js'
 import { WasSyncAuthError } from '../../src/sync/index.js'
 import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
 import type { LocalStore } from '../../src/storage/localStore.js'
@@ -112,6 +117,41 @@ describe('isAuthError', () => {
     const cyclic: { self?: unknown; cause?: unknown } = {}
     cyclic.cause = cyclic
     expect(isAuthError(cyclic)).toBe(false)
+  })
+})
+
+describe('SyncController failed bring-up', () => {
+  it('rethrows, flags every collection, and stays re-startable', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const controller = new SyncController({
+      collections: COLLECTIONS,
+      sync: { pollMs: 0 }
+    })
+    const { remoteStore } = fakeRemoteStore(() => ({}))
+    // The bring-up throws where the replication is wired up.
+    const rxCollection = vi.fn(() => {
+      throw new Error('database closed')
+    })
+    const localStore = { rxCollection } as unknown as LocalStore
+
+    // The failure surfaces to the caller's bootstrap rather than resolving
+    // silently through a terminal stop().
+    await expect(controller.start({ remoteStore, localStore })).rejects.toThrow(
+      'database closed'
+    )
+    expect(error).toHaveBeenCalled()
+
+    // Every configured collection reads as 'error', so the rollup reports the
+    // failure rather than "Local only".
+    const { statuses } = useSyncStatusStore.getState()
+    expect(statuses.notes).toBe('error')
+    expect(deriveSyncRollup(Object.values(statuses)).state).toBe('error')
+
+    // Not latched: a later start() runs its body again instead of no-opping.
+    await expect(controller.start({ remoteStore, localStore })).rejects.toThrow(
+      'database closed'
+    )
+    expect(rxCollection).toHaveBeenCalledTimes(2)
   })
 })
 

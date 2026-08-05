@@ -35,6 +35,38 @@ function makePort(status: number) {
   })
 }
 
+/**
+ * One recorded `was.request()` call: what the port put on the wire.
+ */
+interface RequestCall {
+  path: string
+  method: string
+  json?: unknown
+  headers?: Record<string, string>
+}
+
+/**
+ * A fake `WasClient` whose `request` records the call and answers like a
+ * versioning server (an `ETag` the port parses into the acked revision), so a
+ * test can assert the request the port BUILT rather than only its error
+ * mapping.
+ */
+function recordingPort(etag = '"3"') {
+  const calls: RequestCall[] = []
+  const was = {
+    request: async (options: RequestCall) => {
+      calls.push(options)
+      return { data: {}, headers: new Headers({ etag }) }
+    }
+  } as unknown as WasClient
+  const port = createWasSyncPort({
+    was,
+    spaceId: 'space-1',
+    collectionId: 'notes'
+  })
+  return { calls, port }
+}
+
 describe('createWasSyncPort error mapping', () => {
   it('maps a 401 on the query (pull) path to WasSyncAuthError', async () => {
     const port = makePort(401)
@@ -92,6 +124,66 @@ describe('createWasSyncPort error mapping', () => {
     await expect(port.query({ limit: 10 })).rejects.toMatchObject({
       status: 500
     })
+  })
+})
+
+describe('createWasSyncPort request building', () => {
+  it('sends the key epoch as the was-key-epoch header on a content write', async () => {
+    const { calls, port } = recordingPort()
+
+    const version = await port.putContent({
+      id: 'a b',
+      data: { x: 1 },
+      ifMatch: '"2"',
+      epoch: 'e2'
+    })
+
+    expect(version).toBe(3)
+    expect(calls[0]).toMatchObject({
+      path: '/space/space-1/notes/a%20b',
+      method: 'PUT',
+      json: { x: 1 }
+    })
+    expect(calls[0]!.headers).toEqual({
+      'if-match': '"2"',
+      'was-key-epoch': 'e2'
+    })
+  })
+
+  it('sends no was-key-epoch header when the write carries no epoch', async () => {
+    const { calls, port } = recordingPort()
+
+    await port.putContent({ id: 'a', data: { x: 1 }, ifNoneMatch: true })
+
+    expect(calls[0]!.headers).toEqual({ 'if-none-match': '*' })
+  })
+
+  it('sends { custom } on a metadata write that carries metadata', async () => {
+    const { calls, port } = recordingPort()
+
+    const metaVersion = await port.putMeta({
+      id: 'a',
+      custom: { jwe: 'x' },
+      ifMatch: '"1"'
+    })
+
+    expect(metaVersion).toBe(3)
+    expect(calls[0]).toMatchObject({
+      path: '/space/space-1/notes/a/meta',
+      method: 'PUT',
+      json: { custom: { jwe: 'x' } }
+    })
+  })
+
+  it('sends an empty body (the cleared state) when custom is absent', async () => {
+    // The /meta PUT is a full replace: a body with no `custom` member clears
+    // the resource's metadata, which is how a metadata clear replicates.
+    const { calls, port } = recordingPort()
+
+    await port.putMeta({ id: 'a', ifMatch: '"1"' })
+
+    expect(calls[0]!.json).toEqual({})
+    expect('custom' in (calls[0]!.json as object)).toBe(false)
   })
 })
 

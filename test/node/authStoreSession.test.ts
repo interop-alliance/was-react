@@ -35,6 +35,8 @@ import {
   restoreAppSession
 } from '../../src/identity/appSession.js'
 import { requestGrants } from '../../src/auth/loginFlow.js'
+import { parseGrants } from '../../src/grants.js'
+import { startWasSync } from '../../src/storage/wasSync.js'
 import { hasStore } from '../../src/storage/storageManager.js'
 import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
@@ -52,6 +54,7 @@ vi.mock('../../src/auth/loginFlow.js', async importOriginal => {
 })
 
 const requestGrantsMock = vi.mocked(requestGrants)
+const startWasSyncMock = vi.mocked(startWasSync)
 
 function baseConfig(collections: { key: string; id: string }[]): WasAppConfig {
   return {
@@ -90,6 +93,20 @@ function noteGrants(): IZcap[] {
     {
       id: 'urn:zcap:notes',
       invocationTarget: 'http://localhost:3999/space/space-1/notes'
+    }
+  ] as unknown as IZcap[]
+}
+
+/**
+ * An INTERNALLY CONSISTENT grant set for a different server origin (the same
+ * space id): what `parseGrants` alone cannot catch, and the reconnect
+ * continuity check exists for.
+ */
+function otherServerGrants(): IZcap[] {
+  return [
+    {
+      id: 'urn:zcap:notes',
+      invocationTarget: 'http://elsewhere.example:3999/space/space-1/notes'
     }
   ] as unknown as IZcap[]
 }
@@ -235,6 +252,94 @@ describe('reconnect() with a failing re-grant', () => {
     expect(await seedStore.loadSeed()).not.toBeNull()
     expect(store.getState().status).toBe('reconnect')
     expect(store.getState().reconnecting).toBe(false)
+  })
+})
+
+describe('reconnect() storage-location continuity', () => {
+  it('refuses a re-grant pointing at a different server', async () => {
+    const config = baseConfig([{ key: 'notes', id: 'notes' }])
+    const seedStore = newSeedStore()
+    const { store } = await connectedStore({ config, seedStore })
+    store.getState().notifyAccessExpired()
+    expect(store.getState().status).toBe('reconnect')
+    const syncCalls = startWasSyncMock.mock.calls.length
+
+    // Internally consistent grants -- for somebody else's server.
+    const grants = otherServerGrants()
+    requestGrantsMock.mockResolvedValue({
+      parsed: parseGrants(grants),
+      grants,
+      expires: futureIso(FAR_FUTURE_MS)
+    })
+
+    await store.getState().reconnect()
+
+    expect(store.getState().status).toBe('reconnect')
+    expect(store.getState().accessExpired).toBe(true)
+    expect(store.getState().reconnecting).toBe(false)
+    expect(store.getState().error).toMatch(/different storage location/)
+    // The session was never re-pointed: no replication against the new target.
+    expect(startWasSyncMock.mock.calls).toHaveLength(syncCalls)
+  })
+
+  it('lands connected when the re-grant keeps the same topology', async () => {
+    const config = baseConfig([{ key: 'notes', id: 'notes' }])
+    const seedStore = newSeedStore()
+    const { store } = await connectedStore({ config, seedStore })
+    store.getState().notifyAccessExpired()
+    const syncCalls = startWasSyncMock.mock.calls.length
+
+    const grants = noteGrants()
+    const expires = futureIso(FAR_FUTURE_MS)
+    requestGrantsMock.mockResolvedValue({
+      parsed: parseGrants(grants),
+      grants,
+      expires
+    })
+
+    await store.getState().reconnect()
+
+    expect(store.getState().status).toBe('connected')
+    expect(store.getState().accessExpired).toBe(false)
+    expect(store.getState().error).toBeNull()
+    expect(store.getState().expires).toBe(expires)
+    // Replication restarted under the renewed grants.
+    expect(startWasSyncMock.mock.calls.length).toBe(syncCalls + 1)
+  })
+})
+
+describe('near-expiry watch', () => {
+  it('raises the banner on a restore already inside the warning window', async () => {
+    // Ten minutes left against the default one-hour warning: the restore must
+    // land `connected` and then flip to `reconnect` on the deferred first
+    // check -- without waiting a full watch interval.
+    const config = baseConfig([{ key: 'notes', id: 'notes' }])
+    const { store } = await connectedStore({
+      config,
+      seedStore: newSeedStore(),
+      expires: futureIso(10 * 60 * 1000)
+    })
+
+    expect(store.getState().status).toBe('connected')
+    expect(store.getState().accessExpired).toBe(false)
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(store.getState().status).toBe('reconnect')
+    expect(store.getState().accessExpired).toBe(true)
+  })
+
+  it('leaves a far-future session connected', async () => {
+    const config = baseConfig([{ key: 'notes', id: 'notes' }])
+    const { store } = await connectedStore({
+      config,
+      seedStore: newSeedStore()
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(store.getState().status).toBe('connected')
+    expect(store.getState().accessExpired).toBe(false)
   })
 })
 

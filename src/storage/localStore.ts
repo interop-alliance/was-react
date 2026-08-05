@@ -227,6 +227,12 @@ export class LocalStore {
     // `updatedAt` (clientId tiebreak) rather than RxDB's default master-wins.
     // On a public collection the codec is pass-through, so the handler reads
     // those fields directly off the plaintext payload.
+    // The handler decrypts through the store's epoch-REFRESHING path once the
+    // instance exists (`storeHolder` is assigned below, before any replication
+    // can run), so a master written under an unseen key epoch triggers the
+    // one-shot descriptor re-read + cipher rebuild instead of scoring the
+    // master as undecryptable.
+    const storeHolder: { current: LocalStore | null } = { current: null }
     const collectionsConfig = Object.fromEntries(
       collections.map(({ key }) => {
         if (!ciphers[key]) {
@@ -241,6 +247,10 @@ export class LocalStore {
             // takes effect here too. `ciphers` is the same object the instance
             // holds as `#ciphers`, so the swap is visible.
             conflictHandler: makeLwwConflictHandler(envelope => {
+              const store = storeHolder.current
+              if (store) {
+                return store.decryptEnvelope(key, envelope)
+              }
               const cipher = ciphers[key]
               if (!cipher) {
                 throw new Error(`No cipher for collection "${key}".`)
@@ -255,7 +265,7 @@ export class LocalStore {
       collectionsConfig
     )) as unknown as Record<string, RxCollection<SyncedDoc>>
 
-    return new LocalStore({
+    const store = new LocalStore({
       db,
       collections: collectionsMap,
       ciphers,
@@ -264,6 +274,8 @@ export class LocalStore {
       keyResolver,
       descriptors: builtDescriptors
     })
+    storeHolder.current = store
+    return store
   }
 
   #collection(key: string): RxCollection<SyncedDoc> {
@@ -455,14 +467,21 @@ export class LocalStore {
     payload: T
   ): Promise<void> {
     const cipher = this.#cipher(key)
-    const { id: envelopeId, envelope } = await cipher.encrypt({
+    const {
+      id: envelopeId,
+      envelope,
+      epoch
+    } = await cipher.encrypt({
       data: payload as Json
     })
     await this.#collection(key).insert({
       id: envelopeId,
       updatedAt: new Date().toISOString(),
       version: 0,
-      data: envelope
+      data: envelope,
+      // The epoch the envelope was sealed under rides the content push as the
+      // `WAS-Key-Epoch` header (absent on a single-recipient cipher).
+      ...(epoch !== undefined && { epoch })
     })
     const index = await this.#ensureIndex(key)
     index.set(payload.id, envelopeId)
@@ -506,14 +525,23 @@ export class LocalStore {
       return
     }
     const cipher = this.#cipher(key)
-    const { envelope } = await cipher.encryptUpdate({
+    const { envelope, epoch } = await cipher.encryptUpdate({
       id: envelopeId,
       data: payload as Json,
       current
     })
-    await doc.incrementalPatch({
-      data: envelope,
-      updatedAt: new Date().toISOString()
+    // `incrementalModify` (not `incrementalPatch`): a re-encrypt under a
+    // single-recipient cipher must CLEAR a stale `epoch` stamp, and a patch
+    // cannot remove a field.
+    await doc.incrementalModify(docData => {
+      docData.data = envelope
+      docData.updatedAt = new Date().toISOString()
+      if (epoch !== undefined) {
+        docData.epoch = epoch
+      } else {
+        delete docData.epoch
+      }
+      return docData
     })
   }
 

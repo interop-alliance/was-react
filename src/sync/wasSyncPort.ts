@@ -183,14 +183,20 @@ export function createWasSyncPort({
       }
     },
 
-    async putContent({ id, data, ifMatch, ifNoneMatch }) {
+    async putContent({ id, data, ifMatch, ifNoneMatch, epoch }) {
       return conditionalWrite(() =>
         was.request({
           capability,
           path: resourcePath(id),
           method: 'PUT',
           json: data as object,
-          headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
+          // `epoch` rides as the `WAS-Key-Epoch` header so the server's stamp
+          // stays in step with the envelope (an absent epoch clears any prior
+          // stamp, per the `key-epochs` feature).
+          headers: writeHeaders({
+            precondition: { ifMatch, ifNoneMatch },
+            epoch
+          })
         })
       )
     },
@@ -229,7 +235,10 @@ export function createWasSyncPort({
           capability,
           path: `${resourcePath(id)}/meta`,
           method: 'PUT',
-          json: { custom },
+          // The `/meta` PUT is a full replacement of `custom`: a body with no
+          // `custom` member writes the CLEARED state (the server clears every
+          // property the body omits), which is how a metadata clear replicates.
+          json: custom === undefined ? {} : { custom },
           headers: writeHeaders({ precondition: { ifMatch, ifNoneMatch } })
         })
       )

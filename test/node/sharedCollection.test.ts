@@ -405,6 +405,126 @@ describe('SharedCollectionReader unknown-epoch refresh', () => {
   })
 })
 
+describe('SharedCollectionReader mid-session revoke', () => {
+  it('warns and skips the undecryptable resources instead of failing list()', async () => {
+    const { app, stale, readable, unreadable } = await revokeFixture()
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const remoteStore = fakeRemoteStore({
+        // Opened on the roster this app is in; the refresh the unknown epoch
+        // drives answers with no roster at all (access removed mid-session).
+        descriptors: [stale, undefined],
+        resources: {},
+        changes: [
+          { id: readable.id, data: readable.envelope },
+          { id: unreadable.id, data: unreadable.envelope }
+        ]
+      })
+      const reader = await SharedCollectionReader.open({
+        remoteStore,
+        keyAgreementKey: app.keyAgreementKey,
+        keyResolver: app.keyResolver,
+        collectionId: COLLECTION_ID
+      })
+
+      // The rebuild throws (access removed mid-session), so the reader degrades
+      // to the subset it could decrypt rather than rejecting.
+      expect(await reader.list()).toEqual([
+        { id: readable.id, data: { id: 'credential-1', title: 'before' } }
+      ])
+      expect(remoteStore.encryptionReads()).toBe(2)
+      const revokeWarnings = warn.mock.calls.filter(call =>
+        String(call[0]).includes('could not refresh its key-epoch roster')
+      )
+      expect(revokeWarnings).toHaveLength(1)
+
+      // A subsequent undecryptable resource is skipped too (no second refresh,
+      // no rejection).
+      expect(await reader.get(unreadable.id)).toBeUndefined()
+      expect(remoteStore.encryptionReads()).toBe(2)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('resolves get() to undefined when the rebuild itself fails', async () => {
+    const { app, stale, unreadable } = await revokeFixture()
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const reader = await SharedCollectionReader.open({
+        remoteStore: fakeRemoteStore({
+          descriptors: [stale, undefined],
+          resources: { [unreadable.id]: unreadable.envelope }
+        }),
+        keyAgreementKey: app.keyAgreementKey,
+        keyResolver: app.keyResolver,
+        collectionId: COLLECTION_ID
+      })
+      expect(await reader.get(unreadable.id)).toBeUndefined()
+      expect(warn).toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+/**
+ * A share withdrawn mid-session: the roster the reader opened on (`stale`, which
+ * one resource was written under) plus a resource written under a LATER epoch
+ * the stale descriptor does not carry, so reading it raises an unknown epoch.
+ * The refresh that unknown epoch drives then answers with no roster at all --
+ * access removed -- so the cipher rebuild itself fails.
+ */
+async function revokeFixture(): Promise<{
+  app: Awaited<ReturnType<typeof deriveIdentity>>
+  stale: CollectionEncryption
+  readable: { id: string; envelope: unknown }
+  unreadable: { id: string; envelope: unknown }
+}> {
+  const app = await deriveIdentity({ seed: APP_SEED })
+  const owner = await deriveIdentity({ seed: OWNER_SEED })
+  const extra = await deriveIdentity({ seed: EXTRA_SEED })
+  const appRecipient = walletSideRecipient({ did: app.controllerDid })
+  const extraRecipient = walletSideRecipient({ did: extra.controllerDid })
+  const stale = await mintRoster({
+    recipients: [
+      ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
+      { ...appRecipient, type: 'X25519KeyAgreementKey2020' },
+      { ...extraRecipient, type: 'X25519KeyAgreementKey2020' }
+    ]
+  })
+  const rotated = await rotateRoster({
+    descriptor: stale,
+    removeKid: extraRecipient.id
+  })
+  expect(rotated.currentEpoch).not.toBe(stale.currentEpoch)
+
+  const staleCipher = await createDocCipher({
+    keyAgreementKey: owner.keyAgreementKey,
+    keyResolver: owner.keyResolver,
+    collectionId: COLLECTION_ID,
+    encryption: stale
+  })
+  const rotatedCipher = await createDocCipher({
+    keyAgreementKey: owner.keyAgreementKey,
+    keyResolver: owner.keyResolver,
+    collectionId: COLLECTION_ID,
+    encryption: rotated
+  })
+  return {
+    app,
+    stale,
+    readable: await staleCipher.encrypt({
+      data: { id: 'credential-1', title: 'before' }
+    }),
+    unreadable: await rotatedCipher.encrypt({
+      data: { id: 'credential-2', title: 'after the rotation' }
+    })
+  }
+}
+
 /**
  * The common two-recipient setup: an owner (the wallet) and this app, a roster
  * wrapping the current epoch to both, and an `encrypt` that writes a payload as

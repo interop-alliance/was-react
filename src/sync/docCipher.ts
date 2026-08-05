@@ -27,15 +27,20 @@ import type { Json } from './types.js'
  * A per-collection document cipher. `encrypt` is the create path (mints a random
  * envelope id); `encryptUpdate` is the in-place update path (re-encrypts under
  * an existing id, advancing `sequence` from the prior envelope); `decrypt`
- * reverses either.
+ * reverses either. A multi-recipient (key-epoch) cipher also surfaces the
+ * `epoch` id it encrypted under, which rides the content push as the
+ * `WAS-Key-Epoch` header; a single-recipient cipher (and the plaintext codec)
+ * returns none.
  */
 export interface DocCipher {
-  encrypt(options: { data: Json }): Promise<{ id: string; envelope: Json }>
+  encrypt(options: {
+    data: Json
+  }): Promise<{ id: string; envelope: Json; epoch?: string }>
   encryptUpdate(options: {
     id: string
     data: Json
     current: Json
-  }): Promise<{ id: string; envelope: Json }>
+  }): Promise<{ id: string; envelope: Json; epoch?: string }>
   decrypt(options: { envelope: Json }): Promise<Json>
 }
 

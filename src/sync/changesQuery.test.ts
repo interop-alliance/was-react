@@ -74,6 +74,26 @@ describe('wireDocToRxDoc', () => {
     })
   })
 
+  it('carries the key epoch when the feed stamps one, and omits it otherwise', () => {
+    const stamped = wireDocToRxDoc({
+      id: 'abc',
+      _deleted: false,
+      updatedAt: '2026-01-01T00:00:00Z',
+      version: 3,
+      data: { hello: 'world' },
+      epoch: 'e2'
+    })
+    expect(stamped.epoch).toBe('e2')
+    const unstamped = wireDocToRxDoc({
+      id: 'abc',
+      _deleted: false,
+      updatedAt: '2026-01-01T00:00:00Z',
+      version: 3,
+      data: { hello: 'world' }
+    })
+    expect('epoch' in unstamped).toBe(false)
+  })
+
   it('projects a tombstone with no data and no metadata', () => {
     const doc: WireDoc = {
       id: 'gone',

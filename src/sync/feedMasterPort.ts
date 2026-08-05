@@ -51,6 +51,9 @@ function toMasterState(doc: WireDoc): MasterState {
   if (doc.custom !== undefined) {
     master.custom = doc.custom as Json
   }
+  if (doc.epoch !== undefined) {
+    master.epoch = doc.epoch
+  }
   return master
 }
 

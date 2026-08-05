@@ -66,14 +66,30 @@ export async function patchFromChange(
     scheduleRehydrate(registry, collectionKey)
     return
   }
+  // Capture the store BEFORE the decrypt await. This patch is fired floating
+  // off the RxDB change stream, so a logout/login teardown can clear or SWAP
+  // the process-wide holder while the decrypt is in flight; re-resolving the
+  // holder after the await would either throw (an unhandled rejection) or --
+  // worse -- write the previous session's payload and envelope id into the
+  // NEW session's replica. The captured store plus the identity re-check
+  // below makes a patch that outlives its store a silent no-op.
+  if (!hasStore()) {
+    return
+  }
+  const store = requireStore()
   let payload: { id: string }
   try {
-    payload = await requireStore().decryptEnvelope<{ id: string }>(
+    payload = await store.decryptEnvelope<{ id: string }>(
       collectionKey,
       envelope
     )
   } catch {
     scheduleRehydrate(registry, collectionKey)
+    return
+  }
+  // Bail if the holder changed or closed across the await: this event belongs
+  // to the torn-down session, not the one now live.
+  if (!hasStore() || requireStore() !== store) {
     return
   }
   if (deleted) {
@@ -82,14 +98,14 @@ export async function patchFromChange(
     // a stale duplicate being cleaned up (a reconciled singleton loser, or the
     // pre-resurrection row of a locally re-created doc) -- dropping the live
     // doc for it would undo the reconciliation/resurrection.
-    const mapped = requireStore().envelopeIdFor(collectionKey, payload.id)
+    const mapped = store.envelopeIdFor(collectionKey, payload.id)
     if (mapped !== undefined && mapped !== row.id) {
       return
     }
-    requireStore().forgetEnvelope(collectionKey, payload.id)
+    store.forgetEnvelope(collectionKey, payload.id)
     entry.drop(payload.id)
   } else {
-    requireStore().rememberEnvelope(collectionKey, payload.id, row.id)
+    store.rememberEnvelope(collectionKey, payload.id, row.id)
     entry.upsert(payload)
   }
 }

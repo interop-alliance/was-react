@@ -27,8 +27,8 @@ importers:
         specifier: ^11.0.6
         version: 11.0.6
       '@interop/verifier-core':
-        specifier: ^3.5.2
-        version: 3.5.2
+        specifier: ^3.5.3
+        version: 3.5.3
       '@interop/wallet-core':
         specifier: ^0.16.0
         version: 0.16.0(@interop/jsonld-signatures@11.8.4)
@@ -788,8 +788,8 @@ packages:
     resolution: {integrity: sha512-3NiJ1Pdb3jfFD9ad0nC5WZcGHtHex0cgfiALR17v+wWnRPjipfXHb1ojHcFPFOHjVMqGEHOgydt8THMfd7movA==}
     engines: {node: '>=24.0'}
 
-  '@interop/verifier-core@3.5.2':
-    resolution: {integrity: sha512-QPPl0k14Mk3m+bvNTi92rQOgT0kvDb1mOVguzxuWQ2pwl1NwDmpryy8qofdFgtkGITrnYz9qUZFAwk+9306H5Q==}
+  '@interop/verifier-core@3.5.3':
+    resolution: {integrity: sha512-3cFFlZZz8mKwLiT8GFLeL3Nr49UOO7fP77Cwj7mEXWh15S/OKEpqpAHEePQ9p1T7fusbUVVmk7W+/AVHU1r1Fw==}
     engines: {node: '>=24.0'}
 
   '@interop/wallet-core@0.16.0':
@@ -4316,7 +4316,7 @@ snapshots:
       '@interop/jsonld-signatures': 11.8.4
       credentials-context: 2.0.0
 
-  '@interop/verifier-core@3.5.2':
+  '@interop/verifier-core@3.5.3':
     dependencies:
       '@interop/data-integrity-core': 8.4.0
       '@interop/data-integrity-proof': 3.4.3

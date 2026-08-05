@@ -105,19 +105,36 @@ export async function verifyLoginPresentation({
 
   const rawProof = (presentation as { proof?: VpProof | VpProof[] }).proof
   const proofs = Array.isArray(rawProof) ? rawProof : rawProof ? [rawProof] : []
-  const authProof = proofs.find(
-    proof => proof.proofPurpose === 'authentication'
-  )
-  if (!authProof) {
+  if (proofs.length === 0) {
     throw new Error('Wallet presentation carries no authentication proof.')
   }
-  if (authProof.challenge !== challenge) {
-    throw new Error('Wallet presentation challenge does not match.')
-  }
-  if (authProof.domain !== domain) {
+  // Belt-and-suspenders against a mixed proof set: the crypto layer selects ONE
+  // purpose for the whole set and skips non-matching proofs, so a proof under
+  // any OTHER purpose is one this verification may never have signature-checked
+  // -- and the challenge/domain checks below are only meaningful on a proof
+  // that provably verified. Requiring every presentation-level proof to be an
+  // authentication proof keeps this library failing closed even against an
+  // older `@interop/verifier-core` whose purpose selection reads `proof[0]`
+  // alone (a VP ordered `[assertionMethod, authentication]` would otherwise
+  // verify under AssertionProofPurpose with the authentication proof -- the
+  // only freshness bind -- never touched by a signature check).
+  if (proofs.some(proof => proof.proofPurpose !== 'authentication')) {
     throw new Error(
-      `Wallet presentation domain "${authProof.domain ?? ''}" does not match "${domain}".`
+      'Wallet presentation carries a non-authentication proof; every ' +
+        'presentation-level proof must be an authentication proof.'
     )
+  }
+  // Every proof in the set was verified under AuthenticationProofPurpose, so
+  // require the fresh challenge and this app's domain on each of them.
+  for (const proof of proofs) {
+    if (proof.challenge !== challenge) {
+      throw new Error('Wallet presentation challenge does not match.')
+    }
+    if (proof.domain !== domain) {
+      throw new Error(
+        `Wallet presentation domain "${proof.domain ?? ''}" does not match "${domain}".`
+      )
+    }
   }
 }
 

@@ -44,6 +44,9 @@ export function wireDocToRxDoc(doc: WireDoc): WithDeleted<SyncedDoc> {
   if (doc.custom !== undefined) {
     rxDoc.custom = doc.custom
   }
+  if (doc.epoch !== undefined) {
+    rxDoc.epoch = doc.epoch
+  }
   return rxDoc
 }
 

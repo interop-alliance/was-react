@@ -322,6 +322,7 @@ export function createAuthStore({
   const watchMs = config.expiry?.watchMs ?? DEFAULT_EXPIRY_WATCH_MS
 
   let expiryTimer: ReturnType<typeof setInterval> | undefined
+  let expiryInitialCheck: ReturnType<typeof setTimeout> | undefined
   // The per-session controller: single-use, stopped on logout and replaced on a
   // reconnect (started once per grant set).
   let controller: SyncController | null = null
@@ -364,12 +365,23 @@ export function createAuthStore({
       clearInterval(expiryTimer)
       expiryTimer = undefined
     }
+    if (expiryInitialCheck) {
+      clearTimeout(expiryInitialCheck)
+      expiryInitialCheck = undefined
+    }
   }
 
   /**
    * Watches the session's earliest grant expiry and raises the reconnect banner
-   * once it is within `warningMs` (or already past). Checks immediately, then on
-   * a coarse interval; re-armed with the fresh expiry after a reconnect.
+   * once it is within `warningMs` (or already past). The first check is
+   * DEFERRED a macrotask rather than run synchronously: every caller awaits
+   * `persistAndStartSync` (which arms this watch) BEFORE writing
+   * `status: 'connected'` / `accessExpired: false`, so a synchronous check
+   * would always be swallowed by `notifyAccessExpired`'s connected gate and
+   * then actively cleared -- leaving a restored near-expiry session without
+   * its proactive banner until the first `watchMs` tick. Deferring runs the
+   * check after the caller's continuation has set the status. Then checks on a
+   * coarse interval; re-armed with the fresh expiry after a reconnect.
    */
   function armExpiryWatch(expires: string): void {
     disarmExpiryWatch()
@@ -378,7 +390,7 @@ export function createAuthStore({
         store.getState().notifyAccessExpired()
       }
     }
-    check()
+    expiryInitialCheck = setTimeout(check, 0)
     expiryTimer = setInterval(check, watchMs)
   }
 
@@ -473,9 +485,24 @@ export function createAuthStore({
       keyAgreementKey: identity.keyAgreementKey,
       keyResolver: identity.keyResolver
     })
-    void pendingSync.catch(err =>
+    // A failed bootstrap must not resolve silently: surface it on the session
+    // `error` (the sync rollup shows the per-collection error statuses the
+    // controller leaves behind). The session stays usable -- local-first --
+    // but the UI no longer reports "Local only" over a wallet-connected
+    // session that simply failed to start replicating.
+    void pendingSync.catch(err => {
       console.warn('WAS sync failed to start:', err)
-    )
+      // Deferred a macrotask: an immediate bootstrap failure would otherwise
+      // race the caller's own `set({ ..., error: null })` (which lands right
+      // after `persistAndStartSync` resolves) and be wiped by it.
+      setTimeout(
+        () =>
+          store.setState({
+            error: `Sync failed to start: ${errorMessage(err)}`
+          }),
+        0
+      )
+    })
     armExpiryWatch(expires)
   }
 
@@ -729,10 +756,22 @@ export function createAuthStore({
    * are OFF the serialized boot/destroy lifecycle chain). Re-deriving from the
    * seed keeps the collect independent of the holder's lifecycle.
    *
+   * Decides off the caller's PRE-FLOW snapshot of `{ status, controllerDid }`,
+   * never the live state: a provider unmount (a route change or StrictMode
+   * remount) firing `destroy` while the CHAPI popup is open resets the live
+   * status to `boot`, and reading it here would silently collect nothing --
+   * an `adopt: 'merge'` login would then resolve successfully while the
+   * user's pre-login data never reaches their Web Space.
+   *
+   * @param snapshot {object}   the caller's state snapshot from before its
+   *   first await
    * @returns {Promise<AdoptSource | null>}
    */
-  async function collectAdoptable(): Promise<AdoptSource | null> {
-    const { status, controllerDid } = store.getState()
+  async function collectAdoptable(snapshot: {
+    status: SessionStatus
+    controllerDid: string | null
+  }): Promise<AdoptSource | null> {
+    const { status, controllerDid } = snapshot
     if (status !== 'local' || controllerDid === null) {
       return null
     }
@@ -779,17 +818,20 @@ export function createAuthStore({
    * has been adopted yet; `local` survives intact) and rethrows.
    *
    * @param adopt {'merge' | 'leave'}
+   * @param snapshot {object}   the caller's pre-flow `{ status, controllerDid }`
+   *   snapshot (see {@link collectAdoptable})
    * @returns {Promise<AdoptSource | null>}
    */
   async function detachAndCollect(
-    adopt: 'merge' | 'leave'
+    adopt: 'merge' | 'leave',
+    snapshot: { status: SessionStatus; controllerDid: string | null }
   ): Promise<AdoptSource | null> {
     await deactivateStore()
     if (adopt !== 'merge') {
       return null
     }
     try {
-      return await collectAdoptable()
+      return await collectAdoptable(snapshot)
     } catch (err) {
       await openLocal()
       throw err
@@ -800,18 +842,29 @@ export function createAuthStore({
    * Deletes the adopted anonymous replica -- its persisted seed and its
    * per-controller database -- so the data lives on only in the connected
    * replica and a later logout lands in a genuinely fresh `local`. Called only
-   * after the connected activation has succeeded; any earlier failure leaves
-   * the anonymous replica intact for the fallback to re-open.
+   * after the connected activation has landed (status written); any earlier
+   * failure leaves the anonymous replica intact for the fallback to re-open.
+   *
+   * Best-effort: a deletion failure (an anonymous Dexie database still open in
+   * another tab, an IndexedDB quota error) is logged and swallowed. The
+   * connected session is already live and syncing at this point, so failing
+   * the login over its cleanup would report `local` over a genuinely connected
+   * session; at worst a stale anonymous replica lingers and its (already
+   * merged) payloads are re-collected by a later login's idempotent LWW merge.
    *
    * @param controllerDid {string}   the anonymous controller DID
    * @returns {Promise<void>}
    */
   async function discardAnonReplica(controllerDid: string): Promise<void> {
-    await anonStore.clearSeedStore()
-    await LocalStore.removeDatabase({
-      dbName: dbNameForController({ dbName, controllerDid }),
-      ...(storage && { storage })
-    })
+    try {
+      await anonStore.clearSeedStore()
+      await LocalStore.removeDatabase({
+        dbName: dbNameForController({ dbName, controllerDid }),
+        ...(storage && { storage })
+      })
+    } catch (err) {
+      console.warn('Failed to delete the adopted anonymous replica:', err)
+    }
   }
 
   // Declared last so `prefer-const` is satisfied; the lifecycle closures above
@@ -913,6 +966,14 @@ export function createAuthStore({
         if (get().authenticating || get().status === 'connected') {
           return null
         }
+        // Snapshot the pre-login state BEFORE the popup await: a provider
+        // unmount (`destroy`) landing while CHAPI is open resets the live
+        // status to `boot`, and the adoption collect must still see the
+        // `local` session this login left.
+        const preLogin = {
+          status: get().status,
+          controllerDid: get().controllerDid
+        }
         set({ authenticating: true, error: null, phase: 'connecting' })
         try {
           const outcome = await loginWithWallet({
@@ -924,7 +985,7 @@ export function createAuthStore({
           // The anonymous seed and database are deleted only after the
           // activation lands, so a failure below still falls back to an intact
           // `local`.
-          const source = await detachAndCollect(adopt)
+          const source = await detachAndCollect(adopt, preLogin)
           await activateConnected({
             seed: outcome.seed,
             identity: outcome.identity,
@@ -933,9 +994,6 @@ export function createAuthStore({
             expires: outcome.expires,
             ...(source && { adopt: source })
           })
-          if (source) {
-            await discardAnonReplica(source.controllerDid)
-          }
           set({
             status: 'connected',
             authenticating: false,
@@ -945,6 +1003,12 @@ export function createAuthStore({
             error: null,
             accessExpired: false
           })
+          // Adopted-replica cleanup runs AFTER the connected status lands (and
+          // is best-effort): a cleanup failure must not leave the session
+          // reporting `local` over a live, syncing connected session.
+          if (source) {
+            await discardAnonReplica(source.controllerDid)
+          }
           return { firstRun: outcome.firstRun }
         } catch (err) {
           // A cancel is not a failure: clear the in-flight flags without leaving a
@@ -983,12 +1047,16 @@ export function createAuthStore({
           if (get().status === 'connected') {
             return
           }
+          const preConnect = {
+            status: get().status,
+            controllerDid: get().controllerDid
+          }
           const identity = await initAppSession({ seed })
           const parsed = parseGrants(grants)
           const expires =
             earliestExpiry(grants) ??
             new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
-          const source = await detachAndCollect(adopt)
+          const source = await detachAndCollect(adopt, preConnect)
           await activateConnected({
             seed,
             identity,
@@ -997,9 +1065,6 @@ export function createAuthStore({
             expires,
             ...(source && { adopt: source })
           })
-          if (source) {
-            await discardAnonReplica(source.controllerDid)
-          }
           set({
             status: 'connected',
             controllerDid: identity.controllerDid,
@@ -1007,6 +1072,10 @@ export function createAuthStore({
             error: null,
             accessExpired: false
           })
+          // After the status lands, and best-effort (see `discardAnonReplica`).
+          if (source) {
+            await discardAnonReplica(source.controllerDid)
+          }
         })
       },
 
@@ -1027,7 +1096,37 @@ export function createAuthStore({
             return
           }
           const identity = await initAppSession({ seed })
+          // The live session's storage location, for the continuity check
+          // below. Read before the popup so the comparison baseline cannot be
+          // overwritten mid-flow.
+          const record = (await sessionStore.loadRecord()) as {
+            serverUrl?: unknown
+            spaceId?: unknown
+          } | null
           const checked = await requestGrants({ identity, config: loginConfig })
+          // Continuity check: `parseGrants` only asserts the returned set is
+          // INTERNALLY consistent. Without this comparison, a reconnect
+          // returning internally-consistent grants for a DIFFERENT server or
+          // space would silently re-point the whole encrypted replica (whose
+          // database name derives from the controller DID alone) at a new
+          // storage location the user never chose. Refuse instead; switching
+          // storage is a logout + fresh login, an explicit user action.
+          if (
+            record !== null &&
+            typeof record.serverUrl === 'string' &&
+            typeof record.spaceId === 'string' &&
+            (checked.parsed.serverUrl !== record.serverUrl ||
+              checked.parsed.spaceId !== record.spaceId)
+          ) {
+            throw new Error(
+              `The renewed grants point at a different storage location ` +
+                `("${checked.parsed.serverUrl}", space ` +
+                `"${checked.parsed.spaceId}") than this session's ` +
+                `("${record.serverUrl}", space "${record.spaceId}"). ` +
+                `Refusing to re-point the session; log out and log in again ` +
+                `to switch storage.`
+            )
+          }
           await stopController()
           await persistAndStartSync({
             seed,

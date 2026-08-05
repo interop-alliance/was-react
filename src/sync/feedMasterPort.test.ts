@@ -94,6 +94,18 @@ describe('withFeedMasterRead get', () => {
     })
   })
 
+  it('carries the key epoch stamp into the master state', async () => {
+    const base = fakeBasePort({
+      pages: [[wire({ id: 'r1', version: 7, data: { a: 1 }, epoch: 'e3' })]]
+    })
+    const port = withFeedMasterRead(base)
+
+    expect(await port.get({ id: 'r1' })).toMatchObject({
+      version: 7,
+      epoch: 'e3'
+    })
+  })
+
   it('returns null when the scan reaches the feed end without the resource', async () => {
     // A completed scan (checkpoint: null) that never saw the id: genuinely
     // absent (a delete/delete race), so the conflict assembler tombstones it.

@@ -52,7 +52,7 @@
     "@interop/ezcap": "^7.4.1",
     "@interop/security-document-loader": "^9.5.1",
     "@interop/vc": "^11.0.6",
-    "@interop/verifier-core": "^3.5.2",
+    "@interop/verifier-core": "^3.5.3",
     "@interop/wallet-core": "^0.16.0",
     "@interop/was-client": "^0.26.0",
     "@interop/webkms-client": "^14.7.1",

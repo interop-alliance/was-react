@@ -8,11 +8,16 @@
  * sequence advances) / delete, and that the at-rest row is ciphertext only. A
  * second block covers PUBLIC (plaintext) collections: payloads stored as-is
  * under their own logical id, alongside a private collection in the same store.
+ * A third covers the row-level key-epoch stamp: a multi-recipient write persists
+ * the epoch it sealed under, and a single-recipient re-encrypt clears a stale
+ * one (so the push clears the server's stamp too).
  *
  * @vitest-environment node
  */
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it } from 'vitest'
+import { initRecipients, ownerRecipient } from '@interop/was-client/edv'
+import type { CollectionEncryption } from '@interop/was-client'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import type { WasCollectionConfig } from '../../src/config.js'
@@ -55,15 +60,55 @@ async function identityKeys() {
 
 async function openStore(
   dbName: string,
-  collections: WasCollectionConfig[] = COLLECTIONS
+  collections: WasCollectionConfig[] = COLLECTIONS,
+  descriptors?: Record<string, CollectionEncryption>
 ): Promise<LocalStore> {
   const store = await LocalStore.init({
     ...(await identityKeys()),
     collections,
-    dbName
+    dbName,
+    ...(descriptors && { descriptors })
   })
   openStores.push(store)
   return store
+}
+
+/**
+ * A one-epoch encryption descriptor whose sole recipient is the app's identity
+ * KAK, minted with was-client's own `initRecipients` against an in-memory
+ * collection stub (the same shape the offline descriptor cache holds).
+ */
+async function mintDescriptor(): Promise<CollectionEncryption> {
+  const { keyAgreementKey } = await identityKeys()
+  let description: Record<string, unknown> = {
+    name: COLLECTION,
+    encryption: { scheme: 'edv' }
+  }
+  const collection = {
+    async describeWithEtag() {
+      return { description: { ...description }, etag: 'etag-0' }
+    },
+    async replaceDescription(next: Record<string, unknown>) {
+      description = next
+    }
+  }
+  return initRecipients({
+    collection: collection as unknown as Parameters<
+      typeof initRecipients
+    >[0]['collection'],
+    recipients: [ownerRecipient({ keyAgreementKey })]
+  })
+}
+
+/**
+ * The single at-rest ROW of a collection (envelope plus its sync metadata).
+ */
+async function rawRow(
+  store: LocalStore
+): Promise<{ id: string; epoch?: string }> {
+  const rows = await store.rxCollection(COLLECTION).find().exec()
+  expect(rows).toHaveLength(1)
+  return rows[0]!.toMutableJSON() as unknown as { id: string; epoch?: string }
 }
 
 function makeNote(title: string): NoteDoc {
@@ -234,6 +279,52 @@ describe('LocalStore entity CRUD', () => {
     // the underlying store, unlike close which keeps the data).
     const reopened = await openStore(dbName)
     expect(await reopened.listEntities<NoteDoc>(COLLECTION)).toHaveLength(0)
+  })
+})
+
+describe('LocalStore key-epoch stamping', () => {
+  it('persists the epoch the envelope was sealed under onto the row', async () => {
+    const encryption = await mintDescriptor()
+    const store = await openStore(
+      `was-react-test-${++dbCounter}`,
+      COLLECTIONS,
+      {
+        [COLLECTION]: encryption
+      }
+    )
+    const note = makeNote('Sealed under an epoch')
+
+    await store.insertEntity(COLLECTION, note)
+    // The stamp rides the content push as the `WAS-Key-Epoch` header.
+    expect((await rawRow(store)).epoch).toBe(encryption.currentEpoch)
+
+    // A re-encrypt under the same multi-recipient cipher keeps it.
+    await store.updateEntity(COLLECTION, { ...note, title: 'Still sealed' })
+    expect((await rawRow(store)).epoch).toBe(encryption.currentEpoch)
+    expect(await store.listEntities<NoteDoc>(COLLECTION)).toHaveLength(1)
+  })
+
+  it('clears a stale epoch when the re-encrypt is single-recipient', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    const note = makeNote('Stamped once')
+    await store.insertEntity(COLLECTION, note)
+    // A single-recipient cipher stamps nothing.
+    expect((await rawRow(store)).epoch).toBeUndefined()
+
+    // Stamp the row as an earlier multi-recipient write (or a pulled row that
+    // carried the server's stamp) would have.
+    const rows = await store.rxCollection(COLLECTION).find().exec()
+    await rows[0]!.incrementalModify(docData => {
+      docData.epoch = 'epoch-stale'
+      return docData
+    })
+    expect((await rawRow(store)).epoch).toBe('epoch-stale')
+
+    await store.updateEntity(COLLECTION, { ...note, title: 'Re-encrypted' })
+
+    // The stale stamp is REMOVED (not merely left behind), so the push clears
+    // the server's stamp too.
+    expect((await rawRow(store)).epoch).toBeUndefined()
   })
 })
 

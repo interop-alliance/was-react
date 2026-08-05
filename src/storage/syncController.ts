@@ -236,7 +236,37 @@ export class SyncController {
       }
     } catch (err) {
       console.error('Failed to start sync controller:', err)
-      await this.stop()
+      // Unwind the partial bring-up WITHOUT `stop()`: its terminal `#stopped`
+      // latch would permanently prevent a later `start()` on this session, and
+      // its status reset would leave the rollup reporting "Local only" over a
+      // wallet-connected session that failed to start replicating. Instead the
+      // per-collection statuses are left at `error` (visible in the rollup)
+      // and the error RETHROWS so the caller's bootstrap promise rejects and
+      // the session can surface it.
+      if (this.#onlineHandler) {
+        window.removeEventListener('online', this.#onlineHandler)
+        this.#onlineHandler = undefined
+      }
+      if (this.#pollTimer) {
+        clearInterval(this.#pollTimer)
+        this.#pollTimer = undefined
+      }
+      for (const { state, subscriptions } of this.#replications) {
+        for (const subscription of subscriptions) {
+          subscription.unsubscribe()
+        }
+        try {
+          await state.cancel()
+        } catch (cancelErr) {
+          console.error('Error cancelling replication:', cancelErr)
+        }
+      }
+      this.#replications = []
+      this.#started = false
+      for (const { id } of this.#collections) {
+        setStatus(id, 'error')
+      }
+      throw err
     }
   }
 

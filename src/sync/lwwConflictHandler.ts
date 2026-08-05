@@ -41,11 +41,19 @@
  *    Without this rule the equal-`data` case would fall through to rule 3, where
  *    the two payloads compare equal and the tie keeps the local (stale) `custom`,
  *    silently clobbering the committed metadata.
- * 3. Both sides carry an LWW payload: pure payload LWW via `payloadWins`.
- * 4. A live local edit vs an incomparable remote (e.g. a remote tombstone):
+ * 3. An UNDECRYPTABLE side (the decrypt threw -- e.g. an envelope written under
+ *    a key epoch this device has not seen) is never scored as the loser: it is
+ *    presumed newer, not absent. An undecryptable master is adopted (never
+ *    re-pushed over with the possibly-older local payload); an undecryptable
+ *    local row is re-asserted (the user's edit is not silently dropped); both
+ *    undecryptable adopts the master (deterministic and convergent). Each case
+ *    is logged -- distinguishable from the intended tombstone/absent-body
+ *    `null` the remaining rules were written for.
+ * 4. Both sides carry an LWW payload: pure payload LWW via `payloadWins`.
+ * 5. A live local edit vs an incomparable remote (e.g. a remote tombstone):
  *    the edit wins and is re-pushed (resurrection).
- * 5. Everything else -- a local tombstone vs a REAL remote content change, or
- *    both sides incomparable: the master wins. Together with rule 4 this makes
+ * 6. Everything else -- a local tombstone vs a REAL remote content change, or
+ *    both sides incomparable: the master wins. Together with rule 5 this makes
  *    the delete-vs-concurrent-edit rule "the edit wins" on every replica: a
  *    tombstone carries no LWW payload of its own, so a genuine racing edit
  *    deterministically survives, whichever write reached the server first.
@@ -70,16 +78,28 @@ function bodiesEqual(a: Json | undefined, b: Json | undefined): boolean {
 }
 
 /**
- * Decrypts one side's envelope into its `{ updatedAt, clientId }`, or `null`
- * when the side has no decryptable payload (a tombstone, or an absent/corrupt
- * body). `null` means "no comparable timestamp", handled by the caller.
+ * One side's comparability for the LWW rules: `payload` (a decrypted LWW
+ * stamp), `none` (a tombstone, an absent body, or a payload carrying no LWW
+ * stamp), or `undecryptable` (the decrypt THREW -- e.g. an envelope written
+ * under an unseen key epoch). `none` and `undecryptable` are deliberately
+ * distinct: the former means "nothing there to compare", the latter means
+ * "something is there that this device cannot read", and scoring the two the
+ * same silently loses writes.
+ */
+type LwwSide =
+  | { kind: 'payload'; payload: LwwPayload }
+  | { kind: 'none' }
+  | { kind: 'undecryptable'; err: unknown }
+
+/**
+ * Decrypts one side's envelope into its LWW comparability (see {@link LwwSide}).
  */
 async function lwwFieldsOf(
   doc: WithDeleted<SyncedDoc>,
   decrypt: (envelope: Json) => Promise<Json>
-): Promise<LwwPayload | null> {
+): Promise<LwwSide> {
   if (doc._deleted || doc.data === undefined) {
-    return null
+    return { kind: 'none' }
   }
   try {
     const payload = (await decrypt(doc.data)) as Partial<LwwPayload>
@@ -87,11 +107,14 @@ async function lwwFieldsOf(
       typeof payload.updatedAt === 'string' &&
       typeof payload.clientId === 'string'
     ) {
-      return { updatedAt: payload.updatedAt, clientId: payload.clientId }
+      return {
+        kind: 'payload',
+        payload: { updatedAt: payload.updatedAt, clientId: payload.clientId }
+      }
     }
-    return null
-  } catch {
-    return null
+    return { kind: 'none' }
+  } catch (err) {
+    return { kind: 'undecryptable', err }
   }
 }
 
@@ -173,16 +196,45 @@ export function makeLwwConflictHandler(
         lwwFieldsOf(realMasterState, decrypt),
         lwwFieldsOf(newDocumentState, decrypt)
       ])
-      // Rule 3 -- both sides comparable: pure payload LWW.
-      if (remote && local) {
-        return payloadWins(remote, local) ? realMasterState : newDocumentState
+      // Rule 3 -- an undecryptable side is never scored as the loser: it is
+      // presumed newer (typically an envelope under an unseen key epoch), not
+      // absent. Logged so it is distinguishable from a genuine tombstone.
+      if (remote.kind === 'undecryptable' || local.kind === 'undecryptable') {
+        if (remote.kind === 'undecryptable' && local.kind !== 'undecryptable') {
+          console.warn(
+            'LWW conflict: the remote master did not decrypt; adopting it ' +
+              'rather than re-pushing the local payload over it.',
+            remote.err
+          )
+          return realMasterState
+        }
+        if (local.kind === 'undecryptable' && remote.kind !== 'undecryptable') {
+          console.warn(
+            'LWW conflict: the local row did not decrypt; re-asserting it ' +
+              'rather than dropping the local edit for the master.',
+            local.err
+          )
+          return newDocumentState
+        }
+        console.warn(
+          'LWW conflict: neither side decrypted; adopting the master ' +
+            '(deterministic and convergent).',
+          remote.kind === 'undecryptable' ? remote.err : undefined
+        )
+        return realMasterState
       }
-      // Rule 4 -- a live local edit against a remote tombstone (or otherwise
+      // Rule 4 -- both sides comparable: pure payload LWW.
+      if (remote.kind === 'payload' && local.kind === 'payload') {
+        return payloadWins(remote.payload, local.payload)
+          ? realMasterState
+          : newDocumentState
+      }
+      // Rule 5 -- a live local edit against a remote tombstone (or otherwise
       // incomparable remote): keep the edit (resurrect / re-assert the write).
-      if (local && !remote) {
+      if (local.kind === 'payload' && remote.kind === 'none') {
         return newDocumentState
       }
-      // Rule 5 -- everything else (a local tombstone racing a REAL remote
+      // Rule 6 -- everything else (a local tombstone racing a REAL remote
       // content change, or both incomparable): the master wins, which is
       // deterministic and convergent across replicas (the edit survives the
       // delete on every device).

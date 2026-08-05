@@ -44,6 +44,33 @@ function makeFakeStore({
   return { store, remembered, forgotten }
 }
 
+// A fake LocalStore whose `decryptEnvelope` only settles once the returned
+// `release` is called: it lets a test tear down (or swap) the process-wide
+// holder while a patch's decrypt is still in flight.
+function makeGatedStore(): {
+  store: LocalStore
+  remembered: Array<[string, string, string]>
+  release: () => void
+} {
+  const remembered: Array<[string, string, string]> = []
+  let release = () => {}
+  const gate = new Promise<void>(resolve => {
+    release = resolve
+  })
+  const store = {
+    decryptEnvelope: async (_key: string, envelope: Json) => {
+      await gate
+      return (envelope as { jwe: Json }).jwe
+    },
+    rememberEnvelope: (key: string, uuid: string, envelopeId: string) => {
+      remembered.push([key, uuid, envelopeId])
+    },
+    forgetEnvelope: () => {},
+    envelopeIdFor: () => undefined
+  } as unknown as LocalStore
+  return { store, remembered, release: () => release() }
+}
+
 // A fake registry entry that records what the mechanism drives.
 function makeRegistry(): {
   registry: StoreRegistry
@@ -187,6 +214,56 @@ describe('rehydrate mechanism', () => {
       })
       expect(calls.upsert).toEqual([])
       expect(calls.drop).toEqual([])
+    })
+
+    it('is a silent no-op when no store is set at entry', async () => {
+      clearLocalStore()
+      const { registry, calls } = makeRegistry()
+      await patchFromChange(registry, 'notes', {
+        operation: 'INSERT',
+        documentData: { id: 'env-1', data: envelope({ id: 'note-1' }) }
+      })
+      expect(calls.upsert).toEqual([])
+      expect(calls.drop).toEqual([])
+      expect(calls.hydrate).toBe(0)
+    })
+
+    it('writes nothing when the store is cleared across the decrypt await', async () => {
+      const { store, remembered, release } = makeGatedStore()
+      setLocalStore(store)
+      const { registry, calls } = makeRegistry()
+      // Fired floating off the change stream, as replication does.
+      const patched = patchFromChange(registry, 'notes', {
+        operation: 'INSERT',
+        documentData: { id: 'env-1', data: envelope({ id: 'note-1' }) }
+      })
+      // A logout tears the holder down mid-decrypt.
+      clearLocalStore()
+      release()
+      // Resolves rather than rejecting (no unhandled rejection off the stream).
+      await expect(patched).resolves.toBeUndefined()
+      expect(calls.upsert).toEqual([])
+      expect(calls.drop).toEqual([])
+      expect(remembered).toEqual([])
+    })
+
+    it('writes nothing when the holder is SWAPPED across the decrypt await', async () => {
+      const previous = makeGatedStore()
+      setLocalStore(previous.store)
+      const { registry, calls } = makeRegistry()
+      const patched = patchFromChange(registry, 'notes', {
+        operation: 'INSERT',
+        documentData: { id: 'env-1', data: envelope({ id: 'note-1' }) }
+      })
+      // A logout/login re-bootstrap swaps in a NEW store for the new session.
+      const next = makeFakeStore()
+      setLocalStore(next.store)
+      previous.release()
+      await expect(patched).resolves.toBeUndefined()
+      // The previous session's payload never reaches the new session's replica.
+      expect(calls.upsert).toEqual([])
+      expect(next.remembered).toEqual([])
+      expect(previous.remembered).toEqual([])
     })
 
     it('schedules a re-hydrate when the envelope is missing', async () => {

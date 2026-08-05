@@ -64,6 +64,11 @@ pnpm add react zustand rxdb
 `@interop/was-react/mui` entry additionally needs `@mui/material`,
 `@mui/icons-material`, and `react-router`; the core entry never imports them.
 
+No particular bundler is required: the library reads `import.meta.env.MODE` (a
+Vite convention) only defensively, so webpack / Rspack / Parcel builds and Node
+SSR imports work; without it, non-production-only affordances (the e2e CHAPI
+bridge) simply stay off.
+
 ```
 pnpm add @mui/material @mui/icons-material @emotion/react @emotion/styled react-router
 ```

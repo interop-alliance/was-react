@@ -44,9 +44,20 @@ interface E2eBridgeWindow extends Window {
   __WAS_REACT_E2E_CHAPI_RESPONSES__?: Record<number, ChapiWireResponse | null>
 }
 
+/**
+ * The build mode, read defensively: `import.meta.env` exists only under Vite
+ * (a devDependency here, not a required consumer toolchain), so a webpack /
+ * Rspack / Parcel bundle -- or a Node SSR import -- has no `env` object at
+ * all. Treat that as a production build (the safe direction: the e2e bridge
+ * stays off).
+ */
+function buildMode(): string {
+  return import.meta.env?.MODE ?? 'production'
+}
+
 function e2eBridgeActive(): boolean {
   return (
-    import.meta.env.MODE !== 'production' &&
+    buildMode() !== 'production' &&
     (window as E2eBridgeWindow).__WAS_REACT_E2E_CHAPI__ === true
   )
 }

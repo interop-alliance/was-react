@@ -58,6 +58,12 @@ export interface WireDoc {
   metaVersion?: number
   data?: Json
   custom?: Json
+  /**
+   * The opaque key-epoch id the content body was encrypted under (the
+   * `key-epochs` feature), present when the server holds a stamp for the
+   * resource. Moved verbatim; the sync layer never interprets it.
+   */
+  epoch?: string
 }
 
 /**
@@ -75,6 +81,13 @@ export interface SyncedDoc {
   metaVersion?: number
   data?: Json
   custom?: Json
+  /**
+   * The opaque key-epoch id `data` was encrypted under, when known (stamped by
+   * the encrypting cipher on a local write, or pulled off the feed). Sent as
+   * the `WAS-Key-Epoch` header on the content push so the server's stamp stays
+   * in step with the envelope.
+   */
+  epoch?: string
 }
 
 /**
@@ -89,6 +102,10 @@ export interface MasterState {
   metaVersion?: number
   data?: Json
   custom?: Json
+  /**
+   * The key-epoch stamp of the master's content body, when the feed carries one.
+   */
+  epoch?: string
 }
 
 /**
@@ -127,15 +144,19 @@ export interface WasSyncBasePort {
   /**
    * Conditionally writes the content body verbatim (`PUT /:id`). Pass
    * `ifNoneMatch: true` for a create-if-absent, or `ifMatch` (a quoted ETag over
-   * the content `version`) for an update-if-unchanged. Returns the new content
-   * `version` parsed from the response ETag (the acked master revision), or
-   * `undefined` when the server does not supply one.
+   * the content `version`) for an update-if-unchanged. `epoch` is the opaque
+   * key-epoch id the body was encrypted under, sent as the `WAS-Key-Epoch`
+   * header (an absent epoch clears any prior stamp on the server, per the
+   * `key-epochs` feature). Returns the new content `version` parsed from the
+   * response ETag (the acked master revision), or `undefined` when the server
+   * does not supply one.
    *
    * @param options {object}
    * @param options.id {string}
    * @param options.data {Json}
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {boolean}
+   * @param [options.epoch] {string}
    * @returns {Promise<number | undefined>}
    */
   putContent(options: {
@@ -143,6 +164,7 @@ export interface WasSyncBasePort {
     data: Json
     ifMatch?: string
     ifNoneMatch?: boolean
+    epoch?: string
   }): Promise<number | undefined>
 
   /**
@@ -167,23 +189,25 @@ export interface WasSyncBasePort {
 
   /**
    * Conditionally writes the metadata body verbatim (`PUT /:id/meta`, body
-   * `{ custom }`). Pass `ifNoneMatch: true` when the resource has no metadata
-   * yet, or `ifMatch` (a quoted ETag over `metaVersion`) for an
-   * update-if-unchanged. The resource must already exist (the server does not
-   * create a resource from a `/meta` write). Returns the new `metaVersion`
-   * parsed from the response ETag, or `undefined` when the server does not
-   * supply one.
+   * `{ custom }`). An ABSENT `custom` writes the CLEARED state (a body with no
+   * `custom` member -- the server's metadata replace clears every property the
+   * body omits), so removing a resource's metadata replicates rather than being
+   * skipped. Pass `ifNoneMatch: true` when the resource has no metadata yet, or
+   * `ifMatch` (a quoted ETag over `metaVersion`) for an update-if-unchanged.
+   * The resource must already exist (the server does not create a resource from
+   * a `/meta` write). Returns the new `metaVersion` parsed from the response
+   * ETag, or `undefined` when the server does not supply one.
    *
    * @param options {object}
+   * @param [options.custom] {Json}   absent = write the cleared state
    * @param options.id {string}
-   * @param options.custom {Json}
    * @param [options.ifMatch] {string}
    * @param [options.ifNoneMatch] {boolean}
    * @returns {Promise<number | undefined>}
    */
   putMeta(options: {
     id: string
-    custom: Json
+    custom?: Json
     ifMatch?: string
     ifNoneMatch?: boolean
   }): Promise<number | undefined>

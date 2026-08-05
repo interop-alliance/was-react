@@ -39,6 +39,7 @@ import {
   loginWithWallet,
   LoginCancelledError
 } from '../../src/auth/loginFlow.js'
+import { startWasSync } from '../../src/storage/wasSync.js'
 import { hasStore, requireStore } from '../../src/storage/storageManager.js'
 import {
   LocalStore,
@@ -61,6 +62,7 @@ vi.mock('../../src/auth/loginFlow.js', async importOriginal => {
 })
 
 const loginWithWalletMock = vi.mocked(loginWithWallet)
+const startWasSyncMock = vi.mocked(startWasSync)
 
 const registry: StoreRegistry = {}
 
@@ -588,6 +590,112 @@ describe('adoption', () => {
     expect(store.getState().status).toBe('connected')
     expect(await requireStore().listEntities('notes')).toHaveLength(0)
     expect(await anon.loadSeed()).toEqual(anonSeed)
+  })
+
+  it('stays connected when the adopted anon replica cannot be deleted', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+    await requireStore().insertEntity('notes', {
+      id: crypto.randomUUID(),
+      title: 'adopt-me'
+    })
+
+    // The post-activation cleanup fails (an anonymous database still open in
+    // another tab, an IndexedDB quota error). Best-effort: the login must still
+    // report the live, connected session.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(LocalStore, 'removeDatabase').mockRejectedValue(
+      new Error('database is locked')
+    )
+
+    await mockWalletLogin()
+    const outcome = await store.getState().login()
+
+    expect(outcome).toEqual({ firstRun: false })
+    expect(store.getState().status).toBe('connected')
+    expect(store.getState().error).toBeNull()
+    // The data still made it into the connected replica.
+    const adopted = await requireStore().listEntities<{
+      id: string
+      title: string
+    }>('notes')
+    expect(adopted.map(doc => doc.title)).toEqual(['adopt-me'])
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to delete the adopted anonymous replica'),
+      expect.anything()
+    )
+  })
+
+  it('collects the pre-login data even when a destroy lands mid-login', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+    await requireStore().insertEntity('notes', {
+      id: crypto.randomUUID(),
+      title: 'pre-login'
+    })
+
+    // The wallet popup parks until the test releases it, so a provider unmount
+    // (`destroy`) lands while `login` is still awaiting CHAPI. The adoption
+    // collect must decide off the PRE-LOGIN snapshot, not the live (`boot`)
+    // status the destroy left behind.
+    const walletSeed = crypto.getRandomValues(new Uint8Array(32))
+    const identity = await initAppSession({ seed: walletSeed })
+    const grants = noteGrants()
+    let releaseLogin!: () => void
+    const popup = new Promise<void>(resolve => (releaseLogin = resolve))
+    loginWithWalletMock.mockImplementation(async () => {
+      await popup
+      return {
+        seed: walletSeed,
+        identity,
+        grants,
+        parsed: parseGrants(grants),
+        expires: futureIso(FAR_FUTURE_MS),
+        firstRun: false
+      }
+    })
+
+    const pending = store.getState().login()
+    // Let `login` reach the awaited popup, then unmount underneath it.
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await store.getState().destroy()
+    expect(store.getState().status).toBe('boot')
+
+    releaseLogin()
+    const outcome = await pending
+
+    expect(outcome).toEqual({ firstRun: false })
+    expect(store.getState().status).toBe('connected')
+    expect(store.getState().controllerDid).toBe(identity.controllerDid)
+    // The pre-login local data reached the connected replica.
+    const adopted = await requireStore().listEntities<{
+      id: string
+      title: string
+    }>('notes')
+    expect(adopted.map(doc => doc.title)).toEqual(['pre-login'])
+  })
+})
+
+describe('sync bootstrap failure', () => {
+  it('surfaces the failure on the session while staying connected', async () => {
+    const seedStore = newSeedStore()
+    await persistSession({ seedStore })
+    const store = makeStore(baseConfig(), seedStore)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    startWasSyncMock.mockRejectedValueOnce(new Error('bootstrap boom'))
+
+    await store.getState().boot()
+
+    // The session is live and local-first usable; the failure lands a
+    // macrotask later, after the caller's own `error: null` write.
+    expect(store.getState().status).toBe('connected')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(store.getState().status).toBe('connected')
+    expect(store.getState().error).toMatch(/Sync failed to start/)
+    expect(store.getState().error).toMatch(/bootstrap boom/)
   })
 })
 

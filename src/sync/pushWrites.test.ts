@@ -14,6 +14,7 @@ import {
   type PushWriteAck
 } from './pushWrites.js'
 import {
+  WasSyncAuthError,
   WasSyncConflictError,
   type MasterState,
   type SyncedDoc,
@@ -27,29 +28,35 @@ type WriteCall =
       data: unknown
       ifMatch?: string
       ifNoneMatch?: boolean
+      epoch?: string
     }
   | { kind: 'deleteContent'; id: string; ifMatch?: string }
   | {
       kind: 'putMeta'
       id: string
-      custom: unknown
+      custom?: unknown
       ifMatch?: string
       ifNoneMatch?: boolean
     }
 
 /**
- * A fake port that records every write, optionally throws a conflict for a
- * chosen (kind,id), serves a scripted `get` master state for the re-read, and
- * acks writes like a versioning server: each accepted content write returns the
- * next content version, each accepted meta write the next metaVersion (starting
- * at 1, like the reference server's create). `ackWrites: false` models a server
- * that exposes no ETag on write responses (e.g. cross-origin without
- * `Access-Control-Expose-Headers`).
+ * A fake port that records every write VERBATIM (each recorded call spreads the
+ * options object it received, so an absent member -- a cleared `custom`, an
+ * absent `epoch` -- is genuinely absent from the record and testable with
+ * `in`), optionally throws a conflict or a masked-404 auth error for a chosen
+ * (kind,id), serves a scripted `get` master state (or a scripted `get`
+ * rejection) for the re-read, and acks writes like a versioning server: each
+ * accepted content write returns the next content version, each accepted meta
+ * write the next metaVersion (starting at 1, like the reference server's
+ * create). `ackWrites: false` models a server that exposes no ETag on write
+ * responses (e.g. cross-origin without `Access-Control-Expose-Headers`).
  */
 function fakePushPort(
   options: {
     conflictOn?: { kind: WriteCall['kind']; id: string }
+    auth404On?: { kind: WriteCall['kind']; id: string }
     master?: MasterState | null
+    getRejectsWith?: unknown
     ackWrites?: boolean
   } = {}
 ): WasSyncPort & { writes: WriteCall[]; getCalls: string[] } {
@@ -58,9 +65,12 @@ function fakePushPort(
   const getCalls: string[] = []
   const versions = new Map<string, number>()
   const metaVersions = new Map<string, number>()
-  const maybeConflict = (kind: WriteCall['kind'], id: string) => {
+  const maybeReject = (kind: WriteCall['kind'], id: string) => {
     if (options.conflictOn?.kind === kind && options.conflictOn.id === id) {
       throw new WasSyncConflictError()
+    }
+    if (options.auth404On?.kind === kind && options.auth404On.id === id) {
+      throw new WasSyncAuthError(404)
     }
   }
   const bump = (revisions: Map<string, number>, id: string) => {
@@ -74,25 +84,28 @@ function fakePushPort(
     async query() {
       return { documents: [], checkpoint: null }
     },
-    async putContent({ id, data, ifMatch, ifNoneMatch }) {
-      writes.push({ kind: 'putContent', id, data, ifMatch, ifNoneMatch })
-      maybeConflict('putContent', id)
-      return bump(versions, id)
+    async putContent(putOptions) {
+      writes.push({ kind: 'putContent', ...putOptions })
+      maybeReject('putContent', putOptions.id)
+      return bump(versions, putOptions.id)
     },
-    async deleteContent({ id, ifMatch }) {
-      writes.push({ kind: 'deleteContent', id, ifMatch })
-      maybeConflict('deleteContent', id)
+    async deleteContent(deleteOptions) {
+      writes.push({ kind: 'deleteContent', ...deleteOptions })
+      maybeReject('deleteContent', deleteOptions.id)
       // Like the reference server: a DELETE 204 carries no ETag.
-      bump(versions, id)
+      bump(versions, deleteOptions.id)
       return undefined
     },
-    async putMeta({ id, custom, ifMatch, ifNoneMatch }) {
-      writes.push({ kind: 'putMeta', id, custom, ifMatch, ifNoneMatch })
-      maybeConflict('putMeta', id)
-      return bump(metaVersions, id)
+    async putMeta(metaOptions) {
+      writes.push({ kind: 'putMeta', ...metaOptions })
+      maybeReject('putMeta', metaOptions.id)
+      return bump(metaVersions, metaOptions.id)
     },
     async get({ id }) {
       getCalls.push(id)
+      if (options.getRejectsWith !== undefined) {
+        throw options.getRejectsWith
+      }
       return options.master ?? null
     }
   }
@@ -232,6 +245,58 @@ describe('createPushHandler routing', () => {
       { kind: 'deleteContent', id: 'r1', ifMatch: formatEtag(7) }
     ])
   })
+
+  it('writes the cleared metadata state when custom is removed', async () => {
+    // A metadata CLEAR: the new state carries no `custom` while the assumed
+    // master does. It must reach /meta as a write with NO `custom` member (the
+    // server's replace clears what the body omits), not be skipped -- otherwise
+    // the removal never replicates.
+    const port = fakePushPort()
+    const push = createPushHandler(port)
+
+    const conflicts = await push([
+      {
+        assumedMasterState: newDoc({
+          version: 5,
+          metaVersion: 2,
+          data: { a: 1 },
+          custom: { jwe: 'old' }
+        }),
+        newDocumentState: newDoc({
+          version: 5,
+          metaVersion: 2,
+          data: { a: 1 }
+        })
+      }
+    ])
+
+    expect(conflicts).toEqual([])
+    expect(port.writes).toEqual([
+      { kind: 'putMeta', id: 'r1', ifMatch: formatEtag(2) }
+    ])
+    expect('custom' in port.writes[0]!).toBe(false)
+  })
+
+  it('sends the row epoch on the content write, and nothing when it has none', async () => {
+    const port = fakePushPort()
+    const push = createPushHandler(port)
+
+    await push([
+      { newDocumentState: newDoc({ id: 'r1', data: { a: 1 }, epoch: 'e2' }) },
+      { newDocumentState: newDoc({ id: 'r2', data: { a: 1 } }) }
+    ])
+
+    const stamped = port.writes.find(write => write.id === 'r1')!
+    const unstamped = port.writes.find(write => write.id === 'r2')!
+    expect(stamped).toEqual({
+      kind: 'putContent',
+      id: 'r1',
+      data: { a: 1 },
+      epoch: 'e2',
+      ifNoneMatch: true
+    })
+    expect('epoch' in unstamped).toBe(false)
+  })
 })
 
 describe('createPushHandler conflicts', () => {
@@ -327,6 +392,26 @@ describe('createPushHandler conflicts', () => {
       custom: { jwe: 'srv' },
       _deleted: false
     })
+  })
+
+  it('carries the master key epoch into the assembled conflict', async () => {
+    const port = fakePushPort({
+      conflictOn: { kind: 'putContent', id: 'r1' },
+      master: {
+        version: 9,
+        updatedAt: '2026-02-02T00:00:00Z',
+        deleted: false,
+        data: { a: 99 },
+        epoch: 'e3'
+      }
+    })
+    const push = createPushHandler(port)
+
+    const conflicts = await push([
+      { newDocumentState: newDoc({ id: 'r1', data: { a: 1 }, epoch: 'e2' }) }
+    ])
+
+    expect(conflicts[0]).toMatchObject({ id: 'r1', version: 9, epoch: 'e3' })
   })
 
   it('propagates a non-conflict error so RxDB retries the batch', async () => {
@@ -490,5 +575,168 @@ describe('createPushHandler write acks', () => {
 
     expect(conflicts).toHaveLength(1)
     expect(acks).toEqual([])
+  })
+
+  it('keeps the content ack when the following metadata write 412s', async () => {
+    // The content half was ACCEPTED (the server holds the new version) before
+    // the /meta half conflicted. Discarding that ack would leave the local row
+    // one revision behind and 412 on every later conditional write, so the
+    // conflict and the ack are reported together.
+    const port = fakePushPort({
+      conflictOn: { kind: 'putMeta', id: 'r1' },
+      master: {
+        version: 1,
+        metaVersion: 4,
+        updatedAt: '2026-02-02T00:00:00Z',
+        deleted: false,
+        data: { a: 2 },
+        custom: { jwe: 'srv' }
+      }
+    })
+    const acks: PushWriteAck[] = []
+    const push = createPushHandler(port, async ack => {
+      acks.push(ack)
+    })
+
+    const conflicts = await push([
+      {
+        assumedMasterState: newDoc({ version: 0, data: { a: 1 } }),
+        newDocumentState: newDoc({
+          version: 0,
+          data: { a: 2 },
+          custom: { jwe: 'mine' }
+        })
+      }
+    ])
+
+    expect(port.writes.map(write => write.kind)).toEqual([
+      'putContent',
+      'putMeta'
+    ])
+    expect(conflicts).toHaveLength(1)
+    expect(acks).toEqual([{ id: 'r1', version: 1 }])
+  })
+})
+
+describe('createPushHandler metadata 404 corroboration', () => {
+  it('resolves as a conflict tombstone when the master is gone', async () => {
+    // Under WAS 404-masking a /meta 404 is ambiguous. An independent re-read
+    // says the resource is absent, so this was an ordinary race with a remote
+    // delete: report a tombstone conflict (which the conflict handler settles)
+    // instead of throwing and wedging the batch. The content ack survives.
+    const port = fakePushPort({
+      auth404On: { kind: 'putMeta', id: 'r1' },
+      master: null
+    })
+    const acks: PushWriteAck[] = []
+    const push = createPushHandler(port, async ack => {
+      acks.push(ack)
+    })
+
+    const conflicts = await push([
+      {
+        assumedMasterState: newDoc({ version: 0, data: { a: 1 } }),
+        newDocumentState: newDoc({
+          version: 0,
+          data: { a: 2 },
+          custom: { jwe: 'mine' }
+        })
+      }
+    ])
+
+    expect(port.getCalls).toEqual(['r1'])
+    expect(conflicts).toEqual([
+      {
+        id: 'r1',
+        updatedAt: '2026-01-01T00:00:00Z',
+        version: 1,
+        _deleted: true
+      }
+    ])
+    expect(acks).toEqual([{ id: 'r1', version: 1 }])
+  })
+
+  it('resolves as a conflict when the re-read master is already a tombstone', async () => {
+    const port = fakePushPort({
+      auth404On: { kind: 'putMeta', id: 'r1' },
+      master: {
+        version: 8,
+        updatedAt: '2026-03-03T00:00:00Z',
+        deleted: true
+      }
+    })
+    const push = createPushHandler(port)
+
+    const conflicts = await push([
+      {
+        assumedMasterState: newDoc({ version: 0, data: { a: 1 } }),
+        newDocumentState: newDoc({
+          version: 0,
+          data: { a: 1 },
+          custom: { jwe: 'mine' }
+        })
+      }
+    ])
+
+    expect(conflicts).toEqual([
+      {
+        id: 'r1',
+        updatedAt: '2026-03-03T00:00:00Z',
+        version: 8,
+        _deleted: true
+      }
+    ])
+  })
+
+  it('propagates the auth error when the corroborating re-read is itself denied', async () => {
+    // The feed read is denied too: access really has expired, so the signal
+    // must escalate rather than be reinterpreted as a delete race.
+    const port = fakePushPort({
+      auth404On: { kind: 'putMeta', id: 'r1' },
+      getRejectsWith: new WasSyncAuthError(403)
+    })
+    const push = createPushHandler(port)
+
+    await expect(
+      push([
+        {
+          assumedMasterState: newDoc({ version: 0, data: { a: 1 } }),
+          newDocumentState: newDoc({
+            version: 0,
+            data: { a: 1 },
+            custom: { jwe: 'mine' }
+          })
+        }
+      ])
+    ).rejects.toMatchObject({ name: 'WasSyncAuthError', status: 403 })
+  })
+
+  it('propagates the original 404 when the master is alive and readable', async () => {
+    // The resource exists and the feed serves it, yet its /meta write 404s:
+    // the write itself was rejected, so the auth signal stands.
+    const port = fakePushPort({
+      auth404On: { kind: 'putMeta', id: 'r1' },
+      master: {
+        version: 3,
+        updatedAt: '2026-03-03T00:00:00Z',
+        deleted: false,
+        data: { a: 1 }
+      }
+    })
+    const push = createPushHandler(port)
+
+    await expect(
+      push([
+        {
+          assumedMasterState: newDoc({ version: 0, data: { a: 1 } }),
+          newDocumentState: newDoc({
+            version: 0,
+            data: { a: 1 },
+            custom: { jwe: 'mine' }
+          })
+        }
+      ])
+    ).rejects.toMatchObject({ name: 'WasSyncAuthError', status: 404 })
+    expect(port.getCalls).toEqual(['r1'])
   })
 })

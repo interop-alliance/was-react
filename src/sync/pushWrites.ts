@@ -14,7 +14,9 @@
  * - content changed -> `PUT /:id` (`If-Match: "<version>"`) or, on create,
  *   `PUT /:id` (`If-None-Match: *`); a delete -> `DELETE /:id`.
  * - metadata changed -> `PUT /:id/meta` (`If-Match: "<metaVersion>"`, or
- *   `If-None-Match: *` when the resource has no metadata yet).
+ *   `If-None-Match: *` when the resource has no metadata yet); a metadata
+ *   CLEAR (the new state carries no `custom`) writes the cleared state rather
+ *   than being skipped.
  *
  * Content is written before metadata on a create, because the server rejects a
  * `/meta` write to a resource that does not yet exist.
@@ -32,7 +34,7 @@
  */
 import type { WithDeleted } from 'rxdb/plugins/core'
 import type { Json, MasterState, SyncedDoc, WasSyncPort } from './types.js'
-import { WasSyncConflictError } from './types.js'
+import { WasSyncAuthError, WasSyncConflictError } from './types.js'
 
 /**
  * The acked server revisions of one row's accepted writes: the new content
@@ -74,6 +76,34 @@ function bodiesEqual(left: Json | undefined, right: Json | undefined): boolean {
 }
 
 /**
+ * Maps a re-read master state into the RxDB conflict entry for one row.
+ */
+function masterToConflict(
+  id: string,
+  master: MasterState
+): WithDeleted<SyncedDoc> {
+  const conflict: WithDeleted<SyncedDoc> = {
+    id,
+    updatedAt: master.updatedAt,
+    version: master.version,
+    _deleted: master.deleted
+  }
+  if (master.data !== undefined) {
+    conflict.data = master.data
+  }
+  if (master.metaVersion !== undefined) {
+    conflict.metaVersion = master.metaVersion
+  }
+  if (master.custom !== undefined) {
+    conflict.custom = master.custom
+  }
+  if (master.epoch !== undefined) {
+    conflict.epoch = master.epoch
+  }
+  return conflict
+}
+
+/**
  * Builds the RxDB conflict entry (the real current master state) for a row whose
  * conditional write was rejected with `412`. Re-reads the resource; when it is
  * genuinely absent (a delete/delete race) the master is a tombstone synthesized
@@ -106,29 +136,16 @@ async function assembleConflict({
       _deleted: true
     }
   }
-  const conflict: WithDeleted<SyncedDoc> = {
-    id,
-    updatedAt: master.updatedAt,
-    version: master.version,
-    _deleted: master.deleted
-  }
-  if (master.data !== undefined) {
-    conflict.data = master.data
-  }
-  if (master.metaVersion !== undefined) {
-    conflict.metaVersion = master.metaVersion
-  }
-  if (master.custom !== undefined) {
-    conflict.custom = master.custom
-  }
-  return conflict
+  return masterToConflict(id, master)
 }
 
 /**
  * Sends one local change to the remote Collection as up to two conditional
  * writes (content, then metadata). Returns the master-state conflict entry on a
- * `412` at either step (with `ack: null`), or the accepted writes' acked
- * revisions on success (`ack: null` when no response carried a revision).
+ * `412` at either step, or the accepted writes' acked revisions on success
+ * (`ack: null` when no response carried a revision). A conflict on the
+ * metadata half still returns the content half's earned ack alongside the
+ * conflict entry, so an accepted content version is never discarded.
  *
  * @param options {object}
  * @param options.port {WasSyncPort}
@@ -152,9 +169,26 @@ async function pushRow({
   const { id } = newDocumentState
   const assumedVersion = assumedMasterState?.version
   const isCreate = assumedMasterState === undefined
-  try {
-    const ack: PushWriteAck = { id }
+  const ack: PushWriteAck = { id }
+  const hasAck = () =>
+    ack.version !== undefined || ack.metaVersion !== undefined
 
+  // Builds the conflict outcome for a 412 at either half, PRESERVING any ack
+  // already earned: a content write accepted before a `/meta` 412 must keep its
+  // acked `version` (and feed it to the re-read fallback), or the local row
+  // keeps the pre-write version and every later conditional write sends a
+  // stale `If-Match`.
+  const conflictResult = async () => {
+    const conflict = await assembleConflict({
+      port,
+      id,
+      fallbackUpdatedAt: newDocumentState.updatedAt,
+      fallbackVersion: ack.version ?? assumedVersion ?? newDocumentState.version
+    })
+    return { conflict, ack: hasAck() ? ack : null }
+  }
+
+  try {
     if (newDocumentState._deleted) {
       // Delete supersedes any metadata write: drop the content, tombstone wins.
       const ackedVersion = await port.deleteContent({
@@ -178,6 +212,9 @@ async function pushRow({
       const ackedVersion = await port.putContent({
         id,
         data: newDocumentState.data ?? null,
+        ...(newDocumentState.epoch !== undefined && {
+          epoch: newDocumentState.epoch
+        }),
         ...(isCreate
           ? { ifNoneMatch: true }
           : assumedVersion !== undefined && {
@@ -188,18 +225,32 @@ async function pushRow({
         ack.version = ackedVersion
       }
     }
+  } catch (err) {
+    if (err instanceof WasSyncConflictError) {
+      return await conflictResult()
+    }
+    // Any non-conflict error (network, 5xx, auth) propagates so RxDB retries
+    // the whole batch with backoff.
+    throw err
+  }
 
-    // Metadata half: write when the resource has metadata and it changed. On a
-    // create this runs after the content write (the resource must exist first).
-    const metadataChanged = !bodiesEqual(
-      newDocumentState.custom,
-      assumedMasterState?.custom
-    )
-    if (newDocumentState.custom !== undefined && metadataChanged) {
+  // Metadata half: write when the metadata changed -- including a CLEAR (the
+  // new state carries no `custom` while the assumed master does; `putMeta`
+  // with no `custom` writes the cleared state). On a create this runs after
+  // the content write (the resource must exist first). Its own try/catch so a
+  // rejection here can never discard an ack the content half already earned.
+  const metadataChanged = !bodiesEqual(
+    newDocumentState.custom,
+    assumedMasterState?.custom
+  )
+  if (metadataChanged) {
+    try {
       const assumedMetaVersion = assumedMasterState?.metaVersion
       const ackedMetaVersion = await port.putMeta({
         id,
-        custom: newDocumentState.custom,
+        ...(newDocumentState.custom !== undefined && {
+          custom: newDocumentState.custom
+        }),
         ...(assumedMetaVersion !== undefined
           ? { ifMatch: formatEtag(assumedMetaVersion) }
           : { ifNoneMatch: true })
@@ -207,24 +258,42 @@ async function pushRow({
       if (ackedMetaVersion !== undefined) {
         ack.metaVersion = ackedMetaVersion
       }
+    } catch (err) {
+      if (err instanceof WasSyncConflictError) {
+        return await conflictResult()
+      }
+      // Corroborate before condemnation: under WAS 404-masking a `/meta` 404
+      // is ambiguous -- expired access, or an ordinary race with a remote
+      // delete (a PUT to the `/meta` of a nonexistent resource legitimately
+      // 404s). An independent request decides: re-read the master off the
+      // changes feed. A feed read that is itself denied rethrows its own auth
+      // error (access genuinely expired, so the controller escalates); a feed
+      // that answers with an absent/deleted master confirms the delete race,
+      // and the row is resolved with that tombstone as the conflict entry
+      // (the conflict handler reconciles it) instead of flipping the whole
+      // session to "access expired" and wedging the batch in RxDB's retries.
+      if (err instanceof WasSyncAuthError && err.status === 404) {
+        const master = await port.get({ id })
+        if (master === null || master.deleted) {
+          const conflict = master
+            ? masterToConflict(id, master)
+            : {
+                id,
+                updatedAt: newDocumentState.updatedAt,
+                version:
+                  ack.version ?? assumedVersion ?? newDocumentState.version,
+                _deleted: true
+              }
+          return { conflict, ack: hasAck() ? ack : null }
+        }
+        // The resource is alive and readable while its `/meta` write 404s:
+        // the write itself was rejected, so the auth signal stands.
+      }
+      throw err
     }
-
-    const hasAck = ack.version !== undefined || ack.metaVersion !== undefined
-    return { conflict: null, ack: hasAck ? ack : null }
-  } catch (err) {
-    if (err instanceof WasSyncConflictError) {
-      const conflict = await assembleConflict({
-        port,
-        id,
-        fallbackUpdatedAt: newDocumentState.updatedAt,
-        fallbackVersion: assumedVersion ?? newDocumentState.version
-      })
-      return { conflict, ack: null }
-    }
-    // Any non-conflict error (network, 5xx, auth) propagates so RxDB retries
-    // the whole batch with backoff.
-    throw err
   }
+
+  return { conflict: null, ack: hasAck() ? ack : null }
 }
 
 /**

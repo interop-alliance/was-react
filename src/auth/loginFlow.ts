@@ -154,10 +154,14 @@ function appConnectFirstRun(presentation: IVerifiablePresentation): boolean {
 
 /**
  * Structurally validates the grants embedded in the wallet response against the
- * requested collections. When the app requested NO collections at all (neither
- * app-owned nor shared) there is nothing to delegate: `checkGrants` (which
- * rejects an empty grant set) is skipped and an empty grant set with a
- * far-future expiry is returned instead.
+ * requested collections. When the app requested no APP-OWNED collections and
+ * the wallet returned no grants there is nothing to validate: `checkGrants`
+ * (which rejects an empty grant set) is skipped and an empty grant set with a
+ * far-future expiry is returned instead. That covers both the app that
+ * requests nothing at all and the shared-only app (`collections: []`, some
+ * `sharedCollections`) whose user declined every share -- a declined share is
+ * not a login failure, so such a login completes with no remote storage and
+ * the missing readers are warned about downstream.
  *
  * Only the app-owned collections are REQUIRED to be covered. A shared
  * collection the wallet declined to grant is not a login failure -- the reader
@@ -184,7 +188,15 @@ function checkGrantsForCollections({
   sharedCollections?: string[]
 }): CheckedGrants {
   const collectionIds = collections.map(collection => collection.id)
-  if (collectionIds.length === 0 && sharedCollections.length === 0) {
+  const grants = grantsOf(presentation)
+  if (collectionIds.length === 0 && grants.length === 0) {
+    if (sharedCollections.length > 0) {
+      console.warn(
+        'The wallet returned no storage grants; the requested shared ' +
+          `collection(s) [${sharedCollections.join(', ')}] were declined, so ` +
+          'no shared reader will be opened.'
+      )
+    }
     return {
       grants: [],
       parsed: { serverUrl: '', spaceId: '', byCollectionId: {} },
@@ -192,7 +204,7 @@ function checkGrantsForCollections({
     }
   }
   return checkGrants({
-    grants: grantsOf(presentation),
+    grants,
     controllerDid,
     collections: collectionIds
   })

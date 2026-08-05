@@ -1,16 +1,28 @@
 /*!
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { WithDeleted } from 'rxdb/plugins/core'
 import type { Json, SyncedDoc } from './types.js'
 import { makeLwwConflictHandler } from './lwwConflictHandler.js'
 
+// The marker body an "unreadable" envelope carries: the epoch-aware fake cipher
+// below throws for it, standing in for an envelope written under a key epoch
+// this device has not seen.
+const SEALED = 'sealed-under-an-unseen-epoch'
+
 // A fake cipher whose "envelope" is just the plaintext payload wrapped in
 // `{ jwe: payload }`; decrypt unwraps it. Lets us drive the handler's LWW
 // decision without real crypto.
-const decrypt = async (envelope: Json): Promise<Json> =>
-  (envelope as { jwe: Json }).jwe
+const decrypt = async (envelope: Json): Promise<Json> => {
+  const { jwe } = envelope as { jwe: Json }
+  if (jwe === SEALED) {
+    // Shaped like the real UnknownEpochError: the decrypt THROWS rather than
+    // returning a payload with no LWW stamp.
+    throw new Error('Unknown key epoch "e9".')
+  }
+  return jwe
+}
 
 function row(
   payload: { updatedAt: string; clientId: string } | null,
@@ -44,7 +56,25 @@ function row(
   return doc
 }
 
+/**
+ * A live row whose body does not decrypt on this device (an envelope under an
+ * unseen key epoch), as distinct from a tombstone or a body with no LWW stamp.
+ */
+function sealedRow(version = 0): WithDeleted<SyncedDoc> {
+  return {
+    id: 'r1',
+    updatedAt: '2026-01-01T00:00:00Z',
+    version,
+    _deleted: false,
+    data: { jwe: SEALED } as unknown as Json
+  }
+}
+
 const handler = makeLwwConflictHandler(decrypt)
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('makeLwwConflictHandler', () => {
   it('isEqual is true only when body + deletion agree', () => {
@@ -215,6 +245,80 @@ describe('makeLwwConflictHandler', () => {
       assumedMasterState: assumed
     })
     expect(winner).toBe(edit)
+  })
+
+  it('adopts an undecryptable master rather than re-pushing the older local payload', async () => {
+    // The master was written under a key epoch this device has not seen, so its
+    // decrypt throws. It must NOT be scored as absent: an unreadable body is
+    // presumed newer, so the master is adopted and the older local payload is
+    // not pushed over it.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const master = sealedRow(2)
+    const local = row({ updatedAt: '2026-01-01T00:00:00Z', clientId: 'dA' })
+    const winner = await handler.resolve({
+      realMasterState: master,
+      newDocumentState: local
+    })
+    expect(winner).toBe(master)
+    expect(warn).toHaveBeenCalledOnce()
+  })
+
+  it('re-asserts an undecryptable local row rather than dropping the local edit', async () => {
+    // The mirror case: this replica cannot read its OWN row (e.g. it was
+    // written under an epoch since rotated away). Dropping it for the master
+    // would silently lose the user's edit, so the local row is re-asserted.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const master = row(
+      { updatedAt: '2026-02-02T00:00:00Z', clientId: 'dB' },
+      {
+        version: 2
+      }
+    )
+    const local = sealedRow(1)
+    const winner = await handler.resolve({
+      realMasterState: master,
+      newDocumentState: local
+    })
+    expect(winner).toBe(local)
+    expect(warn).toHaveBeenCalledOnce()
+  })
+
+  it('adopts the master when neither side decrypts', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const master = sealedRow(2)
+    const local = sealedRow(1)
+    const winner = await handler.resolve({
+      realMasterState: master,
+      newDocumentState: local
+    })
+    expect(winner).toBe(master)
+    expect(warn).toHaveBeenCalledOnce()
+  })
+
+  it('still treats a tombstone as absent, not as undecryptable', async () => {
+    // Regression for the three-kind split: a tombstone has nothing to decrypt,
+    // so the tombstone rules must still apply -- a live local edit beats a
+    // remote tombstone, and a local tombstone loses to a real remote change --
+    // with no warning logged.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const localEdit = row({ updatedAt: '2026-01-01T00:00:00Z', clientId: 'dA' })
+    expect(
+      await handler.resolve({
+        realMasterState: row(null, { deleted: true, version: 3 }),
+        newDocumentState: localEdit
+      })
+    ).toBe(localEdit)
+
+    const assumed = row({ updatedAt: 'T1', clientId: 'dA' }, { version: 1 })
+    const master = row({ updatedAt: 'T2', clientId: 'dB' }, { version: 2 })
+    expect(
+      await handler.resolve({
+        realMasterState: master,
+        newDocumentState: row(null, { deleted: true }),
+        assumedMasterState: assumed
+      })
+    ).toBe(master)
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('re-asserts a local tombstone against a remote tombstone race (both deleted)', async () => {
