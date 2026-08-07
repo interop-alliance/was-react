@@ -15,31 +15,12 @@
  *   a connected doc without LWW fields always loses to a stamped adopted one.
  *
  * Adopted payloads missing `updatedAt`/`clientId` are stamped at adoption time
- * (the sync layer's conflict resolution requires them); payloads that already
- * carry them keep their original values, so a doc edited long ago does not
- * suddenly outrank fresher remote edits.
+ * with the session's resolved client id (the sync layer's conflict resolution
+ * requires them); payloads that already carry them keep their original values,
+ * so a doc edited long ago does not suddenly outrank fresher remote edits.
  */
-import { uuidv7 } from 'uuidv7'
 import { lwwFields, remotePayloadWins } from '../sync/lww.js'
-import { getClientId } from './storageManager.js'
 import type { LocalStore } from './localStore.js'
-
-/**
- * The one-per-merge stamp applied to payloads missing their LWW fields.
- *
- * @returns {{ updatedAt: string, clientId: string }}
- */
-function adoptionStamp(): { updatedAt: string; clientId: string } {
-  let clientId: string
-  try {
-    clientId = getClientId()
-  } catch {
-    // No localStorage (non-browser environments): an unpersisted id still
-    // gives the LWW tiebreak a deterministic value for this merge.
-    clientId = uuidv7()
-  }
-  return { updatedAt: new Date().toISOString(), clientId }
-}
 
 /**
  * Merges the collected anonymous-replica payloads into `store` (the already
@@ -51,14 +32,19 @@ function adoptionStamp(): { updatedAt: string; clientId: string } {
  * @param options.store {LocalStore}   the open connected replica
  * @param options.entities {Record<string, Array<{ id: string }>>}   decrypted
  *   payloads per collection key, as collected from the anonymous replica
+ * @param options.clientId {string}   the session's resolved LWW client id
+ *   (stamped onto payloads missing their LWW fields, so the repair carries the
+ *   same attribution identity as the app's own writes)
  * @returns {Promise<void>}
  */
 export async function mergeAdopted({
   store,
-  entities
+  entities,
+  clientId
 }: {
   store: LocalStore
   entities: Record<string, Array<{ id: string }>>
+  clientId: string
 }): Promise<void> {
   let stamp: { updatedAt: string; clientId: string } | null = null
   for (const [key, payloads] of Object.entries(entities)) {
@@ -69,7 +55,7 @@ export async function mergeAdopted({
       let adopted = payload
       let adoptedLww = lwwFields(payload)
       if (!adoptedLww) {
-        stamp ??= adoptionStamp()
+        stamp ??= { updatedAt: new Date().toISOString(), clientId }
         adopted = { ...payload, ...stamp }
         adoptedLww = stamp
       }

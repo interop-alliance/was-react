@@ -23,7 +23,8 @@ import type {
   IVerifiablePresentation
 } from '@interop/data-integrity-core'
 import { CONTEXT_V1 } from 'byoe-context'
-import { deriveIdentity } from './agents.js'
+import { asArray } from '../jsonLd.js'
+import { deriveIdentity, type IdentityAgents } from './agents.js'
 import type { DocumentLoader } from './documentLoader.js'
 
 const VC_1_CONTEXT_URL = 'https://www.w3.org/2018/credentials/v1'
@@ -66,6 +67,12 @@ export interface SeedCredentialConfig {
 export interface ParsedSeedCredential {
   seed: Uint8Array
   controllerDid: string
+  /**
+   * The identity agents derived from the embedded seed while checking the
+   * seed-to-DID binding. Handed back so the login flow does not derive the same
+   * master identity a second time (the derivation is the expensive step).
+   */
+  identity: IdentityAgents
 }
 
 /**
@@ -189,9 +196,7 @@ export async function parseSeedCredential({
   config: SeedCredentialConfig
 }): Promise<ParsedSeedCredential> {
   const { credentialType } = config
-  const types = Array.isArray(credential.type)
-    ? credential.type
-    : [credential.type]
+  const types = asArray(credential.type)
   if (!types.includes(credentialType)) {
     throw new Error(`Credential is not a ${credentialType} credential.`)
   }
@@ -227,13 +232,15 @@ export async function parseSeedCredential({
       `${credentialType} seed must decode to 32 bytes (got ${seed.length}).`
     )
   }
-  const { controllerDid } = await deriveIdentity({ seed })
-  if (controllerDid !== subject.id) {
+  // Derived once and handed back on the result: the same agents the caller
+  // would otherwise re-derive from this seed right after.
+  const identity = await deriveIdentity({ seed })
+  if (identity.controllerDid !== subject.id) {
     throw new Error(
       `${credentialType} seed does not derive the credential subject DID.`
     )
   }
-  return { seed, controllerDid }
+  return { seed, controllerDid: identity.controllerDid, identity }
 }
 
 /**
@@ -259,11 +266,9 @@ export function findSeedCredential({
 }): IVerifiableCredential | null {
   const embedded = (presentation as { verifiableCredential?: unknown })
     .verifiableCredential
-  const list = Array.isArray(embedded) ? embedded : embedded ? [embedded] : []
-  for (const entry of list) {
-    const types = (entry as { type?: string | string[] }).type
-    const asArray = Array.isArray(types) ? types : [types]
-    if (asArray.includes(credentialType)) {
+  for (const entry of asArray(embedded)) {
+    const types = asArray((entry as { type?: string | string[] }).type)
+    if (types.includes(credentialType)) {
       return entry as IVerifiableCredential
     }
   }

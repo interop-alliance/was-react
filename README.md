@@ -273,12 +273,13 @@ export function LoginPage() {
 
 ```tsx
 import { uuidv7 } from 'uuidv7'
-import { getClientId } from '@interop/was-react'
+import { useSession } from '@interop/was-react'
 import { useNotes } from './stores.js'
 
 export function Notes() {
   const notes = useNotes(state => [...state.byId.values()])
   const insert = useNotes(state => state.insert)
+  const { clientId } = useSession()
 
   async function addNote() {
     const now = new Date().toISOString()
@@ -288,7 +289,7 @@ export function Notes() {
       body: '',
       createdAt: now,
       updatedAt: now,
-      clientId: getClientId()
+      clientId
     })
   }
 
@@ -305,10 +306,12 @@ export function Notes() {
 }
 ```
 
-Entity payloads MUST carry `updatedAt` and `clientId` (from `getClientId()`),
-stamped on EVERY insert and update: they are the last-write-wins pair that
-settles concurrent multi-device edits of the same entity. A payload without them
-loses every sync conflict.
+Entity payloads MUST carry `updatedAt` and `clientId`, stamped on EVERY insert
+and update: they are the last-write-wins pair that settles concurrent
+multi-device edits of the same entity. A payload without them loses every sync
+conflict. Read the id from `useSession().clientId` (resolved once per session,
+honoring `storageKeyPrefix`); outside React, call
+`getClientId({ storageKeyPrefix })` with the same prefix your config declares.
 
 A public collection can additionally answer server-side equality queries.
 Declare the queryable content attributes in the collection config:

@@ -12,7 +12,8 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { WasClient } from '@interop/was-client'
-import { createWasSyncPort, errorStatus } from './wasSyncPort.js'
+import { errorStatus } from '@interop/was-client/sync'
+import { createWasSyncPort } from './wasSyncPort.js'
 import { WasSyncAuthError, WasSyncConflictError } from './types.js'
 
 /**

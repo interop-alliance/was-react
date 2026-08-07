@@ -2,8 +2,45 @@
 
 ## 0.8.4 - TBD
 
+### Fixed
+
+- `WasAppConfig.storageKeyPrefix` now actually reaches the LWW `clientId`
+  resolution: `createAuthStore` resolves the id once from the configured prefix,
+  exposes it as `AuthState.clientId` / `useSession().clientId`, and the adoption
+  repair stamps with that same id. Previously the config field was inert --
+  internal stamps always used the default `was-react:` prefix, so a configured
+  prefix forked the install's tiebreak identity (and the documented migration
+  affordance silently did nothing).
+
 ### Changed
 
+- `getClientId` no longer throws in an environment without `localStorage`; it
+  falls back to a process-stable unpersisted id.
+- Reuse `@interop/was-client/sync` primitives (`isEncryptedEnvelope`,
+  `errorStatus`, `formatEtag`, `parseEtag`, the `Json` type) instead of local
+  copies; the package's own export names are unchanged.
+- Performance: the session bootstrap reads each private collection's description
+  once instead of twice, builds per-collection ciphers and opens
+  shared-collection readers concurrently, and login derives the master identity
+  once (`parseSeedCredential` now returns the derived `IdentityAgents`).
+  `countEntities` uses RxDB's `count()` instead of materializing every row, and
+  the local-data and adoption probes run their per-collection work in parallel.
+- Performance: conflicting rows in one push batch now share a single
+  changes-feed read via a per-batch master-state cache, instead of each
+  triggering its own full feed walk.
+- `SharedCollectionReader` decrypts fast-path pages concurrently; its
+  once-per-reader epoch refresh is promise-memoized so concurrent decrypts after
+  a key rotation share one descriptor re-read (previously only the first would
+  recover).
+- Internal dedup: one shared App Connect round trip for login and reconnect, one
+  store-teardown path (`deactivateStore({ deleteDb })`), one `bodiesEqual` /
+  wire-field copier / scalar-or-array helper, a shared `collectionPath` URL
+  builder, a typed non-clearing `peekAppSession` read for reconnect, and an
+  internal MUI `ConfirmDialog` frame behind the three dialogs.
+- The sync bootstrap announces collection descriptions only for collections the
+  app registered, instead of for every granted id.
+- Docs: fixed stale `urn:was:` IRIs and a stale `deviceId` mention in
+  `config.ts` JSDoc (the LWW tiebreak field is `clientId`).
 - Docs: README and ARCHITECTURE examples use the `https://w3id.org/byoe#`
   descriptor and claim IRIs instead of the retired `urn:was:` spellings, and
   ARCHITECTURE links the App Connect companion spec

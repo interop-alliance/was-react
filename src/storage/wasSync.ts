@@ -108,49 +108,57 @@ export async function startWasSync({
     collections
   })
 
-  // Best-effort collection-description PUTs; non-fatal either way (envelopes
-  // replicate into an unmarked collection just the same, and a query against
-  // undeclared indexes fails with a descriptive 400). Each helper skips the
-  // collections it does not apply to (reported ok + skipped): the encryption
-  // descriptor skips public collections, the indexes declaration skips private
-  // ones and public ones with no declared indexes.
-  const sharedIds = new Set(sharedCollections.map(entry => entry.id))
+  // One pass per REGISTERED collection the grant set covers -- the registry is
+  // what this app declared, so a granted id it never registered is none of this
+  // bootstrap's business. Two things happen per collection:
+  //
+  // - the best-effort collection-description PUTs; non-fatal either way
+  //   (envelopes replicate into an unmarked collection just the same, and a
+  //   query against undeclared indexes fails with a descriptive 400). Each
+  //   helper skips the collections it does not apply to (reported ok +
+  //   skipped): the encryption descriptor skips public collections, the indexes
+  //   declaration skips private ones and public ones with no declared indexes;
+  // - the private collection's encryption descriptor is fetched: rebuild that
+  //   collection's cipher when its epoch roster differs from what the local
+  //   store opened with (a wallet-side rotation, or first-ever epochs), and hand
+  //   the fresh set to the descriptor-cache refresher so an offline session can
+  //   rebuild its epoch-aware ciphers without a live read.
+  //
+  // The description is READ ONCE per collection and feeds both: the same
+  // descriptor answers the encryption PUT's read-before-write roster-clobber
+  // guard and the cipher rebuild, rather than each fetching it separately.
+  //
+  // SHARED collections never appear here: they are wallet-owned, absent from
+  // the app-owned registry, and a read-only grant would draw nothing but a
+  // pointless 403.
+  const granted = collections.filter(
+    collection => parsed.byCollectionId[collection.id] !== undefined
+  )
+  const descriptors: Record<string, CollectionEncryption> = {}
   await Promise.all(
-    Object.keys(parsed.byCollectionId)
-      .filter(collectionId => !sharedIds.has(collectionId))
-      .map(async collectionId => {
-        const declared = await remoteStore.markCollectionEncrypted(collectionId)
+    granted.map(async ({ id: collectionId, visibility }) => {
+      if (visibility !== 'public') {
+        const encryption =
+          await remoteStore.readCollectionEncryption(collectionId)
+        if (encryption) {
+          descriptors[collectionId] = encryption
+          await localStore.applyRemoteDescriptor({ collectionId, encryption })
+        }
+        const declared = await remoteStore.markCollectionEncrypted(
+          collectionId,
+          { encryption }
+        )
         if (!declared.ok) {
           console.warn(
             `Encryption descriptor PUT not authorized for "${collectionId}" (status ${declared.status ?? 'n/a'}).`
           )
         }
-        const indexes = await remoteStore.declareCollectionIndexes(collectionId)
-        if (!indexes.ok) {
-          console.warn(
-            `Indexes declaration PUT not authorized for "${collectionId}" (status ${indexes.status ?? 'n/a'}).`
-          )
-        }
-      })
-  )
-
-  // Fetch each granted private collection's encryption descriptor: rebuild that
-  // collection's cipher when its epoch roster differs from what the local store
-  // opened with (a wallet-side rotation, or first-ever epochs), and hand the
-  // fresh set to the descriptor-cache refresher so an offline session can rebuild
-  // its epoch-aware ciphers without a live read.
-  const privateIds = collections
-    .filter(collection => collection.visibility !== 'public')
-    .map(collection => collection.id)
-    .filter(id => parsed.byCollectionId[id] !== undefined)
-  const descriptors: Record<string, CollectionEncryption> = {}
-  await Promise.all(
-    privateIds.map(async collectionId => {
-      const encryption =
-        await remoteStore.readCollectionEncryption(collectionId)
-      if (encryption) {
-        descriptors[collectionId] = encryption
-        await localStore.applyRemoteDescriptor({ collectionId, encryption })
+      }
+      const indexes = await remoteStore.declareCollectionIndexes(collectionId)
+      if (!indexes.ok) {
+        console.warn(
+          `Indexes declaration PUT not authorized for "${collectionId}" (status ${indexes.status ?? 'n/a'}).`
+        )
       }
     })
   )
@@ -168,32 +176,36 @@ export async function startWasSync({
   // roster. Every failure mode here is a warn-and-skip -- an uncovered grant,
   // a collection with no roster, an app that is not (or is no longer) a
   // recipient -- so a removed share degrades one reader, never the session.
+  // Opened concurrently: each `open` costs a description read plus an ECDH
+  // unwrap, and no reader depends on another.
   const sharedReaders: Record<string, SharedCollectionReader> = {}
-  for (const { key, id } of sharedCollections) {
-    if (!parsed.byCollectionId[id]) {
-      console.warn(
-        `Skipping shared collection "${id}": no delegated capability covers it.`
-      )
-      continue
-    }
-    if (!identityKeys) {
-      console.warn(
-        `Skipping shared collection "${id}": no identity key-agreement key was ` +
-          `supplied to decrypt it with.`
-      )
-      continue
-    }
-    try {
-      sharedReaders[key] = await SharedCollectionReader.open({
-        remoteStore,
-        keyAgreementKey: identityKeys.keyAgreementKey,
-        keyResolver: identityKeys.keyResolver,
-        collectionId: id
-      })
-    } catch (err) {
-      console.warn(`Skipping shared collection "${id}":`, err)
-    }
-  }
+  await Promise.all(
+    sharedCollections.map(async ({ key, id }) => {
+      if (!parsed.byCollectionId[id]) {
+        console.warn(
+          `Skipping shared collection "${id}": no delegated capability covers it.`
+        )
+        return
+      }
+      if (!identityKeys) {
+        console.warn(
+          `Skipping shared collection "${id}": no identity key-agreement key was ` +
+            `supplied to decrypt it with.`
+        )
+        return
+      }
+      try {
+        sharedReaders[key] = await SharedCollectionReader.open({
+          remoteStore,
+          keyAgreementKey: identityKeys.keyAgreementKey,
+          keyResolver: identityKeys.keyResolver,
+          collectionId: id
+        })
+      } catch (err) {
+        console.warn(`Skipping shared collection "${id}":`, err)
+      }
+    })
+  )
 
   await syncController.start({
     remoteStore,

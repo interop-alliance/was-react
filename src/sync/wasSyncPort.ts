@@ -24,7 +24,9 @@
  * encrypted fork here.
  */
 import { readEtag, writeHeaders, type WasClient } from '@interop/was-client'
+import { errorStatus, parseEtag } from '@interop/was-client/sync'
 import type { IZcap } from '@interop/data-integrity-core'
+import { collectionPath } from '../grants.js'
 import {
   WasSyncAuthError,
   WasSyncConflictError,
@@ -32,23 +34,6 @@ import {
   type WasSyncBasePort,
   type WireDoc
 } from './types.js'
-
-/**
- * Extracts an HTTP status from a raw ky/ezcap error. `was.request()` rejects on
- * any non-2xx with `err.status` set (see `@interop/http-client`'s error
- * normaliser); this reads it defensively from either location. Shared with the
- * remote store's descriptor PUT and the dev-grant provisioner, which need the raw
- * status for diagnostics rather than the mapped sync error.
- *
- * @param err {unknown}
- * @returns {number | undefined}
- */
-export function errorStatus(err: unknown): number | undefined {
-  return (
-    (err as { status?: number }).status ??
-    (err as { response?: { status?: number } }).response?.status
-  )
-}
 
 /**
  * Normalizes an unknown caught error into a display string: the `Error`'s
@@ -93,22 +78,6 @@ function toPortError(err: unknown): unknown {
 }
 
 /**
- * Parses a quoted strong ETag (`"3"`, as read by `readEtag`) into its numeric
- * revision, or `undefined` when the header was absent (the resource has no such
- * revision yet).
- *
- * @param etag {string | undefined}
- * @returns {number | undefined}
- */
-function parseEtag(etag: string | undefined): number | undefined {
-  if (etag === undefined) {
-    return undefined
-  }
-  const revision = Number(etag.replace(/"/g, ''))
-  return Number.isFinite(revision) ? revision : undefined
-}
-
-/**
  * Builds a `WasSyncPort` bound to a single Space + Collection on the remote WAS
  * server, backed by the session's signed `WasClient`.
  *
@@ -132,9 +101,8 @@ export function createWasSyncPort({
   collectionId: string
   capability?: IZcap
 }): WasSyncBasePort {
-  const collectionPath = `/space/${spaceId}/${collectionId}`
-  const resourcePath = (id: string) =>
-    `${collectionPath}/${encodeURIComponent(id)}`
+  const basePath = collectionPath({ spaceId, collectionId })
+  const resourcePath = (id: string) => `${basePath}/${encodeURIComponent(id)}`
 
   /**
    * Runs a conditional write, mapping the server's `412 precondition-failed`
@@ -152,7 +120,9 @@ export function createWasSyncPort({
   ): Promise<number | undefined> => {
     try {
       const response = await run()
-      return parseEtag(readEtag(response))
+      // `readEtag` reports an absent header as `undefined`; `parseEtag` reads
+      // the `null` spelling of the same thing.
+      return parseEtag(readEtag(response) ?? null)
     } catch (err) {
       throw toPortError(err)
     }
@@ -163,7 +133,7 @@ export function createWasSyncPort({
       try {
         const response = await was.request({
           capability,
-          path: `${collectionPath}/query`,
+          path: `${basePath}/query`,
           method: 'POST',
           json: {
             profile: 'changes',

@@ -33,17 +33,8 @@ import type {
 import type { DocumentLoader } from '../identity/documentLoader.js'
 import { parseGrants, type ParsedGrants } from '../grants.js'
 import { earliestExpiry, isExpired } from '../identity/appSession.js'
+import { asArray } from '../jsonLd.js'
 import { RW_ACTIONS } from './loginRequest.js'
-
-/**
- * One proof object on a VP (possibly one of several).
- */
-interface VpProof {
-  type?: string
-  proofPurpose?: string
-  challenge?: string
-  domain?: string
-}
 
 /**
  * Verifies a login response VP cryptographically and structurally (steps 1-2
@@ -103,8 +94,12 @@ export async function verifyLoginPresentation({
     )
   }
 
-  const rawProof = (presentation as { proof?: VpProof | VpProof[] }).proof
-  const proofs = Array.isArray(rawProof) ? rawProof : rawProof ? [rawProof] : []
+  // The presentation-level proofs (a VP may carry one object or several).
+  const proofs = asArray((presentation as { proof?: unknown }).proof) as Array<{
+    proofPurpose?: string
+    challenge?: string
+    domain?: string
+  }>
   if (proofs.length === 0) {
     throw new Error('Wallet presentation carries no authentication proof.')
   }
@@ -165,8 +160,7 @@ export interface CheckedGrants {
  * The actions a grant allows, normalized to an array.
  */
 function actionsOf(zcap: IZcap): string[] {
-  const allowed = (zcap as { allowedAction?: string | string[] }).allowedAction
-  return Array.isArray(allowed) ? allowed : allowed ? [allowed] : []
+  return asArray((zcap as { allowedAction?: string | string[] }).allowedAction)
 }
 
 /**

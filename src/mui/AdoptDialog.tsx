@@ -10,14 +10,8 @@
  * this device and returns after a logout. Dismissing the dialog (backdrop /
  * escape / Cancel) runs no login at all.
  */
-import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle
-} from '@mui/material'
+import { Button } from '@mui/material'
+import { ConfirmDialog } from './ConfirmDialog.js'
 import { useLogin } from '../react/hooks.js'
 
 /**
@@ -42,26 +36,33 @@ export function AdoptDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} data-testid="adopt-dialog">
-      <DialogTitle>Bring your data with you?</DialogTitle>
-      <DialogContent>
-        <DialogContentText>
-          You created data on this device before logging in. Bring it into your
-          own storage so it syncs everywhere you log in, or set it aside -- it
-          then stays on this device only and comes back if you log out.
-        </DialogContentText>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} data-testid="adopt-cancel">
-          Cancel
-        </Button>
-        <Button onClick={() => handleLogin('leave')} data-testid="adopt-leave">
-          Set it aside
-        </Button>
-        <Button onClick={() => handleLogin('merge')} data-testid="adopt-merge">
-          Bring my data
-        </Button>
-      </DialogActions>
-    </Dialog>
+    <ConfirmDialog
+      testId="adopt"
+      open={open}
+      onClose={onClose}
+      title="Bring your data with you?"
+      body={
+        'You created data on this device before logging in. Bring it into ' +
+        'your own storage so it syncs everywhere you log in, or set it ' +
+        'aside -- it then stays on this device only and comes back if you ' +
+        'log out.'
+      }
+      actions={
+        <>
+          <Button
+            onClick={() => handleLogin('leave')}
+            data-testid="adopt-leave"
+          >
+            Set it aside
+          </Button>
+          <Button
+            onClick={() => handleLogin('merge')}
+            data-testid="adopt-merge"
+          >
+            Bring my data
+          </Button>
+        </>
+      }
+    />
   )
 }

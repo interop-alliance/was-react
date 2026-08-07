@@ -33,8 +33,19 @@
  * settles -- no re-push loop.
  */
 import type { WithDeleted } from 'rxdb/plugins/core'
-import type { Json, MasterState, SyncedDoc, WasSyncPort } from './types.js'
-import { WasSyncAuthError, WasSyncConflictError } from './types.js'
+import { formatEtag } from '@interop/was-client/sync'
+import type {
+  MasterReadCache,
+  MasterState,
+  SyncedDoc,
+  WasSyncPort
+} from './types.js'
+import {
+  bodiesEqual,
+  copyOptionalBodyFields,
+  WasSyncAuthError,
+  WasSyncConflictError
+} from './types.js'
 
 /**
  * The acked server revisions of one row's accepted writes: the new content
@@ -49,85 +60,30 @@ export interface PushWriteAck {
 }
 
 /**
- * Formats a master revision (`version` or `metaVersion`) as the quoted strong
- * ETag the server compares `If-Match` against (revision `3` becomes `"3"`).
- *
- * @param revision {number}
- * @returns {string}
- */
-export function formatEtag(revision: number): string {
-  return `"${revision}"`
-}
-
-/**
- * Structural equality over two opaque bodies, by canonical-free JSON string.
- * Used only to decide whether the content or the metadata half changed and thus
- * which endpoint(s) to write. Content-addressed collections never mutate `data`
- * for a given id (so the content half only fires on create/delete), and a real
- * metadata edit re-encrypts to fresh bytes, so this coarse comparison is
- * sufficient for routing.
- *
- * @param left {Json | undefined}
- * @param right {Json | undefined}
- * @returns {boolean}
- */
-function bodiesEqual(left: Json | undefined, right: Json | undefined): boolean {
-  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
-}
-
-/**
- * Maps a re-read master state into the RxDB conflict entry for one row.
- */
-function masterToConflict(
-  id: string,
-  master: MasterState
-): WithDeleted<SyncedDoc> {
-  const conflict: WithDeleted<SyncedDoc> = {
-    id,
-    updatedAt: master.updatedAt,
-    version: master.version,
-    _deleted: master.deleted
-  }
-  if (master.data !== undefined) {
-    conflict.data = master.data
-  }
-  if (master.metaVersion !== undefined) {
-    conflict.metaVersion = master.metaVersion
-  }
-  if (master.custom !== undefined) {
-    conflict.custom = master.custom
-  }
-  if (master.epoch !== undefined) {
-    conflict.epoch = master.epoch
-  }
-  return conflict
-}
-
-/**
- * Builds the RxDB conflict entry (the real current master state) for a row whose
- * conditional write was rejected with `412`. Re-reads the resource; when it is
- * genuinely absent (a delete/delete race) the master is a tombstone synthesized
- * from what we know locally.
+ * Maps a re-read master state into the RxDB conflict entry for one row, or --
+ * when the re-read found the resource genuinely absent (`master === null`, a
+ * delete/delete race) -- synthesizes the tombstone conflict entry from what we
+ * know locally. Shared by the `412` assembler and the `/meta` 404 recovery, so
+ * both report an absent master identically.
  *
  * @param options {object}
- * @param options.port {WasSyncPort}
  * @param options.id {string}
+ * @param options.master {MasterState | null}
  * @param options.fallbackUpdatedAt {string}   used if the resource is now absent
  * @param options.fallbackVersion {number}     used if the resource is now absent
- * @returns {Promise<WithDeleted<SyncedDoc>>}
+ * @returns {WithDeleted<SyncedDoc>}
  */
-async function assembleConflict({
-  port,
+function masterOrTombstone({
   id,
+  master,
   fallbackUpdatedAt,
   fallbackVersion
 }: {
-  port: WasSyncPort
   id: string
+  master: MasterState | null
   fallbackUpdatedAt: string
   fallbackVersion: number
-}): Promise<WithDeleted<SyncedDoc>> {
-  const master: MasterState | null = await port.get({ id })
+}): WithDeleted<SyncedDoc> {
   if (master === null) {
     return {
       id,
@@ -136,7 +92,14 @@ async function assembleConflict({
       _deleted: true
     }
   }
-  return masterToConflict(id, master)
+  const conflict: WithDeleted<SyncedDoc> = {
+    id,
+    updatedAt: master.updatedAt,
+    version: master.version,
+    _deleted: master.deleted
+  }
+  copyOptionalBodyFields({ source: master, target: conflict })
+  return conflict
 }
 
 /**
@@ -151,17 +114,21 @@ async function assembleConflict({
  * @param options.port {WasSyncPort}
  * @param options.newDocumentState {WithDeleted<SyncedDoc>}
  * @param [options.assumedMasterState] {WithDeleted<SyncedDoc>}
+ * @param [options.cache] {MasterReadCache}   the push batch's shared
+ *   master-read memo
  * @returns {Promise<{ conflict: WithDeleted<SyncedDoc> | null,
  *   ack: PushWriteAck | null }>}
  */
 async function pushRow({
   port,
   newDocumentState,
-  assumedMasterState
+  assumedMasterState,
+  cache
 }: {
   port: WasSyncPort
   newDocumentState: WithDeleted<SyncedDoc>
   assumedMasterState?: WithDeleted<SyncedDoc>
+  cache?: MasterReadCache
 }): Promise<{
   conflict: WithDeleted<SyncedDoc> | null
   ack: PushWriteAck | null
@@ -172,21 +139,37 @@ async function pushRow({
   const ack: PushWriteAck = { id }
   const hasAck = () =>
     ack.version !== undefined || ack.metaVersion !== undefined
+  const fallbackVersion = () =>
+    ack.version ?? assumedVersion ?? newDocumentState.version
 
-  // Builds the conflict outcome for a 412 at either half, PRESERVING any ack
-  // already earned: a content write accepted before a `/meta` 412 must keep its
-  // acked `version` (and feed it to the re-read fallback), or the local row
-  // keeps the pre-write version and every later conditional write sends a
-  // stale `If-Match`.
-  const conflictResult = async () => {
-    const conflict = await assembleConflict({
-      port,
+  // Re-reads this row's master. A row that has ALREADY written this batch
+  // (a content write accepted before a `/meta` rejection) bypasses the batch
+  // memo: a sibling's feed read may have paged past this resource before our
+  // own write landed, and the conflict entry must carry the revision that write
+  // produced. Rows that wrote nothing -- the ordinary content 412, the common
+  // case -- are exactly what the memo is for.
+  const readMaster = async (): Promise<MasterState | null> =>
+    hasAck()
+      ? port.get({ id })
+      : port.get({ id, ...(cache !== undefined && { cache }) })
+
+  // Builds the conflict outcome from a re-read master (or from its absence, a
+  // delete/delete race), PRESERVING any ack already earned: a content write
+  // accepted before a `/meta` 412 must keep its acked `version` (and feed it to
+  // the absent-master fallback), or the local row keeps the pre-write version
+  // and every later conditional write sends a stale `If-Match`.
+  const conflictOutcome = (master: MasterState | null) => ({
+    conflict: masterOrTombstone({
       id,
+      master,
       fallbackUpdatedAt: newDocumentState.updatedAt,
-      fallbackVersion: ack.version ?? assumedVersion ?? newDocumentState.version
-    })
-    return { conflict, ack: hasAck() ? ack : null }
-  }
+      fallbackVersion: fallbackVersion()
+    }),
+    ack: hasAck() ? ack : null
+  })
+
+  // The 412 path: re-read the resource, then report its real master state.
+  const conflictResult = async () => conflictOutcome(await readMaster())
 
   try {
     if (newDocumentState._deleted) {
@@ -273,18 +256,9 @@ async function pushRow({
       // (the conflict handler reconciles it) instead of flipping the whole
       // session to "access expired" and wedging the batch in RxDB's retries.
       if (err instanceof WasSyncAuthError && err.status === 404) {
-        const master = await port.get({ id })
+        const master = await readMaster()
         if (master === null || master.deleted) {
-          const conflict = master
-            ? masterToConflict(id, master)
-            : {
-                id,
-                updatedAt: newDocumentState.updatedAt,
-                version:
-                  ack.version ?? assumedVersion ?? newDocumentState.version,
-                _deleted: true
-              }
-          return { conflict, ack: hasAck() ? ack : null }
+          return conflictOutcome(master)
         }
         // The resource is alive and readable while its `/meta` write 404s:
         // the write itself was rejected, so the auth signal stands.
@@ -308,6 +282,12 @@ async function pushRow({
  * caller can write the new `version` / `metaVersion` back into the local row
  * and keep subsequent conditional writes' `If-Match` in step with the server.
  *
+ * Each batch gets one short-lived master-read memo, shared by its rows and
+ * discarded with the batch (never held across batches, where it would go
+ * stale). A conflict re-read walks the changes feed from its origin and so pages
+ * past every other conflicting row's master on the way; without the memo a batch
+ * with k conflicts would run k concurrent full-feed walks.
+ *
  * @param port {WasSyncPort}
  * @param [onWriteAccepted] {(ack: PushWriteAck) => Promise<void>}
  * @returns {(rows: Array<{ newDocumentState: WithDeleted<SyncedDoc>,
@@ -324,12 +304,14 @@ export function createPushHandler(
       assumedMasterState?: WithDeleted<SyncedDoc>
     }>
   ): Promise<WithDeleted<SyncedDoc>[]> {
+    const cache: MasterReadCache = { byId: new Map(), inFlight: null }
     const results = await Promise.all(
       rows.map(async row => {
         const result = await pushRow({
           port,
           newDocumentState: row.newDocumentState,
-          assumedMasterState: row.assumedMasterState
+          assumedMasterState: row.assumedMasterState,
+          cache
         })
         if (result.ack !== null && onWriteAccepted !== undefined) {
           await onWriteAccepted(result.ack)

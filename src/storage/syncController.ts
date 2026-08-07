@@ -100,11 +100,6 @@ export function isAuthError(err: unknown): boolean {
   return false
 }
 
-interface CollectionReplication {
-  state: RxReplicationState<SyncedDoc, SyncCheckpoint>
-  subscriptions: Unsubscribable[]
-}
-
 /**
  * A per-session controller around background replication. Construct via
  * {@link createSyncController}.
@@ -112,7 +107,10 @@ interface CollectionReplication {
 export class SyncController {
   #collections: WasCollectionConfig[]
   #sync: WasSyncConfig
-  #replications: CollectionReplication[] = []
+  #replications: Array<{
+    state: RxReplicationState<SyncedDoc, SyncCheckpoint>
+    subscriptions: Unsubscribable[]
+  }> = []
   #onlineHandler?: () => void
   #pollTimer?: ReturnType<typeof setInterval>
   #started = false
@@ -243,31 +241,45 @@ export class SyncController {
       // per-collection statuses are left at `error` (visible in the rollup)
       // and the error RETHROWS so the caller's bootstrap promise rejects and
       // the session can surface it.
-      if (this.#onlineHandler) {
-        window.removeEventListener('online', this.#onlineHandler)
-        this.#onlineHandler = undefined
-      }
-      if (this.#pollTimer) {
-        clearInterval(this.#pollTimer)
-        this.#pollTimer = undefined
-      }
-      for (const { state, subscriptions } of this.#replications) {
-        for (const subscription of subscriptions) {
-          subscription.unsubscribe()
-        }
-        try {
-          await state.cancel()
-        } catch (cancelErr) {
-          console.error('Error cancelling replication:', cancelErr)
-        }
-      }
-      this.#replications = []
+      await this.#teardownReplications()
       this.#started = false
       for (const { id } of this.#collections) {
         setStatus(id, 'error')
       }
       throw err
     }
+  }
+
+  /**
+   * The shared release path behind the failed-bring-up unwind and {@link stop}:
+   * drops the `online` listener, clears the poll timer, unsubscribes every
+   * per-collection subscription, and cancels every replication. What each caller
+   * does AFTER this differs (the unwind leaves the per-collection statuses at
+   * `error` and rethrows; `stop()` resets the status store behind its terminal
+   * latch), so the divergence stays at the call sites.
+   *
+   * @returns {Promise<void>}
+   */
+  async #teardownReplications(): Promise<void> {
+    if (this.#onlineHandler) {
+      window.removeEventListener('online', this.#onlineHandler)
+      this.#onlineHandler = undefined
+    }
+    if (this.#pollTimer) {
+      clearInterval(this.#pollTimer)
+      this.#pollTimer = undefined
+    }
+    for (const { state, subscriptions } of this.#replications) {
+      for (const subscription of subscriptions) {
+        subscription.unsubscribe()
+      }
+      try {
+        await state.cancel()
+      } catch (err) {
+        console.error('Error cancelling replication:', err)
+      }
+    }
+    this.#replications = []
   }
 
   /**
@@ -292,25 +304,7 @@ export class SyncController {
     // Latch first so a concurrent `start()` (a logout racing the session
     // bootstrap) sees the controller as terminally stopped and bails.
     this.#stopped = true
-    if (this.#onlineHandler) {
-      window.removeEventListener('online', this.#onlineHandler)
-      this.#onlineHandler = undefined
-    }
-    if (this.#pollTimer) {
-      clearInterval(this.#pollTimer)
-      this.#pollTimer = undefined
-    }
-    for (const { state, subscriptions } of this.#replications) {
-      for (const subscription of subscriptions) {
-        subscription.unsubscribe()
-      }
-      try {
-        await state.cancel()
-      } catch (err) {
-        console.error('Error cancelling replication:', err)
-      }
-    }
-    this.#replications = []
+    await this.#teardownReplications()
     useSyncStatusStore.getState().reset()
     this.#started = false
   }

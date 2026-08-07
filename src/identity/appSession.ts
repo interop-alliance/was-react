@@ -36,6 +36,14 @@ export interface RestoredAppSession extends AppSessionRecord {
 }
 
 /**
+ * A nominal far-future expiry (ms) standing in for "no expiry": used both for a
+ * login that returned no grants (so there is no earliest-expiry to report) and
+ * for grants minted without one (dev/test). Well past any near-expiry warning,
+ * so the expiry watch never fires against it.
+ */
+export const NO_EXPIRY_MS = 100 * 365 * 24 * 60 * 60 * 1000
+
+/**
  * Whether an ISO `expires` timestamp is in the past (or malformed).
  */
 export function isExpired(expires: string, now: Date = new Date()): boolean {
@@ -104,6 +112,55 @@ export async function persistAppSession({
 }
 
 /**
+ * Whether a value loaded out of a {@link SeedStore} is a structurally complete
+ * session record. Says nothing about freshness -- an expired record is still a
+ * well-formed one (which is exactly what the reconnect path reads).
+ *
+ * @param stored {unknown}
+ * @returns {boolean}
+ */
+function isAppSessionRecord(stored: unknown): stored is AppSessionRecord {
+  const record = stored as AppSessionRecord | null
+  return (
+    !!record &&
+    typeof record.controllerDid === 'string' &&
+    typeof record.serverUrl === 'string' &&
+    typeof record.spaceId === 'string' &&
+    Array.isArray(record.grants) &&
+    record.grants.length > 0 &&
+    typeof record.expires === 'string'
+  )
+}
+
+/**
+ * Reads the persisted seed and session record WITHOUT clearing anything and
+ * WITHOUT applying the expiry rule -- the reconnect path's read, where the
+ * record being past its expiry is the normal case and the seed must survive it
+ * (only the grants need renewing). Either half comes back `null` when it is
+ * missing or malformed.
+ *
+ * Use {@link restoreAppSession} for a hot restore instead: it enforces the
+ * expiry and wipes a stale record.
+ *
+ * @param options {object}
+ * @param options.store {SeedStore}
+ * @returns {Promise<{ seed: Uint8Array | null, record: AppSessionRecord | null }>}
+ */
+export async function peekAppSession({ store }: { store: SeedStore }): Promise<{
+  seed: Uint8Array | null
+  record: AppSessionRecord | null
+}> {
+  const [seed, stored] = await Promise.all([
+    store.loadSeed(),
+    store.loadRecord()
+  ])
+  return {
+    seed: seed ?? null,
+    record: isAppSessionRecord(stored) ? stored : null
+  }
+}
+
+/**
  * Restores the persisted session, or returns `null` (clearing any stale state)
  * when it is missing, malformed, or expired.
  *
@@ -116,21 +173,8 @@ export async function restoreAppSession({
 }: {
   store: SeedStore
 }): Promise<RestoredAppSession | null> {
-  const [seed, stored] = await Promise.all([
-    store.loadSeed(),
-    store.loadRecord()
-  ])
-  const record = stored as AppSessionRecord | null
-  if (
-    !seed ||
-    !record ||
-    typeof record.controllerDid !== 'string' ||
-    typeof record.serverUrl !== 'string' ||
-    typeof record.spaceId !== 'string' ||
-    !Array.isArray(record.grants) ||
-    record.grants.length === 0 ||
-    typeof record.expires !== 'string'
-  ) {
+  const { seed, record } = await peekAppSession({ store })
+  if (!seed || !record) {
     return null
   }
   if (isExpired(record.expires)) {

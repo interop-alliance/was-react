@@ -9,14 +9,8 @@
  * Dismissing the dialog (backdrop / escape / Cancel) cancels logout entirely; no
  * action runs and the session stays connected.
  */
-import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle
-} from '@mui/material'
+import { Button } from '@mui/material'
+import { ConfirmDialog } from './ConfirmDialog.js'
 import { useLogout } from '../react/hooks.js'
 
 /**
@@ -41,33 +35,34 @@ export function LogoutDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} data-testid="logout-dialog">
-      <DialogTitle>Log out</DialogTitle>
-      <DialogContent>
-        <DialogContentText>
-          Keep your data on this device for next time, or erase it now. Erasing
-          removes the local copy from this device only -- data already synced to
-          your storage stays there and returns when you log back in.
-        </DialogContentText>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} data-testid="logout-cancel">
-          Cancel
-        </Button>
-        <Button
-          onClick={() => void handleLogout(false)}
-          data-testid="logout-keep"
-        >
-          Log out, keep data
-        </Button>
-        <Button
-          color="error"
-          onClick={() => void handleLogout(true)}
-          data-testid="logout-wipe"
-        >
-          Log out, erase data
-        </Button>
-      </DialogActions>
-    </Dialog>
+    <ConfirmDialog
+      testId="logout"
+      open={open}
+      onClose={onClose}
+      title="Log out"
+      body={
+        'Keep your data on this device for next time, or erase it now. ' +
+        'Erasing removes the local copy from this device only -- data ' +
+        'already synced to your storage stays there and returns when you ' +
+        'log back in.'
+      }
+      actions={
+        <>
+          <Button
+            onClick={() => void handleLogout(false)}
+            data-testid="logout-keep"
+          >
+            Log out, keep data
+          </Button>
+          <Button
+            color="error"
+            onClick={() => void handleLogout(true)}
+            data-testid="logout-wipe"
+          >
+            Log out, erase data
+          </Button>
+        </>
+      }
+    />
   )
 }

@@ -30,7 +30,7 @@ import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 import { errorStatus, errorMessage } from '../sync/index.js'
 import type { WasCollectionConfig } from '../config.js'
-import type { ParsedGrants } from '../grants.js'
+import { collectionPath, type ParsedGrants } from '../grants.js'
 
 /**
  * The outcome of a best-effort encryption-descriptor PUT, for diagnostics.
@@ -62,6 +62,15 @@ export interface EqualityQueryPage {
   cursor?: string
 }
 
+/**
+ * What one registered collection contributes to request routing: its effective
+ * visibility and its declared equality indexes.
+ */
+type CollectionRouting = {
+  visibility: 'private' | 'public'
+  indexes?: string[]
+}
+
 export class WasRemoteStore {
   public readonly was: WasClient
   public readonly serverUrl: string
@@ -69,10 +78,7 @@ export class WasRemoteStore {
   readonly #byCollectionId: Record<string, IZcap>
   // Per WAS collection id: the effective visibility + declared equality
   // indexes (the registry guarantees one declaration per id).
-  readonly #configById: Map<
-    string,
-    { visibility: 'private' | 'public'; indexes?: string[] }
-  >
+  readonly #configById: Map<string, CollectionRouting>
 
   private constructor({
     was,
@@ -81,10 +87,7 @@ export class WasRemoteStore {
   }: {
     was: WasClient
     parsed: ParsedGrants
-    configById: Map<
-      string,
-      { visibility: 'private' | 'public'; indexes?: string[] }
-    >
+    configById: Map<string, CollectionRouting>
   }) {
     this.was = was
     this.serverUrl = parsed.serverUrl
@@ -120,10 +123,7 @@ export class WasRemoteStore {
       zcapClient,
       encryption: createEdvEncryption({ resolveKeys: async () => null })
     })
-    const configById = new Map<
-      string,
-      { visibility: 'private' | 'public'; indexes?: string[] }
-    >(
+    const configById = new Map<string, CollectionRouting>(
       collections.map(entry => [
         entry.id,
         {
@@ -169,7 +169,7 @@ export class WasRemoteStore {
     try {
       const response = await this.was.request({
         capability,
-        path: `/space/${this.spaceId}/${collectionId}`,
+        path: collectionPath({ spaceId: this.spaceId, collectionId }),
         method: 'GET'
       })
       const description = response.data as
@@ -196,15 +196,25 @@ export class WasRemoteStore {
    * no-op fallback for servers/wallets that did not provision the roster.
    *
    * @param collectionId {string}   the WAS collection id
+   * @param [options] {object}   supply this when the caller has ALREADY read the
+   *   collection description, to spend one authenticated GET rather than two:
+   *   the read-before-PUT guard then turns on the descriptor handed in here
+   *   instead of re-reading it. `undefined` means "read, and the collection
+   *   carries no descriptor" -- not "unknown"
+   * @param options.encryption {CollectionEncryption | undefined}   the
+   *   already-read descriptor
    * @returns {Promise<DeclarationResult>}
    */
   async markCollectionEncrypted(
-    collectionId: string
+    collectionId: string,
+    options?: { encryption: CollectionEncryption | undefined }
   ): Promise<DeclarationResult> {
     if (this.#configById.get(collectionId)?.visibility === 'public') {
       return { collectionId, ok: true, skipped: true }
     }
-    const existing = await this.readCollectionEncryption(collectionId)
+    const existing = options
+      ? options.encryption
+      : await this.readCollectionEncryption(collectionId)
     if (existing) {
       return { collectionId, ok: true, skipped: true }
     }
@@ -321,7 +331,9 @@ export class WasRemoteStore {
     // The list endpoint is the trailing-slash collection items URL.
     const response = await this.was.request({
       capability,
-      path: `/space/${this.spaceId}/${collectionId}/?${params.join('&')}`,
+      path:
+        `${collectionPath({ spaceId: this.spaceId, collectionId })}/` +
+        `?${params.join('&')}`,
       method: 'GET'
     })
     const page = response.data as Partial<EqualityQueryPage> | undefined
@@ -382,8 +394,9 @@ export class WasRemoteStore {
       )
     }
     return (
-      `${this.serverUrl}/space/${this.spaceId}/${collectionId}/` +
-      `${encodeURIComponent(id)}`
+      this.serverUrl +
+      collectionPath({ spaceId: this.spaceId, collectionId }) +
+      `/${encodeURIComponent(id)}`
     )
   }
 
@@ -406,7 +419,7 @@ export class WasRemoteStore {
     try {
       const response = await this.was.request({
         capability,
-        path: `/space/${this.spaceId}/${collectionId}`,
+        path: collectionPath({ spaceId: this.spaceId, collectionId }),
         method: 'PUT',
         json: description
       })

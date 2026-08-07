@@ -19,16 +19,14 @@ import { create } from 'zustand'
  */
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error'
 
-interface SyncStatusState {
+export const useSyncStatusStore = create<{
   /**
    * Keyed by WAS collection id (e.g. `action-items`).
    */
   statuses: Record<string, SyncStatus>
   setStatus: (collectionId: string, status: SyncStatus) => void
   reset: () => void
-}
-
-export const useSyncStatusStore = create<SyncStatusState>()(set => ({
+}>()(set => ({
   statuses: {},
   setStatus: (collectionId, status) =>
     set(state => ({

@@ -21,6 +21,7 @@ import type {
 } from '@interop/data-integrity-core'
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvDocCipher } from '@interop/was-client/edv'
+import { isEncryptedEnvelope } from '@interop/was-client/sync'
 import type { Json } from './types.js'
 
 /**
@@ -42,22 +43,6 @@ export interface DocCipher {
     current: Json
   }): Promise<{ id: string; envelope: Json; epoch?: string }>
   decrypt(options: { envelope: Json }): Promise<Json>
-}
-
-/**
- * Whether a stored body is an EDV encryption envelope (carries an object `jwe`)
- * rather than plaintext. Lets read paths stay tolerant of any legacy plaintext
- * row.
- *
- * @param data {Json | undefined}
- * @returns {boolean}
- */
-export function isEncryptedEnvelope(data: Json | undefined): boolean {
-  if (data === undefined || data === null || typeof data !== 'object') {
-    return false
-  }
-  const jwe = (data as { jwe?: unknown }).jwe
-  return jwe !== null && typeof jwe === 'object'
 }
 
 /**

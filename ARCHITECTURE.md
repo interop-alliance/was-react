@@ -25,8 +25,7 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
   generic entity stores, the delegated remote store, the read-only
   `SharedCollectionReader`, the sync controller, sync status, and the rehydrate
   mechanism.
-- `src/session/` -- the wallet-mode auth store factory (`createAuthStore`) and
-  the shared app-ready gate.
+- `src/session/` -- the wallet-mode auth store factory (`createAuthStore`).
 - `src/react/` -- the `WasSessionProvider` + the hooks (`useSession`,
   `useLogin`, `useLogout`, `useReconnect`, `useSyncStatus`, ...).
 - `src/mui/` -- optional MUI + react-router components (`ProtectedRoute`,

@@ -32,7 +32,7 @@ import {
   parseSeedCredential,
   type SeedCredentialConfig
 } from '../identity/seedCredential.js'
-import { initAppSession } from '../identity/initAppSession.js'
+import { NO_EXPIRY_MS } from '../identity/appSession.js'
 import type { IdentityAgents } from '../identity/agents.js'
 import { chapiGet } from './chapi.js'
 import {
@@ -136,12 +136,6 @@ export class WalletUnsupportedError extends Error {
 }
 
 /**
- * A nominal far-future expiry (ms) used when an app requests no collections (so
- * there are no grants and thus no earliest-expiry to report).
- */
-const NO_GRANTS_EXPIRY_MS = 100 * 365 * 24 * 60 * 60 * 1000
-
-/**
  * Reads the wallet-provided `presentation.appConnect.firstRun` boolean. Anything
  * other than boolean `true` (including an absent member -- a returning login) is
  * treated as `false`.
@@ -200,7 +194,7 @@ function checkGrantsForCollections({
     return {
       grants: [],
       parsed: { serverUrl: '', spaceId: '', byCollectionId: {} },
-      expires: new Date(Date.now() + NO_GRANTS_EXPIRY_MS).toISOString()
+      expires: new Date(Date.now() + NO_EXPIRY_MS).toISOString()
     }
   }
   return checkGrants({
@@ -208,6 +202,59 @@ function checkGrantsForCollections({
     controllerDid,
     collections: collectionIds
   })
+}
+
+/**
+ * Runs one App Connect round trip: builds the VPR, opens the single CHAPI `get`
+ * popup, and verifies the response presentation (cryptographically, plus the
+ * challenge/domain binds). Shared by the full login and the reconnect re-grant
+ * -- the same request either way; they differ only in what they take from the
+ * verified presentation, and in the step a user cancel names.
+ *
+ * @param options {object}
+ * @param options.config {LoginConfig}
+ * @param options.cancelStep {string}   the step a cancel is reported against
+ * @param [options.onPhase] {Function}
+ * @returns {Promise<IVerifiablePresentation>}
+ */
+async function runAppConnect({
+  config,
+  cancelStep,
+  onPhase
+}: {
+  config: LoginConfig
+  cancelStep: string
+  onPhase?: (phase: LoginPhase) => void
+}): Promise<IVerifiablePresentation> {
+  onPhase?.('connecting')
+  const challenge = newChallenge()
+  const vpr = buildAppConnectVpr({
+    challenge,
+    domain: window.location.origin,
+    appName: config.appName,
+    credential: config.credential,
+    collections: config.collections,
+    ...(config.sharedCollections && {
+      sharedCollections: config.sharedCollections
+    })
+  })
+  const presentation = await chapiGet({
+    vpr,
+    ...(config.mediatorBase !== undefined && {
+      mediatorBase: config.mediatorBase
+    })
+  })
+  if (!presentation) {
+    throw new LoginCancelledError(cancelStep)
+  }
+  onPhase?.('verifying')
+  await verifyLoginPresentation({
+    presentation,
+    challenge,
+    domain: window.location.origin,
+    documentLoader: config.documentLoader
+  })
+  return presentation
 }
 
 /**
@@ -231,33 +278,10 @@ export async function requestGrants({
   config: LoginConfig
   onPhase?: (phase: LoginPhase) => void
 }): Promise<CheckedGrants> {
-  onPhase?.('connecting')
-  const challenge = newChallenge()
-  const vpr = buildAppConnectVpr({
-    challenge,
-    domain: window.location.origin,
-    appName: config.appName,
-    credential: config.credential,
-    collections: config.collections,
-    ...(config.sharedCollections && {
-      sharedCollections: config.sharedCollections
-    })
-  })
-  const presentation = await chapiGet({
-    vpr,
-    ...(config.mediatorBase !== undefined && {
-      mediatorBase: config.mediatorBase
-    })
-  })
-  if (!presentation) {
-    throw new LoginCancelledError('storage grants')
-  }
-  onPhase?.('verifying')
-  await verifyLoginPresentation({
-    presentation,
-    challenge,
-    domain: window.location.origin,
-    documentLoader: config.documentLoader
+  const presentation = await runAppConnect({
+    config,
+    cancelStep: 'storage grants',
+    ...(onPhase && { onPhase })
   })
   return checkGrantsForCollections({
     presentation,
@@ -290,33 +314,10 @@ export async function loginWithWallet({
   config: LoginConfig
   onPhase?: (phase: LoginPhase) => void
 }): Promise<LoginOutcome> {
-  onPhase?.('connecting')
-  const challenge = newChallenge()
-  const vpr = buildAppConnectVpr({
-    challenge,
-    domain: window.location.origin,
-    appName: config.appName,
-    credential: config.credential,
-    collections: config.collections,
-    ...(config.sharedCollections && {
-      sharedCollections: config.sharedCollections
-    })
-  })
-  const presentation = await chapiGet({
-    vpr,
-    ...(config.mediatorBase !== undefined && {
-      mediatorBase: config.mediatorBase
-    })
-  })
-  if (!presentation) {
-    throw new LoginCancelledError('wallet login')
-  }
-  onPhase?.('verifying')
-  await verifyLoginPresentation({
-    presentation,
-    challenge,
-    domain: window.location.origin,
-    documentLoader: config.documentLoader
+  const presentation = await runAppConnect({
+    config,
+    cancelStep: 'wallet login',
+    ...(onPhase && { onPhase })
   })
 
   // The wallet mints the app key on first run, so a response with no app-key
@@ -340,7 +341,10 @@ export async function loginWithWallet({
   const seed = parsedCredential.seed
   const firstRun = appConnectFirstRun(presentation)
 
-  const identity = await initAppSession({ seed })
+  // The master identity comes off the parse, which already derived it from this
+  // seed to check the seed-to-DID binding (the same derivation, and the same
+  // 32-byte seed rule, `initAppSession` would apply).
+  const identity = parsedCredential.identity
   // Grants ride in the SAME response; validate them against the app-key subject
   // DID the wallet delegated to.
   const checked = checkGrantsForCollections({

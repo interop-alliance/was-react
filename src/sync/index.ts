@@ -11,11 +11,7 @@
 export { createWasReplication } from './wasReplication.js'
 export { syncedDocSchema } from './syncedDocSchema.js'
 export { createPullHandler, wireDocToRxDoc } from './changesQuery.js'
-export {
-  createPushHandler,
-  formatEtag,
-  type PushWriteAck
-} from './pushWrites.js'
+export { createPushHandler, type PushWriteAck } from './pushWrites.js'
 export {
   WasSyncConflictError,
   WasSyncAuthError,
@@ -24,16 +20,23 @@ export {
   type WireDoc,
   type SyncedDoc,
   type MasterState,
+  type MasterReadCache,
   type WasSyncBasePort,
   type WasSyncPort
 } from './types.js'
-export { createWasSyncPort, errorStatus, errorMessage } from './wasSyncPort.js'
+export { createWasSyncPort, errorMessage } from './wasSyncPort.js'
 export { withFeedMasterRead } from './feedMasterPort.js'
 export {
   createDocCipher,
   createPlaintextDocCodec,
-  isEncryptedEnvelope,
   type DocCipher
 } from './docCipher.js'
 export { makeLwwConflictHandler } from './lwwConflictHandler.js'
-export { lwwFields, remotePayloadWins } from './lww.js'
+export { lwwFields, remotePayloadWins, type LwwFields } from './lww.js'
+// Owned by the client's sync subpath and re-exported verbatim, so the names this
+// package's consumers already import stay put.
+export {
+  errorStatus,
+  formatEtag,
+  isEncryptedEnvelope
+} from '@interop/was-client/sync'

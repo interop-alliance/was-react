@@ -47,9 +47,9 @@ export interface WasCollectionConfig {
    * declares a world-readable collection (the wallet provisions it with a
    * public-read policy); public implies PLAINTEXT -- payloads are stored as-is,
    * with no per-collection cipher, and the LWW bookkeeping fields (`updatedAt`,
-   * `deviceId`) are world-readable alongside the content (`deviceId` is a
-   * random per-device identifier, but still a linkability handle across a
-   * user's public documents). Changing a collection's visibility after first
+   * `clientId`) are world-readable alongside the content (`clientId` is a
+   * random per-install attribution label, but still a linkability handle across
+   * a user's public documents). Changing a collection's visibility after first
    * use is a data-migration event, not a config tweak: existing rows keep
    * their stored form and stop being readable by the other mode.
    */
@@ -68,7 +68,7 @@ export interface WasCollectionConfig {
 /**
  * One SHARED collection: a wallet-owned, already-encrypted collection the app
  * asks the wallet for read-and-decrypt access to (the
- * `urn:was:shared-collection` grant). It is the mirror image of
+ * `https://w3id.org/byoe#shared-collection` grant). It is the mirror image of
  * {@link WasCollectionConfig}: read-only, NOT replicated into RxDB, NOT written
  * to, and with no local replica. Reads go straight to the server through a
  * `SharedCollectionReader`.
@@ -143,7 +143,7 @@ export interface WasAppConfig {
   collections: WasCollectionConfig[]
   /**
    * Wallet-owned collections this app asks to be given READ-AND-DECRYPT access
-   * to (the `urn:was:shared-collection` grant). Read-only by construction: they
+   * to (the `https://w3id.org/byoe#shared-collection` grant). Read-only by construction: they
    * are never replicated into RxDB, never written to, and have no local
    * replica -- reads go straight to the server through a
    * `SharedCollectionReader`. A collection may be app-owned (`collections`) or
@@ -177,9 +177,9 @@ export interface WasAppConfig {
    */
   dbName?: string
   /**
-   * Prefix for this app's `localStorage` keys (e.g. the device id). Defaults to
-   * {@link DEFAULT_STORAGE_KEY_PREFIX}. Migrating apps should set their prior
-   * prefix so an existing per-install device id is preserved.
+   * Prefix for this app's `localStorage` keys (e.g. the LWW `clientId`).
+   * Defaults to {@link DEFAULT_STORAGE_KEY_PREFIX}. Migrating apps should set
+   * their prior prefix so an existing per-install client id is preserved.
    */
   storageKeyPrefix?: string
   /**
@@ -236,7 +236,7 @@ export const DEFAULT_DB_NAME = 'was-react'
 export const DEFAULT_ONBOARDING = 'login-gated'
 
 /**
- * Default `localStorage` key prefix (e.g. `was-react:deviceId`).
+ * Default `localStorage` key prefix (e.g. `was-react:clientId`).
  */
 export const DEFAULT_STORAGE_KEY_PREFIX = 'was-react:'
 

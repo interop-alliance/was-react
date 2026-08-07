@@ -27,7 +27,6 @@
  * so named slots need a grouped per-id reconciler first. An app that has
  * outgrown one document should move to `createEntityStore`.
  */
-import { useStore } from 'zustand'
 import type {
   StoreRegistry,
   WasAppConfig,
@@ -39,7 +38,7 @@ import type { SessionStatus } from '../session/authStore.js'
 import { createEntityStore } from '../storage/entityStore.js'
 import { getClientId, requireStore } from '../storage/storageManager.js'
 import type { SyncRollup } from '../storage/syncStatusStore.js'
-import { useAuthStore, useSession, useSyncStatus } from './hooks.js'
+import { useLogin, useLogout, useSyncStatus } from './hooks.js'
 
 /**
  * The localStore / RxDB collection key the facade's one collection uses.
@@ -181,6 +180,11 @@ export function defineDocumentApp<T extends object>({
 }): DocumentApp<T> {
   const { collectionId, initial } = document
   const docStore = createEntityStore<StoredDocument<T>>(DOCUMENT_COLLECTION_KEY)
+  // Resolved once, under the same prefix the config hands the session layer,
+  // so the facade's stamps and the adoption repair share one identity.
+  const clientId = getClientId({
+    ...(storageKeyPrefix !== undefined && { storageKeyPrefix })
+  })
 
   const config: WasAppConfig = {
     appName,
@@ -226,9 +230,7 @@ export function defineDocumentApp<T extends object>({
     await docStore.getState().upsert({
       id: DOCUMENT_ID,
       updatedAt: new Date().toISOString(),
-      clientId: getClientId({
-        ...(storageKeyPrefix !== undefined && { storageKeyPrefix })
-      }),
+      clientId,
       data
     })
   }
@@ -283,11 +285,9 @@ export function defineDocumentApp<T extends object>({
 
   function useAppDocument(): ReturnType<DocumentApp<T>['useAppDocument']> {
     const held = docStore(state => state.byId.get(DOCUMENT_ID))
-    const { status, authenticating, error } = useSession()
+    const { login, authenticating, status, error } = useLogin()
     const { state: syncState } = useSyncStatus()
-    const store = useAuthStore()
-    const login = useStore(store, state => state.login)
-    const logout = useStore(store, state => state.logout)
+    const logout = useLogout()
     // Hydration completes before the machine leaves `boot`, so "left boot" is
     // exactly "the stored document (or its absence) is now known".
     const doc = status === 'boot' ? undefined : (held?.data ?? initial)

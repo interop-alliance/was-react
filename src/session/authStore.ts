@@ -51,10 +51,12 @@ import type { IdentityAgents } from '../identity/agents.js'
 import { createSeedStore, type SeedStore } from '../identity/seedStore.js'
 import {
   clearAppSession,
+  peekAppSession,
   persistAppSession,
   restoreAppSession,
   isNearExpiry,
-  earliestExpiry
+  earliestExpiry,
+  NO_EXPIRY_MS
 } from '../identity/appSession.js'
 import {
   loginWithWallet,
@@ -68,6 +70,7 @@ import { LocalStore, dbNameForController } from '../storage/localStore.js'
 import {
   clearLocalStore,
   clearRemoteStore,
+  getClientId,
   hasStore,
   requireStore,
   setLocalStore,
@@ -110,15 +113,6 @@ interface AdoptSource {
   entities: Record<string, Array<{ id: string }>>
 }
 
-interface ActiveSession {
-  seed: Uint8Array
-  identity: IdentityAgents
-  parsed: ParsedGrants
-  grants: IZcap[]
-  expires: string
-  adopt?: AdoptSource
-}
-
 export interface AuthState {
   status: SessionStatus
   /**
@@ -127,6 +121,13 @@ export interface AuthState {
    * store's own transitions.
    */
   onboarding: 'local-first' | 'login-gated'
+  /**
+   * The per-install LWW attribution id, resolved once at store creation from
+   * `WasAppConfig.storageKeyPrefix`. Stamp it (with a fresh `updatedAt`) onto
+   * every entity insert and update; the adoption repair uses the same value,
+   * so one install writes under one identity.
+   */
+  clientId: string
   /**
    * A Login With Wallet flow is in flight (the transient the login page's busy
    * state keys off; distinct from the `status`, which stays `local` throughout).
@@ -248,12 +249,6 @@ export interface AuthState {
 export type WasAuthStore = StoreApi<AuthState>
 
 /**
- * A nominal far-future expiry (ms) for grants minted without one (dev/test).
- * Well past the near-expiry warning, so the watch never fires against them.
- */
-const FAR_FUTURE_EXPIRY_MS = 100 * 365 * 24 * 60 * 60 * 1000
-
-/**
  * Builds the session auth store bound to an app's config and store registry.
  * Call once (the React provider does) and share the returned store through
  * context; the hooks read it via `useStore`.
@@ -281,6 +276,14 @@ export function createAuthStore({
 }): WasAuthStore {
   const dbName = config.dbName ?? DEFAULT_DB_NAME
   const onboarding = config.onboarding ?? DEFAULT_ONBOARDING
+  // Resolve the per-install LWW client id ONCE, honoring the configured
+  // localStorage prefix, so every stamp -- the app's own writes and the
+  // adoption repair -- carries the same attribution identity.
+  const clientId = getClientId({
+    ...(config.storageKeyPrefix !== undefined && {
+      storageKeyPrefix: config.storageKeyPrefix
+    })
+  })
   const sessionStore =
     seedStore ?? createSeedStore({ dbName: `${dbName}-session` })
   // The anonymous-seed persistence for `local` mode: only a raw 32-byte seed,
@@ -572,7 +575,7 @@ export function createAuthStore({
     })
     setLocalStore(local)
     if (adopt) {
-      await mergeAdopted({ store: local, entities: adopt.entities })
+      await mergeAdopted({ store: local, entities: adopt.entities, clientId })
     }
     await hydrateAll(registry)
   }
@@ -626,7 +629,8 @@ export function createAuthStore({
    * anonymous local replica re-opened (so the app never dead-ends), then the
    * error is surfaced and rethrown for the caller to finalize.
    *
-   * @param session {ActiveSession}
+   * @param session {object}   the session to open: its seed, identity, parsed
+   *   grants and expiry, plus the payloads to adopt (merge logins only)
    * @returns {Promise<void>}
    */
   /**
@@ -648,7 +652,14 @@ export function createAuthStore({
     return undefined
   }
 
-  async function activateConnected(session: ActiveSession): Promise<void> {
+  async function activateConnected(session: {
+    seed: Uint8Array
+    identity: IdentityAgents
+    parsed: ParsedGrants
+    grants: IZcap[]
+    expires: string
+    adopt?: AdoptSource
+  }): Promise<void> {
     try {
       // Load the cached encryption descriptors so the connected replica opens
       // epoch-aware: an offline hot restore then decrypts multi-recipient
@@ -678,19 +689,29 @@ export function createAuthStore({
   /**
    * Tears down the live replica + sync + entity stores WITHOUT touching either
    * persisted seed (the anonymous seed and the session record survive). Closes
-   * the database; use {@link resetToFreshLocal} to delete it.
+   * the database by default; `deleteDb` deletes it instead (the wipe paths, via
+   * {@link resetToFreshLocal}).
    *
+   * @param [options] {object}
+   * @param [options.deleteDb] {boolean}   delete the database rather than
+   *   closing it
    * @returns {Promise<void>}
    */
-  async function deactivateStore(): Promise<void> {
+  async function deactivateStore({
+    deleteDb = false
+  }: { deleteDb?: boolean } = {}): Promise<void> {
     disarmExpiryWatch()
     cancelScheduledRehydrates()
     await stopController()
     if (hasStore()) {
       try {
-        await requireStore().close()
+        if (deleteDb) {
+          await requireStore().remove()
+        } else {
+          await requireStore().close()
+        }
       } catch (err) {
-        console.warn('Error closing the local store:', err)
+        console.warn('Error tearing down the local store:', err)
       }
       clearLocalStore()
     }
@@ -717,23 +738,7 @@ export function createAuthStore({
     deleteDb: boolean
     discardAnonSeed?: boolean
   }): Promise<void> {
-    disarmExpiryWatch()
-    cancelScheduledRehydrates()
-    await stopController()
-    if (hasStore()) {
-      try {
-        if (deleteDb) {
-          await requireStore().remove()
-        } else {
-          await requireStore().close()
-        }
-      } catch (err) {
-        console.warn('Error tearing down the local store:', err)
-      }
-      clearLocalStore()
-    }
-    clearAllEntityStores(registry)
-    useSyncStatusStore.getState().reset()
+    await deactivateStore({ deleteDb })
     if (discardAnonSeed) {
       await anonStore.clearSeedStore()
     }
@@ -788,10 +793,18 @@ export function createAuthStore({
       ...(storage && { storage })
     })
     try {
+      // Read every collection at once: the replica is detached for the whole
+      // read, so the transition is as short as the slowest collection rather
+      // than the sum of them all.
+      const listed = await Promise.all(
+        config.collections.map(async ({ key }) => ({
+          key,
+          payloads: await anonLocal.listEntities(key)
+        }))
+      )
       const entities: AdoptSource['entities'] = {}
       let total = 0
-      for (const { key } of config.collections) {
-        const payloads = await anonLocal.listEntities(key)
+      for (const { key, payloads } of listed) {
         if (payloads.length > 0) {
           entities[key] = payloads
           total += payloads.length
@@ -951,6 +964,7 @@ export function createAuthStore({
     return {
       status: 'boot',
       onboarding,
+      clientId,
       authenticating: false,
       phase: null,
       error: null,
@@ -1020,10 +1034,7 @@ export function createAuthStore({
           }
           // A genuine failure: record the message so the UI state still reflects
           // it, then rethrow so the caller's promise rejects.
-          const message =
-            err instanceof Error
-              ? `Login failed: ${err.message}`
-              : 'Login failed.'
+          const message = `Login failed: ${errorMessage(err)}`
           set({ authenticating: false, phase: null, error: message })
           throw err
         }
@@ -1055,7 +1066,7 @@ export function createAuthStore({
           const parsed = parseGrants(grants)
           const expires =
             earliestExpiry(grants) ??
-            new Date(Date.now() + FAR_FUTURE_EXPIRY_MS).toISOString()
+            new Date(Date.now() + NO_EXPIRY_MS).toISOString()
           const source = await detachAndCollect(adopt, preConnect)
           await activateConnected({
             seed,
@@ -1086,23 +1097,19 @@ export function createAuthStore({
         }
         set({ reconnecting: true, error: null })
         try {
-          // The seed survives grant expiry; only the grants need renewing. Read it
-          // directly (not via `restoreAppSession`, which WIPES an expired record
-          // -- seed included -- exactly in the case reconnect exists for). A
-          // missing seed means the session is unrecoverable in place.
-          const seed = await sessionStore.loadSeed()
+          // The seed survives grant expiry; only the grants need renewing, and
+          // the record carries the storage location the continuity check below
+          // compares against. Peeked (not `restoreAppSession`, which WIPES an
+          // expired record -- seed included -- exactly in the case reconnect
+          // exists for), and read before the popup so the comparison baseline
+          // cannot be overwritten mid-flow. A missing seed means the session is
+          // unrecoverable in place.
+          const { seed, record } = await peekAppSession({ store: sessionStore })
           if (!seed) {
             await get().logout()
             return
           }
           const identity = await initAppSession({ seed })
-          // The live session's storage location, for the continuity check
-          // below. Read before the popup so the comparison baseline cannot be
-          // overwritten mid-flow.
-          const record = (await sessionStore.loadRecord()) as {
-            serverUrl?: unknown
-            spaceId?: unknown
-          } | null
           const checked = await requestGrants({ identity, config: loginConfig })
           // Continuity check: `parseGrants` only asserts the returned set is
           // INTERNALLY consistent. Without this comparison, a reconnect
@@ -1113,8 +1120,6 @@ export function createAuthStore({
           // storage is a logout + fresh login, an explicit user action.
           if (
             record !== null &&
-            typeof record.serverUrl === 'string' &&
-            typeof record.spaceId === 'string' &&
             (checked.parsed.serverUrl !== record.serverUrl ||
               checked.parsed.spaceId !== record.spaceId)
           ) {
@@ -1142,9 +1147,7 @@ export function createAuthStore({
             reconnecting: false
           })
         } catch (err) {
-          const message =
-            err instanceof Error ? err.message : 'Reconnect failed.'
-          set({ reconnecting: false, error: message })
+          set({ reconnecting: false, error: errorMessage(err) })
         }
       },
 
@@ -1167,11 +1170,14 @@ export function createAuthStore({
           return false
         }
         try {
-          for (const { key } of config.collections) {
-            if ((await requireStore().countEntities(key)) > 0) {
-              return true
-            }
-          }
+          // Counted in parallel: this runs on a login-button click, so the
+          // probe costs one round of counts rather than one per collection.
+          const counts = await Promise.all(
+            config.collections.map(({ key }) =>
+              requireStore().countEntities(key)
+            )
+          )
+          return counts.some(count => count > 0)
         } catch {
           // A defensive guard: this probe runs off the serialized boot/destroy
           // lifecycle chain (the login page calls it while in `local`), so a
@@ -1180,7 +1186,6 @@ export function createAuthStore({
           // collects (through a fresh handle) whatever exists.
           return false
         }
-        return false
       },
 
       notifyAccessExpired: () => {

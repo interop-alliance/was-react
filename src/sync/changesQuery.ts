@@ -15,6 +15,7 @@ import type {
   WasSyncPort,
   WireDoc
 } from './types.js'
+import { copyOptionalBodyFields } from './types.js'
 
 /**
  * Maps one `changes`-feed wire document into an RxDB document. The envelope
@@ -35,18 +36,7 @@ export function wireDocToRxDoc(doc: WireDoc): WithDeleted<SyncedDoc> {
     version: doc.version,
     _deleted: doc._deleted
   }
-  if (doc.data !== undefined) {
-    rxDoc.data = doc.data
-  }
-  if (doc.metaVersion !== undefined) {
-    rxDoc.metaVersion = doc.metaVersion
-  }
-  if (doc.custom !== undefined) {
-    rxDoc.custom = doc.custom
-  }
-  if (doc.epoch !== undefined) {
-    rxDoc.epoch = doc.epoch
-  }
+  copyOptionalBodyFields({ source: doc, target: rxDoc })
   return rxDoc
 }
 

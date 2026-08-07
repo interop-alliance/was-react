@@ -102,8 +102,17 @@ export function clearRemoteStore(): void {
 }
 
 /**
+ * The unpersisted fallback client id for environments without `localStorage`
+ * (tests, SSR): process-stable, so every stamp within one run agrees, minted
+ * fresh on the next run.
+ */
+let fallbackClientId: string | null = null
+
+/**
  * A stable per-install client id (the last-write-wins tiebreak stamped into
- * every payload), persisted in localStorage under `<prefix>clientId`.
+ * every payload), persisted in localStorage under `<prefix>clientId`. In an
+ * environment without `localStorage` it falls back to a process-stable
+ * unpersisted id instead of throwing.
  *
  * @param [options] {object}
  * @param [options.storageKeyPrefix] {string}   the localStorage key prefix
@@ -114,10 +123,15 @@ export function getClientId({
   storageKeyPrefix = DEFAULT_STORAGE_KEY_PREFIX
 }: { storageKeyPrefix?: string } = {}): string {
   const clientIdKey = `${storageKeyPrefix}clientId`
-  let id = localStorage.getItem(clientIdKey)
-  if (!id) {
-    id = uuidv7()
-    localStorage.setItem(clientIdKey, id)
+  try {
+    let id = localStorage.getItem(clientIdKey)
+    if (!id) {
+      id = uuidv7()
+      localStorage.setItem(clientIdKey, id)
+    }
+    return id
+  } catch {
+    fallbackClientId ??= uuidv7()
+    return fallbackClientId
   }
-  return id
 }

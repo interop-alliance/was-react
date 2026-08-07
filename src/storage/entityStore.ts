@@ -155,6 +155,31 @@ export function createEntityStore<T extends { id: string }>(
       }
     }
 
+    /**
+     * Sets one doc in the Map, immediately (the optimistic patch behind a local
+     * insert / update / upsert -- an interactive write stays snappy rather than
+     * riding the pull-burst coalescing above).
+     */
+    function commitDoc(doc: T): void {
+      set(state => {
+        const byId = new Map(state.byId)
+        byId.set(doc.id, doc)
+        return { byId }
+      })
+    }
+
+    /**
+     * Drops one doc from the Map, immediately (the same optimistic patch behind
+     * a local `remove`).
+     */
+    function dropDoc(uuid: string): void {
+      set(state => {
+        const byId = new Map(state.byId)
+        byId.delete(uuid)
+        return { byId }
+      })
+    }
+
     return {
       byId: new Map<string, T>(),
       hydrate: async () => {
@@ -163,35 +188,19 @@ export function createEntityStore<T extends { id: string }>(
       },
       insert: async doc => {
         await requireStore().insertEntity(collectionKey, doc)
-        set(state => {
-          const byId = new Map(state.byId)
-          byId.set(doc.id, doc)
-          return { byId }
-        })
+        commitDoc(doc)
       },
       update: async doc => {
         await requireStore().updateEntity(collectionKey, doc)
-        set(state => {
-          const byId = new Map(state.byId)
-          byId.set(doc.id, doc)
-          return { byId }
-        })
+        commitDoc(doc)
       },
       upsert: async doc => {
         await requireStore().upsertEntity(collectionKey, doc)
-        set(state => {
-          const byId = new Map(state.byId)
-          byId.set(doc.id, doc)
-          return { byId }
-        })
+        commitDoc(doc)
       },
       remove: async uuid => {
         await requireStore().deleteEntity(collectionKey, uuid)
-        set(state => {
-          const byId = new Map(state.byId)
-          byId.delete(uuid)
-          return { byId }
-        })
+        dropDoc(uuid)
       },
       replaceAll: docs => {
         pending.length = 0

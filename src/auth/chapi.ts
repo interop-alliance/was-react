@@ -38,7 +38,7 @@ interface E2eBridgeWindow extends Window {
   __WAS_REACT_E2E_CHAPI__?: boolean
   __WAS_REACT_E2E_CHAPI_REQUESTS__?: Array<{
     id: number
-    type: 'get' | 'store'
+    type: 'get'
     body: unknown
   }>
   __WAS_REACT_E2E_CHAPI_RESPONSES__?: Record<number, ChapiWireResponse | null>
@@ -65,17 +65,15 @@ function e2eBridgeActive(): boolean {
 let e2eRequestId = 0
 
 /**
- * Queues a request for the e2e harness and polls for its response.
+ * Queues a `get` request for the e2e harness and polls for its response (the
+ * one-popup flow rides `get` alone, so that is the only queued request type).
  */
-async function e2eRoundTrip(
-  type: 'get' | 'store',
-  body: unknown
-): Promise<ChapiWireResponse | null> {
+async function e2eRoundTrip(body: unknown): Promise<ChapiWireResponse | null> {
   const win = window as E2eBridgeWindow
   win.__WAS_REACT_E2E_CHAPI_REQUESTS__ ??= []
   win.__WAS_REACT_E2E_CHAPI_RESPONSES__ ??= {}
   const id = ++e2eRequestId
-  win.__WAS_REACT_E2E_CHAPI_REQUESTS__.push({ id, type, body })
+  win.__WAS_REACT_E2E_CHAPI_REQUESTS__.push({ id, type: 'get', body })
   const deadline = Date.now() + 120_000
   while (Date.now() < deadline) {
     if (id in win.__WAS_REACT_E2E_CHAPI_RESPONSES__) {
@@ -128,7 +126,7 @@ export async function chapiGet({
 }): Promise<IVerifiablePresentation | null> {
   let wire: ChapiWireResponse | null
   if (e2eBridgeActive()) {
-    wire = await e2eRoundTrip('get', vpr)
+    wire = await e2eRoundTrip(vpr)
   } else {
     await loadChapi(mediatorBase !== undefined ? { mediatorBase } : {})
     const result = (await navigator.credentials.get({

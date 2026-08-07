@@ -96,6 +96,9 @@ export class LocalStore {
   #collections: Record<string, RxCollection<SyncedDoc>>
   #ciphers: Record<string, DocCipher>
   #configs: Record<string, WasCollectionConfig>
+  // The reverse of `#configs`: WAS collection id -> logical key, so a lookup by
+  // wire id (a fetched remote descriptor) costs no registry scan.
+  #keyByCollectionId: Map<string, string>
   // Per-collection logical-uuid -> envelope (RxDB primary key) index.
   #index: Record<string, Map<string, string>>
   // The app's identity KAK and its resolver: the ONE key material every
@@ -134,6 +137,9 @@ export class LocalStore {
     this.#collections = collections
     this.#ciphers = ciphers
     this.#configs = configs
+    this.#keyByCollectionId = new Map(
+      Object.entries(configs).map(([key, config]) => [config.id, key])
+    )
     this.#index = {}
     this.#keyAgreementKey = keyAgreementKey
     this.#keyResolver = keyResolver
@@ -196,22 +202,27 @@ export class LocalStore {
     // The descriptor each private cipher was built from, keyed by logical key.
     const builtDescriptors: Record<string, CollectionEncryption | undefined> =
       {}
-    for (const { key, id, visibility } of collections) {
-      // A public collection is stored plaintext: no key derivation, no EDV
-      // cipher -- just the pass-through codec behind the same seam.
-      if (visibility === 'public') {
-        ciphers[key] = createPlaintextDocCodec({ collectionId: id })
-        continue
-      }
-      const encryption = descriptors[id]
-      ciphers[key] = await createDocCipher({
-        keyAgreementKey,
-        keyResolver,
-        collectionId: id,
-        ...(encryption && { encryption })
+    // Build every collection's cipher concurrently: each private one runs real
+    // asymmetric crypto (an ECDH unwrap of the epoch secret) on the boot
+    // critical path, and no collection's cipher depends on another's.
+    await Promise.all(
+      collections.map(async ({ key, id, visibility }) => {
+        // A public collection is stored plaintext: no key derivation, no EDV
+        // cipher -- just the pass-through codec behind the same seam.
+        if (visibility === 'public') {
+          ciphers[key] = createPlaintextDocCodec({ collectionId: id })
+          return
+        }
+        const encryption = descriptors[id]
+        ciphers[key] = await createDocCipher({
+          keyAgreementKey,
+          keyResolver,
+          collectionId: id,
+          ...(encryption && { encryption })
+        })
+        builtDescriptors[key] = encryption
       })
-      builtDescriptors[key] = encryption
-    }
+    )
 
     const db = await createRxDatabase({
       name: dbName,
@@ -244,19 +255,10 @@ export class LocalStore {
             schema: syncedDocSchema(),
             // Reads the CURRENT cipher for this key at decrypt time (not a
             // captured reference), so a `rebuildCipher` after a descriptor change
-            // takes effect here too. `ciphers` is the same object the instance
-            // holds as `#ciphers`, so the swap is visible.
-            conflictHandler: makeLwwConflictHandler(envelope => {
-              const store = storeHolder.current
-              if (store) {
-                return store.decryptEnvelope(key, envelope)
-              }
-              const cipher = ciphers[key]
-              if (!cipher) {
-                throw new Error(`No cipher for collection "${key}".`)
-              }
-              return cipher.decrypt({ envelope })
-            })
+            // takes effect here too.
+            conflictHandler: makeLwwConflictHandler(envelope =>
+              storeHolder.current!.decryptEnvelope(key, envelope)
+            )
           }
         ]
       })
@@ -403,13 +405,11 @@ export class LocalStore {
     collectionId: string
     encryption: CollectionEncryption
   }): Promise<boolean> {
-    const entry = Object.entries(this.#configs).find(
-      ([, config]) => config.id === collectionId
-    )
-    if (!entry) {
+    const key = this.#keyByCollectionId.get(collectionId)
+    if (key === undefined) {
       return false
     }
-    const [key, config] = entry
+    const config = this.collectionConfig(key)
     if (config.visibility === 'public') {
       return false
     }
@@ -421,38 +421,18 @@ export class LocalStore {
   }
 
   /**
-   * Builds (or rebuilds) the `uuid -> envelopeId` index for one collection by
-   * decrypting every live row. Returns the index map.
+   * The `uuid -> envelopeId` index for one collection, built on first use.
+   * Building it IS hydration -- {@link listEntities} decrypts every live row and
+   * stores the index as a side effect -- so this delegates rather than running a
+   * second decrypt-and-index loop of its own.
    */
   async #ensureIndex(key: string): Promise<Map<string, string>> {
     const existing = this.#index[key]
     if (existing) {
       return existing
     }
-    const index = new Map<string, string>()
-    const docs = await this.#collection(key).find().exec()
-    // Decrypt rows concurrently: index building has no ordering dependency, so
-    // serializing the per-row WebCrypto work would only stall the unlock path.
-    const entries = await Promise.all(
-      docs.map(async doc => {
-        const { id: envelopeId, data } = doc.toMutableJSON()
-        if (data === undefined) {
-          return null
-        }
-        const payload = (await this.#decryptWithRefresh(
-          key,
-          data
-        )) as EntityPayload
-        return { envelopeId, uuid: payload.id }
-      })
-    )
-    for (const entry of entries) {
-      if (entry !== null) {
-        index.set(entry.uuid, entry.envelopeId)
-      }
-    }
-    this.#index[key] = index
-    return index
+    await this.listEntities(key)
+    return this.#index[key]!
   }
 
   /**
@@ -596,8 +576,7 @@ export class LocalStore {
    * @returns {Promise<number>}
    */
   async countEntities(key: string): Promise<number> {
-    const docs = await this.#collection(key).find().exec()
-    return docs.length
+    return await this.#collection(key).count().exec()
   }
 
   /**
@@ -653,15 +632,21 @@ export class LocalStore {
   >(key: string): Promise<T | null> {
     const collection = this.#collection(key)
     const rows = await collection.find().exec()
-    const decoded: Array<{ envelopeId: string; payload: T }> = []
-    for (const row of rows) {
-      const { id: envelopeId, data } = row.toMutableJSON()
-      if (data === undefined) {
-        continue
-      }
-      const payload = (await this.#decryptWithRefresh(key, data)) as T
-      decoded.push({ envelopeId, payload })
-    }
+    // Decrypt every row concurrently (same rationale as `listEntities`): the
+    // winner is picked from the whole decoded set afterwards, so payload order
+    // does not matter and serializing the per-row WebCrypto work would only add
+    // latency. The loser tombstoning below stays serial.
+    const decrypted = await Promise.all(
+      rows.map(async row => {
+        const { id: envelopeId, data } = row.toMutableJSON()
+        if (data === undefined) {
+          return null
+        }
+        const payload = (await this.#decryptWithRefresh(key, data)) as T
+        return { envelopeId, payload }
+      })
+    )
+    const decoded = decrypted.filter(entry => entry !== null)
     const index = new Map<string, string>()
     this.#index[key] = index
     if (decoded.length === 0) {

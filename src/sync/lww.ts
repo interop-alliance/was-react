@@ -14,6 +14,17 @@
  */
 
 /**
+ * The two fields the last-write-wins rule reads off a payload: the app-owned
+ * ISO-8601 edit stamp and the writing client's id (the exact-instant
+ * tiebreaker). Read off a doc with {@link lwwFields}; compared with
+ * {@link remotePayloadWins}.
+ */
+export interface LwwFields {
+  updatedAt: string
+  clientId: string
+}
+
+/**
  * Parses an ISO-8601 `updatedAt` into epoch ms, or `null` when unparseable.
  */
 function parseInstant(updatedAt: string): number | null {
@@ -32,13 +43,13 @@ function parseInstant(updatedAt: string): number | null {
  * every device converges on the same winner). When neither side parses, the
  * lexical compare of the raw strings is the deterministic fallback.
  *
- * @param remote {{ updatedAt: string; clientId: string }}
- * @param local {{ updatedAt: string; clientId: string }}
+ * @param remote {LwwFields}
+ * @param local {LwwFields}
  * @returns {boolean}   true if the remote payload should replace the local one
  */
 export function remotePayloadWins(
-  remote: { updatedAt: string; clientId: string },
-  local: { updatedAt: string; clientId: string }
+  remote: LwwFields,
+  local: LwwFields
 ): boolean {
   const remoteMs = parseInstant(remote.updatedAt)
   const localMs = parseInstant(local.updatedAt)
@@ -62,11 +73,9 @@ export function remotePayloadWins(
  * legal; callers fall back to their own rule for those.
  *
  * @param doc {unknown}
- * @returns {{ updatedAt: string, clientId: string } | null}
+ * @returns {LwwFields | null}
  */
-export function lwwFields(
-  doc: unknown
-): { updatedAt: string; clientId: string } | null {
+export function lwwFields(doc: unknown): LwwFields | null {
   const { updatedAt, clientId } = doc as {
     updatedAt?: unknown
     clientId?: unknown

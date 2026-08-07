@@ -60,22 +60,8 @@
  */
 import type { WithDeleted } from 'rxdb/plugins/core'
 import type { Json, SyncedDoc } from './types.js'
-import { remotePayloadWins } from './lww.js'
-
-/**
- * The LWW fields read out of a decrypted entity payload.
- */
-interface LwwPayload {
-  updatedAt: string
-  clientId: string
-}
-
-/**
- * Structural equality of two opaque bodies (used for the fast `isEqual`).
- */
-function bodiesEqual(a: Json | undefined, b: Json | undefined): boolean {
-  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
-}
+import { bodiesEqual } from './types.js'
+import { lwwFields, remotePayloadWins, type LwwFields } from './lww.js'
 
 /**
  * One side's comparability for the LWW rules: `payload` (a decrypted LWW
@@ -87,12 +73,14 @@ function bodiesEqual(a: Json | undefined, b: Json | undefined): boolean {
  * same silently loses writes.
  */
 type LwwSide =
-  | { kind: 'payload'; payload: LwwPayload }
+  | { kind: 'payload'; payload: LwwFields }
   | { kind: 'none' }
   | { kind: 'undecryptable'; err: unknown }
 
 /**
  * Decrypts one side's envelope into its LWW comparability (see {@link LwwSide}).
+ * A payload carrying no LWW stamp reads as `none`, the same as a tombstone or an
+ * absent body: nothing there to compare.
  */
 async function lwwFieldsOf(
   doc: WithDeleted<SyncedDoc>,
@@ -102,17 +90,8 @@ async function lwwFieldsOf(
     return { kind: 'none' }
   }
   try {
-    const payload = (await decrypt(doc.data)) as Partial<LwwPayload>
-    if (
-      typeof payload.updatedAt === 'string' &&
-      typeof payload.clientId === 'string'
-    ) {
-      return {
-        kind: 'payload',
-        payload: { updatedAt: payload.updatedAt, clientId: payload.clientId }
-      }
-    }
-    return { kind: 'none' }
+    const payload = lwwFields(await decrypt(doc.data))
+    return payload === null ? { kind: 'none' } : { kind: 'payload', payload }
   } catch (err) {
     return { kind: 'undecryptable', err }
   }
@@ -123,7 +102,7 @@ async function lwwFieldsOf(
  * decrypting through the supplied per-collection `decrypt`.
  *
  * @param decrypt {(envelope: Json) => Promise<Json>}   this collection's decrypt
- * @param [payloadWins] {(remote: LwwPayload, local: LwwPayload) => boolean}
+ * @param [payloadWins] {(remote: LwwFields, local: LwwFields) => boolean}
  *   the total-order comparator deciding whether the remote payload replaces the
  *   local one; defaults to {@link remotePayloadWins} (later `updatedAt` wins,
  *   `clientId` breaks a tie)
@@ -132,8 +111,8 @@ async function lwwFieldsOf(
 export function makeLwwConflictHandler(
   decrypt: (envelope: Json) => Promise<Json>,
   payloadWins: (
-    remote: LwwPayload,
-    local: LwwPayload
+    remote: LwwFields,
+    local: LwwFields
   ) => boolean = remotePayloadWins
 ) {
   return {

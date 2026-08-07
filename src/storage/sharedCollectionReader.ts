@@ -93,11 +93,14 @@ export class SharedCollectionReader {
   readonly #keyAgreementKey: IKeyAgreementKey
   readonly #keyResolver: IKeyResolver
   #cipher: DocCipher
-  // Whether an unknown-epoch descriptor refresh has already run for this reader. An
+  // The one unknown-epoch descriptor refresh this reader is allowed, memoized
+  // once started (it resolves to whether the rebuilt cipher is usable). An
   // epoch rotation emits no change-feed entry, so a stale descriptor is the
   // expected failure mode; one refresh per reader is enough to recover, and the
-  // cap keeps a genuinely undecryptable envelope from looping.
-  #refreshed = false
+  // cap keeps a genuinely undecryptable envelope from looping. Memoizing the
+  // PROMISE rather than a done flag also means bodies decrypting concurrently
+  // share the single re-read instead of racing it, so each of them recovers.
+  #refreshed?: Promise<boolean>
   // Whether the one-time "reading this collection the slow way" warning has
   // already been emitted for this reader.
   #warnedSlowPath = false
@@ -246,14 +249,16 @@ export class SharedCollectionReader {
       }
       checkpoint = page.checkpoint
     }
-    const resources: SharedResource[] = []
-    for (const [id, body] of bodies) {
-      const decrypted = await this.#decryptBody({ id, body: body ?? null })
-      if (decrypted !== undefined) {
-        resources.push({ id, data: decrypted })
-      }
-    }
-    return resources
+    // Decrypt the collected bodies concurrently: each is an independent unwrap
+    // with no ordering dependency, so serializing the per-body WebCrypto work
+    // would only add latency to the read.
+    const decrypted = await Promise.all(
+      [...bodies].map(async ([id, body]) => {
+        const data = await this.#decryptBody({ id, body: body ?? null })
+        return data === undefined ? null : { id, data }
+      })
+    )
+    return decrypted.filter(resource => resource !== null)
   }
 
   /**
@@ -334,35 +339,51 @@ export class SharedCollectionReader {
     try {
       return await this.#cipher.decrypt({ envelope: body })
     } catch (err) {
-      if (err instanceof UnknownEpochError && !this.#refreshed) {
-        this.#refreshed = true
-        // The recovery itself may fail: `buildSharedCipher` throws
-        // `SharedCollectionUnavailableError` when the refreshed descriptor no
-        // longer lists this app (access removed mid-session -- removing a
-        // share rotates the epoch off this app's key), and the descriptor
-        // re-read can fail outright. Per the documented contract, that
-        // degrades THIS READER with a warning -- `list()` still returns what
-        // it could decrypt -- rather than rejecting the whole listing (the
-        // same warn-and-skip the open-time path already applies).
-        try {
-          await this.#rebuildCipher()
-        } catch (rebuildErr) {
-          console.warn(
-            `Shared collection "${this.collectionId}" could not refresh its ` +
-              `key-epoch roster; access may have been removed. Skipping ` +
-              `resources sealed under the unknown epoch. ` +
-              `${errorMessage(rebuildErr)}`
-          )
-          return this.#skipUndecryptable({ id, err: rebuildErr })
-        }
-        try {
-          return await this.#cipher.decrypt({ envelope: body })
-        } catch (retryErr) {
-          return this.#skipUndecryptable({ id, err: retryErr })
-        }
+      if (!(err instanceof UnknownEpochError)) {
+        return this.#skipUndecryptable({ id, err })
       }
-      return this.#skipUndecryptable({ id, err })
+      if (!(await this.#refreshCipherOnce())) {
+        return this.#skipUndecryptable({ id, err })
+      }
+      try {
+        return await this.#cipher.decrypt({ envelope: body })
+      } catch (retryErr) {
+        return this.#skipUndecryptable({ id, err: retryErr })
+      }
     }
+  }
+
+  /**
+   * Runs the descriptor re-read + cipher rebuild an unknown epoch calls for --
+   * at most ONCE per reader, memoized -- and reports whether the rebuilt cipher
+   * is usable.
+   *
+   * The recovery itself may fail: `buildSharedCipher` throws
+   * `SharedCollectionUnavailableError` when the refreshed descriptor no longer
+   * lists this app (access removed mid-session -- removing a share rotates the
+   * epoch off this app's key), and the descriptor re-read can fail outright. Per
+   * the documented contract, that degrades THIS READER with a warning --
+   * `list()` still returns what it could decrypt -- rather than rejecting the
+   * whole listing (the same warn-and-skip the open-time path already applies).
+   * The failure is memoized with the attempt, so the warning fires once and a
+   * later unknown epoch is skipped without a second re-read.
+   *
+   * @returns {Promise<boolean>}
+   */
+  #refreshCipherOnce(): Promise<boolean> {
+    this.#refreshed ??= this.#rebuildCipher().then(
+      () => true,
+      (rebuildErr: unknown) => {
+        console.warn(
+          `Shared collection "${this.collectionId}" could not refresh its ` +
+            `key-epoch roster; access may have been removed. Skipping ` +
+            `resources sealed under the unknown epoch. ` +
+            `${errorMessage(rebuildErr)}`
+        )
+        return false
+      }
+    )
+    return this.#refreshed
   }
 
   /**

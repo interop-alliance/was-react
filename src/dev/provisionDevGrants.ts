@@ -27,6 +27,7 @@ import { ZcapClient } from '@interop/ezcap'
 import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import { CapabilityAgent } from '@interop/webkms-client'
 import { deriveIdentity } from '../identity/agents.js'
+import { collectionPath } from '../grants.js'
 import { RW_ACTIONS } from '../auth/loginRequest.js'
 import { errorStatus } from '../sync/index.js'
 
@@ -158,12 +159,13 @@ export async function provisionDevGrants({
   probe?: boolean
   log?: (message: string) => void
 }): Promise<ProvisionDevGrantsResult> {
-  const { controllerDid: appDid, zcapClient: appZcapClient } =
-    await deriveIdentity({ seed, identityHandle })
-  const { was: provisioner, did: provisionerDid } = await provisionerClient({
-    serverUrl,
-    seed: provisionerSeed
-  })
+  const [
+    { controllerDid: appDid, zcapClient: appZcapClient },
+    { was: provisioner, did: provisionerDid }
+  ] = await Promise.all([
+    deriveIdentity({ seed, identityHandle }),
+    provisionerClient({ serverUrl, seed: provisionerSeed })
+  ])
 
   log(`Provisioning against ${serverUrl}`)
   log(`  provisioner DID: ${provisionerDid}`)
@@ -190,19 +192,23 @@ export async function provisionDevGrants({
     invocationTarget: spaceUrl
   } as unknown as Parameters<typeof provisioner.grant>[0]['capability']
 
-  const grants: IDelegatedZcap[] = []
-  for (const id of collections) {
-    // Plaintext collection (no encryption descriptor) -- mirrors wallet provisioning.
-    await space.createCollection({ id, name: id })
-    const zcap = await provisioner.grant({
-      to: appDid,
-      actions,
-      target: `${spaceUrl}/${id}`,
-      capability: spaceRoot
+  // `Promise.all` preserves input order, so `grants[i]` still corresponds to
+  // `collections[i]` (the probe below relies on that for `[0]`).
+  const grants: IDelegatedZcap[] = await Promise.all(
+    collections.map(async id => {
+      // Plaintext collection (no encryption descriptor) -- mirrors wallet
+      // provisioning.
+      await space.createCollection({ id, name: id })
+      const zcap = await provisioner.grant({
+        to: appDid,
+        actions,
+        target: `${spaceUrl}/${id}`,
+        capability: spaceRoot
+      })
+      log(`  collection "${id}": created + delegated RW to app`)
+      return zcap
     })
-    grants.push(zcap)
-    log(`  collection "${id}": created + delegated RW to app`)
-  }
+  )
 
   if (outFile !== undefined) {
     await mkdir(dirname(outFile), { recursive: true })
@@ -234,7 +240,10 @@ export async function provisionDevGrants({
   try {
     const response = await appWas.request({
       capability: probeCapability,
-      path: `/space/${space.id}/${probeCollectionId}`,
+      path: collectionPath({
+        spaceId: space.id,
+        collectionId: probeCollectionId
+      }),
       method: 'PUT',
       json: { id: probeCollectionId, encryption: { scheme: 'edv' } }
     })

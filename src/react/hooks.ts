@@ -44,6 +44,7 @@ export function useAuthStore(): WasAuthStore {
 export function useSession(): {
   status: ReturnType<WasAuthStore['getState']>['status']
   onboarding: ReturnType<WasAuthStore['getState']>['onboarding']
+  clientId: string
   authenticating: boolean
   phase: ReturnType<WasAuthStore['getState']>['phase']
   error: string | null
@@ -58,6 +59,7 @@ export function useSession(): {
     useShallow(state => ({
       status: state.status,
       onboarding: state.onboarding,
+      clientId: state.clientId,
       authenticating: state.authenticating,
       phase: state.phase,
       error: state.error,

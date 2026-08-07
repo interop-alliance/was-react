@@ -17,8 +17,9 @@ import {
   ownerRecipient,
   epochKeyIdFor
 } from '@interop/was-client/edv'
+import { isEncryptedEnvelope } from '@interop/was-client/sync'
 import { deriveIdentity } from '../identity/agents.js'
-import { createDocCipher, isEncryptedEnvelope } from './docCipher.js'
+import { createDocCipher } from './docCipher.js'
 import type { Json } from './types.js'
 
 // A fixed 32-byte master seed drives the deterministic identity derivation.

@@ -8,17 +8,17 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { WithDeleted } from 'rxdb/plugins/core'
-import {
-  createPushHandler,
-  formatEtag,
-  type PushWriteAck
-} from './pushWrites.js'
+import { formatEtag } from '@interop/was-client/sync'
+import { createPushHandler, type PushWriteAck } from './pushWrites.js'
+import { withFeedMasterRead } from './feedMasterPort.js'
 import {
   WasSyncAuthError,
   WasSyncConflictError,
   type MasterState,
   type SyncedDoc,
-  type WasSyncPort
+  type WasSyncBasePort,
+  type WasSyncPort,
+  type WireDoc
 } from './types.js'
 
 type WriteCall =
@@ -738,5 +738,109 @@ describe('createPushHandler metadata 404 corroboration', () => {
       ])
     ).rejects.toMatchObject({ name: 'WasSyncAuthError', status: 404 })
     expect(port.getCalls).toEqual(['r1'])
+  })
+})
+
+/**
+ * A fake base port over an in-memory changes feed, served whole as one page.
+ * `putContent` bumps the doc's feed `version` (so a re-read sees what an
+ * accepted write produced) unless the id is in `conflictContent`; `putMeta`
+ * conflicts for an id in `conflictMeta`. `queryCalls` counts feed walks --
+ * what the batch's shared master-read memo is meant to keep to one.
+ */
+function fakeFeedBase(options: {
+  feed: WireDoc[]
+  conflictContent?: string[]
+  conflictMeta?: string[]
+}): WasSyncBasePort & { queryCalls: number } {
+  const state = { queryCalls: 0 }
+  const documents = new Map(options.feed.map(doc => [doc.id, { ...doc }]))
+  return {
+    get queryCalls() {
+      return state.queryCalls
+    },
+    async query() {
+      state.queryCalls++
+      return { documents: [...documents.values()], checkpoint: null }
+    },
+    async putContent({ id, data }) {
+      if (options.conflictContent?.includes(id)) {
+        throw new WasSyncConflictError()
+      }
+      const current = documents.get(id)
+      const version = (current?.version ?? 0) + 1
+      documents.set(id, {
+        id,
+        _deleted: false,
+        updatedAt: current?.updatedAt ?? '2026-01-01T00:00:00Z',
+        version,
+        data
+      })
+      return version
+    },
+    async deleteContent() {
+      return undefined
+    },
+    async putMeta({ id }) {
+      if (options.conflictMeta?.includes(id)) {
+        throw new WasSyncConflictError()
+      }
+      return 1
+    }
+  }
+}
+
+function feedDoc(id: string, version: number): WireDoc {
+  return { id, _deleted: false, updatedAt: '2026-02-02T00:00:00Z', version }
+}
+
+describe('createPushHandler batch master re-reads', () => {
+  it('resolves every conflicting row in a batch from a single feed walk', async () => {
+    const base = fakeFeedBase({
+      feed: [feedDoc('r1', 9), feedDoc('r2', 4)],
+      conflictContent: ['r1', 'r2']
+    })
+    const push = createPushHandler(withFeedMasterRead(base))
+
+    const conflicts = await push([
+      { newDocumentState: newDoc({ id: 'r1', data: { a: 1 } }) },
+      { newDocumentState: newDoc({ id: 'r2', data: { b: 1 } }) }
+    ])
+
+    expect(conflicts.map(conflict => [conflict.id, conflict.version])).toEqual([
+      ['r1', 9],
+      ['r2', 4]
+    ])
+    // One walk for the batch, not one per conflicting row.
+    expect(base.queryCalls).toBe(1)
+  })
+
+  it("reports the version a row's own accepted write produced", async () => {
+    // r1 conflicts and walks the feed, memoizing every row it pages past. r2's
+    // content write is accepted and only its `/meta` write conflicts, so its
+    // conflict entry must carry the version that write just produced -- never a
+    // memo of the pre-write state (which is why such a row skips the memo).
+    const base = fakeFeedBase({
+      feed: [feedDoc('r1', 9), feedDoc('r2', 4)],
+      conflictContent: ['r1'],
+      conflictMeta: ['r2']
+    })
+    const push = createPushHandler(withFeedMasterRead(base))
+
+    const conflicts = await push([
+      { newDocumentState: newDoc({ id: 'r1', data: { a: 1 } }) },
+      {
+        newDocumentState: newDoc({
+          id: 'r2',
+          data: { b: 1 },
+          custom: { c: 1 }
+        })
+      }
+    ])
+
+    expect(conflicts.map(conflict => [conflict.id, conflict.version])).toEqual([
+      ['r1', 9],
+      ['r2', 5]
+    ])
   })
 })

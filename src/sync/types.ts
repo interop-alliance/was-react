@@ -19,15 +19,88 @@
  * or the EDV envelope on an encrypted collection) and `custom` is the stored
  * metadata body (an opaque envelope on an encrypted collection); encrypt/decrypt
  * stays a read/write-time concern above this layer.
+ *
+ * The two small helpers that travel with these shapes live here as well: the
+ * opaque-body equality every routing decision is made on, and the optional-field
+ * copy every wire-to-local mapping runs.
  */
+import type { Json } from '@interop/was-client'
 
 /**
  * A JSON value -- the opaque stored resource body the sync layer moves verbatim.
  * For a plaintext collection this is the user document; for an encrypted one it
- * is the EDV envelope. The adapter never inspects or transforms it.
+ * is the EDV envelope. The adapter never inspects or transforms it. Re-exported
+ * from `@interop/was-client`, which owns the wire model, so a body crosses the
+ * port boundary without a cast.
  */
-export type Json =
-  null | boolean | number | string | Json[] | { [key: string]: Json }
+export type { Json }
+
+/**
+ * The optional half of a synced document, shared verbatim by every shape it
+ * travels in ({@link WireDoc} on the feed, {@link SyncedDoc} locally,
+ * {@link MasterState} on the conflict re-read): the independently-versioned
+ * metadata revision and body, the content body, and the content body's
+ * key-epoch stamp. Each is genuinely absent rather than `undefined` when the
+ * server has nothing for it, so every mapping between the shapes copies them
+ * conditionally -- see {@link copyOptionalBodyFields}.
+ */
+export interface OptionalBodyFields {
+  metaVersion?: number
+  data?: Json
+  custom?: Json
+  epoch?: string
+}
+
+/**
+ * Structural equality over two opaque bodies, by canonical-free JSON string.
+ * Decides whether the content or the metadata half changed -- which endpoint(s)
+ * a push writes, and whether two states compare equal for conflict resolution.
+ * Content-addressed collections never mutate `data` for a given id, and a real
+ * metadata edit re-encrypts to fresh bytes, so this coarse comparison suffices.
+ *
+ * @param left {Json | undefined}
+ * @param right {Json | undefined}
+ * @returns {boolean}
+ */
+export function bodiesEqual(
+  left: Json | undefined,
+  right: Json | undefined
+): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null)
+}
+
+/**
+ * Copies the {@link OptionalBodyFields} that are present on `source` onto
+ * `target`, leaving an absent field absent (never writing an explicit
+ * `undefined`, which would surface the key in a serialized body). The single
+ * place every wire-to-local, feed-to-master, and master-to-conflict mapping
+ * shares, so a new optional wire field is added once.
+ *
+ * @param options {object}
+ * @param options.source {OptionalBodyFields}
+ * @param options.target {OptionalBodyFields}   mutated in place
+ * @returns {void}
+ */
+export function copyOptionalBodyFields({
+  source,
+  target
+}: {
+  source: OptionalBodyFields
+  target: OptionalBodyFields
+}): void {
+  if (source.data !== undefined) {
+    target.data = source.data
+  }
+  if (source.metaVersion !== undefined) {
+    target.metaVersion = source.metaVersion
+  }
+  if (source.custom !== undefined) {
+    target.custom = source.custom
+  }
+  if (source.epoch !== undefined) {
+    target.epoch = source.epoch
+  }
+}
 
 /**
  * The keyset position in the change feed: the `{ id, updatedAt }` of the last
@@ -106,6 +179,27 @@ export interface MasterState {
    * The key-epoch stamp of the master's content body, when the feed carries one.
    */
   epoch?: string
+}
+
+/**
+ * The short-lived master-read memo the rows of ONE push batch share. A
+ * resolving `get` implementation may answer from `byId` and MUST record every
+ * master it resolved on the way there; a feed-walking implementation pages past
+ * all of them anyway, so a batch of k conflicts costs one walk instead of k.
+ *
+ * `inFlight` is what makes that hold under concurrency: the batch's rows push in
+ * parallel, so without it every row would start its own walk before the first
+ * one finished and the memo would never be read. A `get` that must walk
+ * publishes its walk here; a `get` that finds a walk already running awaits it
+ * and re-checks `byId` first. It settles (never rejects) so one row's failed
+ * read is not another row's, and is `null` whenever no walk is running.
+ *
+ * The whole object is created per batch invocation and dropped with it: a memo
+ * held across batches would go stale.
+ */
+export interface MasterReadCache {
+  byId: Map<string, MasterState | null>
+  inFlight: Promise<void> | null
 }
 
 /**
@@ -227,11 +321,21 @@ export interface WasSyncPort extends WasSyncBasePort {
    * cannot be resolved (e.g. a feed re-read that exhausts its scan budget), so
    * the replication cycle retries rather than fabricating a false tombstone.
    *
+   * `cache` is an OPTIONAL {@link MasterReadCache}, shared by the rows of one
+   * push batch (see its own docs for the contract). A hit is no staler than a
+   * read issued at the same moment, since the memo lives only for that batch. An
+   * implementation that ignores it is fully conformant, and a caller that omits
+   * it gets an uncached read.
+   *
    * @param options {object}
    * @param options.id {string}
+   * @param [options.cache] {MasterReadCache}
    * @returns {Promise<MasterState | null>}
    */
-  get(options: { id: string }): Promise<MasterState | null>
+  get(options: {
+    id: string
+    cache?: MasterReadCache
+  }): Promise<MasterState | null>
 }
 
 /**

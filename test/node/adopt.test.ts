@@ -19,6 +19,7 @@ import type { WasCollectionConfig } from '../../src/config.js'
 
 const COLLECTIONS: WasCollectionConfig[] = [{ key: 'notes', id: 'notes' }]
 const COLLECTION = 'notes'
+const MERGE_CLIENT_ID = 'merge-client'
 
 interface Note {
   id: string
@@ -70,7 +71,11 @@ describe('mergeAdopted', () => {
     }
     await source.insertEntity(COLLECTION, note)
 
-    await mergeAdopted({ store: connected, entities: await collect(source) })
+    await mergeAdopted({
+      store: connected,
+      entities: await collect(source),
+      clientId: MERGE_CLIENT_ID
+    })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed).toHaveLength(1)
@@ -85,15 +90,19 @@ describe('mergeAdopted', () => {
       title: 'unstamped'
     })
 
-    await mergeAdopted({ store: connected, entities: await collect(source) })
+    await mergeAdopted({
+      store: connected,
+      entities: await collect(source),
+      clientId: MERGE_CLIENT_ID
+    })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed).toHaveLength(1)
     expect(listed[0]!.title).toBe('unstamped')
     expect(typeof listed[0]!.updatedAt).toBe('string')
     expect(listed[0]!.updatedAt!.length).toBeGreaterThan(0)
-    expect(typeof listed[0]!.clientId).toBe('string')
-    expect(listed[0]!.clientId!.length).toBeGreaterThan(0)
+    // The stamp carries the caller-resolved session id, never an ambient one.
+    expect(listed[0]!.clientId).toBe(MERGE_CLIENT_ID)
   })
 
   it('preserves the original LWW fields of a payload that already carries them', async () => {
@@ -107,7 +116,11 @@ describe('mergeAdopted', () => {
     }
     await source.insertEntity(COLLECTION, note)
 
-    await mergeAdopted({ store: connected, entities: await collect(source) })
+    await mergeAdopted({
+      store: connected,
+      entities: await collect(source),
+      clientId: MERGE_CLIENT_ID
+    })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed[0]!.updatedAt).toBe('2025-05-05T00:00:00.000Z')
@@ -131,7 +144,11 @@ describe('mergeAdopted', () => {
       clientId: 'device-a'
     })
 
-    await mergeAdopted({ store: connected, entities: await collect(source) })
+    await mergeAdopted({
+      store: connected,
+      entities: await collect(source),
+      clientId: MERGE_CLIENT_ID
+    })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed).toHaveLength(1)
@@ -156,7 +173,11 @@ describe('mergeAdopted', () => {
       clientId: 'device-z'
     })
 
-    await mergeAdopted({ store: connected, entities: await collect(source) })
+    await mergeAdopted({
+      store: connected,
+      entities: await collect(source),
+      clientId: MERGE_CLIENT_ID
+    })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed).toHaveLength(1)
@@ -180,7 +201,11 @@ describe('mergeAdopted', () => {
       clientId: 'device-a'
     })
 
-    await mergeAdopted({ store: connected, entities: await collect(source) })
+    await mergeAdopted({
+      store: connected,
+      entities: await collect(source),
+      clientId: MERGE_CLIENT_ID
+    })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed).toHaveLength(1)
@@ -194,7 +219,11 @@ describe('mergeAdopted', () => {
     await connected.insertEntity(COLLECTION, { id: uuid, title: 'unstamped' })
     await source.insertEntity(COLLECTION, { id: uuid, title: 'adopted' })
 
-    await mergeAdopted({ store: connected, entities: await collect(source) })
+    await mergeAdopted({
+      store: connected,
+      entities: await collect(source),
+      clientId: MERGE_CLIENT_ID
+    })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed).toHaveLength(1)

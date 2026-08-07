@@ -11,14 +11,8 @@
  * threatening total loss. Dismissing the dialog (backdrop / escape / Cancel)
  * leaves the data untouched.
  */
-import {
-  Button,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogContentText,
-  DialogTitle
-} from '@mui/material'
+import { Button } from '@mui/material'
+import { ConfirmDialog } from './ConfirmDialog.js'
 import { useClearData, useSession } from '../react/hooks.js'
 
 /**
@@ -45,25 +39,23 @@ export function ClearDataDialog({
   }
 
   return (
-    <Dialog open={open} onClose={onClose} data-testid="clear-data-dialog">
-      <DialogTitle>Clear data</DialogTitle>
-      <DialogContent>
-        <DialogContentText>
-          {connected
-            ? 'This erases the copy stored on this device and disconnects it ' +
-              'from your Web Space. The data already saved to your Web Space ' +
-              'stays there -- reconnect with your wallet to bring it back ' +
-              'onto this device.'
-            : 'This permanently erases everything stored on this device and ' +
-              'starts you over fresh. Your data lives only on this device, ' +
-              'so once cleared it cannot be recovered -- export a copy first ' +
-              'if you want to keep it.'}
-        </DialogContentText>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose} data-testid="clear-data-cancel">
-          Cancel
-        </Button>
+    <ConfirmDialog
+      testId="clear-data"
+      open={open}
+      onClose={onClose}
+      title="Clear data"
+      body={
+        connected
+          ? 'This erases the copy stored on this device and disconnects it ' +
+            'from your Web Space. The data already saved to your Web Space ' +
+            'stays there -- reconnect with your wallet to bring it back ' +
+            'onto this device.'
+          : 'This permanently erases everything stored on this device and ' +
+            'starts you over fresh. Your data lives only on this device, ' +
+            'so once cleared it cannot be recovered -- export a copy first ' +
+            'if you want to keep it.'
+      }
+      actions={
         <Button
           color="error"
           onClick={() => void handleClear()}
@@ -71,7 +63,7 @@ export function ClearDataDialog({
         >
           Clear data
         </Button>
-      </DialogActions>
-    </Dialog>
+      }
+    />
   )
 }
