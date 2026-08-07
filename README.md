@@ -101,9 +101,9 @@ WAS collection `id` (a deliberately unprefixed, generic name shared across
 interoperable apps). `credential` names the self-issued seed credential the
 first-run flow mints; its `vocabBase` namespaces the app's own type term only,
 since every app key also carries the shared `AppKeyCredential` marker type and
-its `seed` / `origin` claims under `urn:was:` IRIs. All other fields
-(`mediatorBase`, `dbName`, `storageKeyPrefix`, `sync`, `expiry`) are optional
-with documented defaults.
+its `seed` / `origin` claims under `https://w3id.org/byoe#` IRIs. All other
+fields (`mediatorBase`, `dbName`, `storageKeyPrefix`, `sync`, `expiry`) are
+optional with documented defaults.
 
 A collection may also declare `visibility: 'public'`
 (`{ key: 'posts', id: 'microblog-posts', visibility: 'public' }`); the default
@@ -124,8 +124,9 @@ carry the `updatedAt` / `clientId` LWW fields like any other collection --
 without them a concurrent multi-device edit falls back to server-wins.
 
 At login, a public collection is requested from the wallet with the distinct
-`urn:was:public-collection` descriptor type (private collections use
-`urn:was:collection`): the wallet provisions it plaintext with a public-read
+`https://w3id.org/byoe#public-collection` descriptor type (private
+collections use `https://w3id.org/byoe#collection`): the wallet provisions
+it plaintext with a public-read
 policy, shows a world-readable consent warning, and delegates the usual
 read/write capability (public covers only unauthenticated reads; writes stay
 capability-only). A wallet that predates the descriptor reports the request
@@ -173,9 +174,10 @@ the same `key` or `id` in each is rejected at store open
 (`validateSharedCollections`).
 
 At login each shared collection is requested with the distinct
-`urn:was:shared-collection` descriptor type and the read-only action set
-`SHARED_ACTIONS` (`GET`/`HEAD`) -- an app never asks to write a wallet
-collection. As with `urn:was:public-collection`, a wallet that predates the type
+`https://w3id.org/byoe#shared-collection` descriptor type and the read-only
+action set `SHARED_ACTIONS` (`GET`/`HEAD`) -- an app never asks to write a
+wallet collection. As with `https://w3id.org/byoe#public-collection`, a
+wallet that predates the type
 reports the request unsatisfiable and the feature fails closed, which is the
 point: a share fuses two axes -- the read zcap AND an entry in the collection's
 key-epoch roster -- and a wallet that granted only the zcap would hand the app
@@ -393,8 +395,9 @@ a progress line (`connecting` to `verifying`):
 2. **One popup.** A VPR carrying a `DIDAuthentication` query plus one
    `AppConnectQuery` -- the app's display name, `credentialType`, and
    `vocabBase`, a `capabilityQuery` entry per configured collection, and a
-   `urn:was:shared-collection` entry per shared collection -- is sent via
-   `navigator.credentials.get` (`buildAppConnectVpr`). A `null` response is a
+   `https://w3id.org/byoe#shared-collection` entry per shared collection --
+   is sent via `navigator.credentials.get` (`buildAppConnectVpr`). A `null`
+   response is a
    user cancel (`LoginCancelledError`), not an error.
 3. **The wallet matches or mints.** On a first run the wallet generates the
    32-byte seed itself, self-issues the origin-bound app-key credential, and

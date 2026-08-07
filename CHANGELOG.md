@@ -1,5 +1,14 @@
 # @interop/was-react Changelog
 
+## 0.8.4 - TBD
+
+### Changed
+
+- Docs: README and ARCHITECTURE examples use the `https://w3id.org/byoe#`
+  descriptor and claim IRIs instead of the retired `urn:was:` spellings, and
+  ARCHITECTURE links the App Connect companion spec
+  (https://github.com/interop-alliance/app-connect-spec).
+
 ## 0.8.3 - 2026-08-05
 
 ### Fixed
