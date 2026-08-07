@@ -44,15 +44,15 @@ carrying `DIDAuthentication` plus one `AppConnectQuery`:
   plus the `SeedCredentialConfig` pair;
 - `capabilityQuery` entries -- the usual capability descriptors
   (`https://w3id.org/byoe#collection` / `#public-collection`) _minus_
-  `controller` (the wallet fills it with the app-key subject DID; the app
-  cannot know a returning user's DID in advance) and minus `reason`.
+  `controller` (the wallet fills it with the app-key subject DID; the app cannot
+  know a returning user's DID in advance) and minus `reason`.
 
 The protocol's normative definition is the **App Connect companion spec**
 (<https://github.com/interop-alliance/app-connect-spec>; local checkout
-`../app-connect-spec` -- read `spec.md` there instead of fetching the
-rendered version): the `AppConnectQuery`, the app-key credential and its
-binding rules, the descriptor vocabulary with per-class action ceilings, and
-the response presentation this library verifies.
+`../app-connect-spec` -- read `spec.md` there instead of fetching the rendered
+version): the `AppConnectQuery`, the app-key credential and its binding rules,
+the descriptor vocabulary with per-class action ceilings, and the response
+presentation this library verifies.
 
 The wallet finds -- or on first run **mints, wallet-side** -- the app-key seed
 credential for this origin (satisfying `parseSeedCredential`: carrying the
@@ -77,12 +77,12 @@ into a term check rather than a shape heuristic, which is what lets a wallet
 refuse a foreign app key at store time; requiring it here keeps both sides on
 one rule. It is a self-declaration, not evidence -- a planted credential
 controls its own `type` array -- so the seed-to-DID binding stays the only thing
-that authenticates. The claim terms are shared for the same reason: `seed`
-and `origin` map to `https://w3id.org/byoe#seed` / `#origin`, and `vocabBase`
-namespaces only the app's own type term. `findSeedCredential` deliberately
-still matches on the app type alone, so a returned credential missing the
-marker surfaces as a parse error rather than a `null` the caller would read
-as first run and answer by minting a second key.
+that authenticates. The claim terms are shared for the same reason: `seed` and
+`origin` map to `https://w3id.org/byoe#seed` / `#origin`, and `vocabBase`
+namespaces only the app's own type term. `findSeedCredential` deliberately still
+matches on the app type alone, so a returned credential missing the marker
+surfaces as a parse error rather than a `null` the caller would read as first
+run and answer by minting a second key.
 
 The seed never transits a server: minting happens in the wallet, delivery is the
 browser-direct CHAPI channel. Dev mode (`provisionDevGrants` /
@@ -96,8 +96,7 @@ Three kinds, and the distinctions are load-bearing:
 - **App-owned private** (`collections`, `visibility: 'private'`, the default).
   The app provisions, writes, and replicates it. Encrypted with the app's
   identity X25519 key-agreement key -- the same key a shared collection's roster
-  entry names. Requested with the `https://w3id.org/byoe#collection`
-  descriptor.
+  entry names. Requested with the `https://w3id.org/byoe#collection` descriptor.
 - **App-owned public** (`collections`, `visibility: 'public'`). Plaintext and
   world-readable; no key derivation, and the stored resource id IS the payload
   uuid, so a public document has a stable share URL. Requested with
@@ -105,12 +104,11 @@ Three kinds, and the distinctions are load-bearing:
 - **Shared, wallet-owned** (`sharedCollections`). One of the WALLET's own
   encrypted collections that the user chooses to let this app read and decrypt.
   Requested with `https://w3id.org/byoe#shared-collection` and the read-only
-  `SHARED_ACTIONS` set. It is read-only by construction: no RxDB collection,
-  no local replica, no replication, no writes, and the sync bootstrap's
-  collection-description PUTs skip it. Reads go straight to the server
-  through a `SharedCollectionReader`,
-  which fetches the stored EDV envelope raw (the `encryption: 'plaintext'`
-  handle override) and decrypts it locally.
+  `SHARED_ACTIONS` set. It is read-only by construction: no RxDB collection, no
+  local replica, no replication, no writes, and the sync bootstrap's
+  collection-description PUTs skip it. Reads go straight to the server through a
+  `SharedCollectionReader`, which fetches the stored EDV envelope raw (the
+  `encryption: 'plaintext'` handle override) and decrypts it locally.
 
 `SharedCollectionReader.list()` has two paths. The fast one pages the `changes`
 feed -- whole pages of documents with their bodies, undecrypted by the server,
@@ -151,11 +149,10 @@ same process anyway.
 
 ### Failing closed, and the honest ceiling
 
-`https://w3id.org/byoe#shared-collection` is a distinct descriptor type
-rather than a flag, for the same reason `#public-collection` is: an unknown
-type already resolves to unsatisfiable, so a wallet that predates the
-feature refuses visibly. Silently degrading matters more here than
-elsewhere -- a share fuses
+`https://w3id.org/byoe#shared-collection` is a distinct descriptor type rather
+than a flag, for the same reason `#public-collection` is: an unknown type
+already resolves to unsatisfiable, so a wallet that predates the feature refuses
+visibly. Silently degrading matters more here than elsewhere -- a share fuses
 the read zcap with the roster entry, and half a share is ciphertext the app
 cannot decrypt, which reads as corrupt data rather than as a wallet needing an
 update.
