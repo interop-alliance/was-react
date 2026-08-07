@@ -62,7 +62,7 @@ test('the core entry imports and exposes its public API in the browser', async (
           WasSessionProvider: typeof mod.WasSessionProvider,
           useSession: typeof mod.useSession,
           loginWithWallet: typeof mod.loginWithWallet,
-          createSyncController: typeof mod.createSyncController,
+          SyncController: typeof mod.SyncController,
           startWasSync: typeof mod.startWasSync,
           parseGrants: typeof mod.parseGrants,
           createDocumentLoader: typeof mod.createDocumentLoader,
@@ -75,7 +75,7 @@ test('the core entry imports and exposes its public API in the browser', async (
   expect(exports.WasSessionProvider).toBe('function')
   expect(exports.useSession).toBe('function')
   expect(exports.loginWithWallet).toBe('function')
-  expect(exports.createSyncController).toBe('function')
+  expect(exports.SyncController).toBe('function')
   expect(exports.startWasSync).toBe('function')
   expect(exports.parseGrants).toBe('function')
   expect(exports.createDocumentLoader).toBe('function')

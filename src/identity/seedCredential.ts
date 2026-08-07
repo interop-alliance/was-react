@@ -138,9 +138,7 @@ export async function issueSeedCredential({
   config: SeedCredentialConfig
   documentLoader: DocumentLoader
 }): Promise<IVerifiableCredential> {
-  if (seed.length !== 32) {
-    throw new Error(`Master seed must be 32 bytes (got ${seed.length}).`)
-  }
+  // `deriveIdentity` enforces the 32-byte seed rule.
   const { controllerDid, keyAgent } = await deriveIdentity({ seed })
   const credential = {
     '@context': [VC_1_CONTEXT_URL, seedContext(config)],

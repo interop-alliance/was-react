@@ -36,6 +36,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla'
 import type { RxStorage } from 'rxdb/plugins/core'
 import type { IZcap } from '@interop/data-integrity-core'
 import type { CollectionEncryption } from '@interop/was-client'
+import { acquireDescriptors } from '@interop/wallet-core/descriptors'
 import {
   DEFAULT_DB_NAME,
   DEFAULT_EXPIRY_WARNING_MS,
@@ -46,9 +47,12 @@ import {
 } from '../config.js'
 import type { SharedCollectionReader } from '../storage/sharedCollectionReader.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
-import { initAppSession } from '../identity/initAppSession.js'
-import type { IdentityAgents } from '../identity/agents.js'
-import { createSeedStore, type SeedStore } from '../identity/seedStore.js'
+import { deriveIdentity, type IdentityAgents } from '../identity/agents.js'
+import {
+  createDescriptorCache,
+  createSeedStore,
+  type SeedStore
+} from '../identity/seedStore.js'
 import {
   clearAppSession,
   peekAppSession,
@@ -85,10 +89,7 @@ import {
 import { mergeAdopted } from '../storage/adopt.js'
 import { startWasSync } from '../storage/wasSync.js'
 import { errorMessage } from '../sync/index.js'
-import {
-  createSyncController,
-  type SyncController
-} from '../storage/syncController.js'
+import { SyncController } from '../storage/syncController.js'
 import { useSyncStatusStore } from '../storage/syncStatusStore.js'
 
 /**
@@ -129,12 +130,10 @@ export interface AuthState {
    */
   clientId: string
   /**
-   * A Login With Wallet flow is in flight (the transient the login page's busy
-   * state keys off; distinct from the `status`, which stays `local` throughout).
-   */
-  authenticating: boolean
-  /**
-   * The current login phase, for the login page's progress line.
+   * The current login phase, for the login page's progress line, and the single
+   * source of truth for "a Login With Wallet flow is in flight" (non-`null`
+   * throughout the flow; the `status` stays `local` meanwhile). `useSession` /
+   * `useLogin` expose the boolean as `authenticating`, computed from this.
    */
   phase: LoginPhase | null
   error: string | null
@@ -144,11 +143,6 @@ export interface AuthState {
    * `local` (no grants).
    */
   expires: string | null
-  /**
-   * A live 401/403 was seen mid-session (or a proactive near-expiry): show the
-   * reconnect banner. Always true iff `status === 'reconnect'`.
-   */
-  accessExpired: boolean
   reconnecting: boolean
   /**
    * The read-only readers over the wallet-owned collections the wallet shared
@@ -286,6 +280,11 @@ export function createAuthStore({
   })
   const sessionStore =
     seedStore ?? createSeedStore({ dbName: `${dbName}-session` })
+  // The offline encryption-descriptor cache, presented as the seam
+  // `@interop/wallet-core/descriptors` acquires through. Reads serve the
+  // connected replica's epoch-aware open (cache-only, no network); writes land
+  // the descriptors the sync bootstrap fetched.
+  const descriptorCache = createDescriptorCache({ store: sessionStore })
   // The anonymous-seed persistence for `local` mode: only a raw 32-byte seed,
   // no session record, in its own IndexedDB so it never collides with the
   // wallet session or a connected replica.
@@ -379,7 +378,7 @@ export function createAuthStore({
    * once it is within `warningMs` (or already past). The first check is
    * DEFERRED a macrotask rather than run synchronously: every caller awaits
    * `persistAndStartSync` (which arms this watch) BEFORE writing
-   * `status: 'connected'` / `accessExpired: false`, so a synchronous check
+   * `status: 'connected'`, so a synchronous check
    * would always be swallowed by `notifyAccessExpired`'s connected gate and
    * then actively cleared -- leaving a restored near-expiry session without
    * its proactive banner until the first `watchMs` tick. Deferring runs the
@@ -415,7 +414,7 @@ export function createAuthStore({
     keyAgreementKey: IdentityAgents['keyAgreementKey']
     keyResolver: IdentityAgents['keyResolver']
   }): Promise<unknown> {
-    controller = createSyncController({
+    controller = new SyncController({
       collections: config.collections,
       ...(config.sync && { sync: config.sync })
     })
@@ -433,11 +432,9 @@ export function createAuthStore({
       identityKeys: { keyAgreementKey, keyResolver },
       onAuthError: () => store.getState().notifyAccessExpired(),
       onDescriptorsFetched: descriptors =>
-        void sessionStore
-          .saveDescriptors(descriptors)
-          .catch(err =>
-            console.warn('Failed to cache encryption descriptors:', err)
-          )
+        void cacheDescriptors(descriptors).catch(err =>
+          console.warn('Failed to cache encryption descriptors:', err)
+        )
     })
     setRemoteStore(remoteStore)
     store.setState({ sharedCollections })
@@ -609,7 +606,7 @@ export function createAuthStore({
    */
   async function openLocal(): Promise<void> {
     const { seed, created } = await loadOrCreateAnonSeed()
-    const identity = await initAppSession({ seed })
+    const identity = await deriveIdentity({ seed })
     await openAndHydrate({ identity })
     if (created && config.seedLocal) {
       await config.seedLocal()
@@ -618,7 +615,6 @@ export function createAuthStore({
       status: 'local',
       controllerDid: identity.controllerDid,
       expires: null,
-      accessExpired: false,
       error: null
     })
   }
@@ -634,22 +630,45 @@ export function createAuthStore({
    * @returns {Promise<void>}
    */
   /**
-   * Loads the persisted encryption-descriptor cache (keyed by WAS collection id),
-   * or `undefined` when none is stored or it is malformed. Best-effort: a read
-   * failure falls back to opening single-key ciphers (sync refreshes them).
+   * Loads the cached encryption descriptors for the registered collections
+   * (keyed by WAS collection id), or `undefined` when none are cached.
+   *
+   * Acquired CACHE-ONLY -- `acquireDescriptors` with no `source` -- because
+   * this runs before any remote store exists and must not touch the network:
+   * the whole point is that an offline hot restore opens epoch-aware. The
+   * connected session refreshes them from the server once sync bootstraps.
+   * Best-effort: a read failure falls back to opening single-key ciphers.
    */
   async function loadCachedDescriptors(): Promise<
     Record<string, CollectionEncryption> | undefined
   > {
     try {
-      const stored = await sessionStore.loadDescriptors()
-      if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-        return stored as Record<string, CollectionEncryption>
-      }
+      const descriptors = await acquireDescriptors({
+        cache: descriptorCache,
+        collectionIds: config.collections.map(collection => collection.id)
+      })
+      return Object.keys(descriptors).length > 0 ? descriptors : undefined
     } catch (err) {
       console.warn('Failed to load cached encryption descriptors:', err)
+      return undefined
     }
-    return undefined
+  }
+
+  /**
+   * Writes the descriptors the sync bootstrap fetched into the offline cache,
+   * through the same seam {@link loadCachedDescriptors} reads.
+   *
+   * @param descriptors {Record<string, CollectionEncryption>}
+   * @returns {Promise<void>}
+   */
+  async function cacheDescriptors(
+    descriptors: Record<string, CollectionEncryption>
+  ): Promise<void> {
+    await Promise.all(
+      Object.entries(descriptors).map(([collectionId, descriptor]) =>
+        descriptorCache.writeDescriptor({ collectionId, descriptor })
+      )
+    )
   }
 
   async function activateConnected(session: {
@@ -784,7 +803,7 @@ export function createAuthStore({
     if (!seed) {
       return null
     }
-    const { keyAgreementKey, keyResolver } = await initAppSession({ seed })
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({ seed })
     const anonLocal = await LocalStore.init({
       keyAgreementKey,
       keyResolver,
@@ -893,7 +912,7 @@ export function createAuthStore({
           await openLocal()
           return
         }
-        const identity = await initAppSession({ seed: restored.seed })
+        const identity = await deriveIdentity({ seed: restored.seed })
         if (identity.controllerDid !== restored.controllerDid) {
           // A corrupt record; treat as logged out and fall to local.
           await clearAppSession({ store: sessionStore })
@@ -919,8 +938,7 @@ export function createAuthStore({
           status: uncovered.length > 0 ? 'reconnect' : 'connected',
           controllerDid: identity.controllerDid,
           expires: restored.expires,
-          error: null,
-          accessExpired: uncovered.length > 0
+          error: null
         })
       } catch (err) {
         console.warn('Session boot failed:', err)
@@ -950,12 +968,10 @@ export function createAuthStore({
       // fully-open session, never an in-flight one.
       set({
         status: 'boot',
-        authenticating: false,
         phase: null,
         error: null,
         controllerDid: null,
         expires: null,
-        accessExpired: false,
         reconnecting: false,
         sharedCollections: {}
       })
@@ -965,19 +981,17 @@ export function createAuthStore({
       status: 'boot',
       onboarding,
       clientId,
-      authenticating: false,
       phase: null,
       error: null,
       controllerDid: null,
       expires: null,
-      accessExpired: false,
       reconnecting: false,
       sharedCollections: {},
 
       boot: () => serializeLifecycle(bootImpl),
 
       login: async ({ adopt = 'merge' } = {}) => {
-        if (get().authenticating || get().status === 'connected') {
+        if (get().phase !== null || get().status === 'connected') {
           return null
         }
         // Snapshot the pre-login state BEFORE the popup await: a provider
@@ -988,7 +1002,7 @@ export function createAuthStore({
           status: get().status,
           controllerDid: get().controllerDid
         }
-        set({ authenticating: true, error: null, phase: 'connecting' })
+        set({ error: null, phase: 'connecting' })
         try {
           const outcome = await loginWithWallet({
             config: loginConfig,
@@ -1010,12 +1024,10 @@ export function createAuthStore({
           })
           set({
             status: 'connected',
-            authenticating: false,
             controllerDid: outcome.identity.controllerDid,
             expires: outcome.expires,
             phase: null,
-            error: null,
-            accessExpired: false
+            error: null
           })
           // Adopted-replica cleanup runs AFTER the connected status lands (and
           // is best-effort): a cleanup failure must not leave the session
@@ -1029,13 +1041,13 @@ export function createAuthStore({
           // scary error, and resolve with `null` so the caller can distinguish it
           // from a connected outcome. `local` stays intact.
           if (err instanceof LoginCancelledError) {
-            set({ authenticating: false, phase: null, error: null })
+            set({ phase: null, error: null })
             return null
           }
           // A genuine failure: record the message so the UI state still reflects
           // it, then rethrow so the caller's promise rejects.
           const message = `Login failed: ${errorMessage(err)}`
-          set({ authenticating: false, phase: null, error: message })
+          set({ phase: null, error: message })
           throw err
         }
       },
@@ -1062,7 +1074,7 @@ export function createAuthStore({
             status: get().status,
             controllerDid: get().controllerDid
           }
-          const identity = await initAppSession({ seed })
+          const identity = await deriveIdentity({ seed })
           const parsed = parseGrants(grants)
           const expires =
             earliestExpiry(grants) ??
@@ -1080,8 +1092,7 @@ export function createAuthStore({
             status: 'connected',
             controllerDid: identity.controllerDid,
             expires,
-            error: null,
-            accessExpired: false
+            error: null
           })
           // After the status lands, and best-effort (see `discardAnonReplica`).
           if (source) {
@@ -1109,7 +1120,7 @@ export function createAuthStore({
             await get().logout()
             return
           }
-          const identity = await initAppSession({ seed })
+          const identity = await deriveIdentity({ seed })
           const checked = await requestGrants({ identity, config: loginConfig })
           // Continuity check: `parseGrants` only asserts the returned set is
           // INTERNALLY consistent. Without this comparison, a reconnect
@@ -1142,7 +1153,6 @@ export function createAuthStore({
           })
           set({
             status: 'connected',
-            accessExpired: false,
             expires: checked.expires,
             reconnecting: false
           })
@@ -1190,7 +1200,7 @@ export function createAuthStore({
 
       notifyAccessExpired: () => {
         if (get().status === 'connected') {
-          set({ status: 'reconnect', accessExpired: true })
+          set({ status: 'reconnect' })
         }
       },
 

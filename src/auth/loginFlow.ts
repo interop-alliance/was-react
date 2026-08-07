@@ -342,8 +342,8 @@ export async function loginWithWallet({
   const firstRun = appConnectFirstRun(presentation)
 
   // The master identity comes off the parse, which already derived it from this
-  // seed to check the seed-to-DID binding (the same derivation, and the same
-  // 32-byte seed rule, `initAppSession` would apply).
+  // seed to check the seed-to-DID binding (the same `deriveIdentity` call, and
+  // the same 32-byte seed rule, every other session path applies).
   const identity = parsedCredential.identity
   // Grants ride in the SAME response; validate them against the app-key subject
   // DID the wallet delegated to.

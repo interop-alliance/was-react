@@ -11,10 +11,10 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
   `{ key, id }` collection registry the storage layer routes on, and the
   separate read-only `sharedCollections` registry.
 - `src/grants.ts` -- parses granted zcaps into server URL / space id / topology.
-- `src/identity/` -- seed-derived agents (including the identity key-agreement
-  key every encrypted collection is read with), the seed credential
-  (issue/parse/verify), seed persistence, session bootstrap, and the persisted
-  app-session record.
+- `src/identity/` -- seed-derived agents (`deriveIdentity`, which enforces the
+  32-byte seed rule and yields the identity key-agreement key every encrypted
+  collection is read with), the seed credential (issue/parse/verify), seed
+  persistence, and the persisted app-session record.
 - `src/auth/` -- the relying-party side of Login With Wallet (App Connect):
   CHAPI wrappers, VPR construction, response verification, and the
   login/reconnect orchestration.

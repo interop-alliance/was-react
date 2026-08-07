@@ -23,9 +23,8 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { WasClient, type ActionInput } from '@interop/was-client'
 import type { IDelegatedZcap } from '@interop/data-integrity-core'
-import { ZcapClient } from '@interop/ezcap'
-import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import { CapabilityAgent } from '@interop/webkms-client'
+import { agentsFromKeyAgent } from '@interop/wallet-core/identity'
 import { deriveIdentity } from '../identity/agents.js'
 import { collectionPath } from '../grants.js'
 import { RW_ACTIONS } from '../auth/loginRequest.js'
@@ -99,12 +98,7 @@ async function provisionerClient({
     handle: 'dev-provisioner',
     keyName: 'provisioner-key'
   })
-  const signer = agent.getSigner()
-  const zcapClient = new ZcapClient({
-    SuiteClass: Ed25519Signature2020,
-    invocationSigner: signer,
-    delegationSigner: signer
-  })
+  const { zcapClient } = agentsFromKeyAgent({ keyAgent: agent })
   return { was: new WasClient({ serverUrl, zcapClient }), did: agent.id }
 }
 

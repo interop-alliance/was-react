@@ -37,7 +37,9 @@ export function useAuthStore(): WasAuthStore {
 
 /**
  * The current session state (status/phase/expiry/reconnect flags). Re-renders
- * only when one of the selected fields changes.
+ * only when one of the selected fields changes. `authenticating` and
+ * `accessExpired` are conveniences DERIVED here (`phase !== null` and
+ * `status === 'reconnect'`); the store keeps only `phase` and `status`.
  *
  * @returns {object}
  */
@@ -60,12 +62,12 @@ export function useSession(): {
       status: state.status,
       onboarding: state.onboarding,
       clientId: state.clientId,
-      authenticating: state.authenticating,
+      authenticating: state.phase !== null,
       phase: state.phase,
       error: state.error,
       controllerDid: state.controllerDid,
       expires: state.expires,
-      accessExpired: state.accessExpired,
+      accessExpired: state.status === 'reconnect',
       reconnecting: state.reconnecting
     }))
   )
@@ -73,8 +75,9 @@ export function useSession(): {
 
 /**
  * The login action plus the state the login page renders. `authenticating` is
- * the in-flight flag (the `status` stays `local` during login); `status` is
- * exposed so a login page can redirect once it reads `connected`. `login`
+ * the in-flight flag, derived from `phase` (the `status` stays `local` during
+ * login); `status` is exposed so a login page can redirect once it reads
+ * `connected`. `login`
  * accepts `{ adopt }` -- `'merge'` (default) migrates data created in `local`
  * into the connected replica, `'leave'` sets it aside untouched.
  *
@@ -94,7 +97,7 @@ export function useLogin(): {
   const { authenticating, status, phase, error } = useStore(
     store,
     useShallow(state => ({
-      authenticating: state.authenticating,
+      authenticating: state.phase !== null,
       status: state.status,
       phase: state.phase,
       error: state.error
@@ -158,6 +161,8 @@ export function useSharedCollection(
 
 /**
  * The expired-access reconnect: the banner flags plus the reconnect action.
+ * `accessExpired` is derived from the session status (`status === 'reconnect'`),
+ * which the store keeps as its single source of truth.
  *
  * @returns {object}
  */
@@ -171,7 +176,7 @@ export function useReconnect(): {
   const { accessExpired, reconnecting } = useStore(
     store,
     useShallow(state => ({
-      accessExpired: state.accessExpired,
+      accessExpired: state.status === 'reconnect',
       reconnecting: state.reconnecting
     }))
   )
@@ -185,10 +190,10 @@ export function useReconnect(): {
 export type { SyncRollup }
 
 /**
- * The aggregate sync status over the per-collection replication statuses. A thin
- * subscription over the sync-status store: it reads the collection statuses and
- * defers the offline / error > syncing > synced precedence to
- * {@link deriveSyncRollup}.
+ * The aggregate sync status over the per-collection replication statuses (the
+ * sync-status store keys them by the registry's logical collection key). A thin
+ * subscription over that store: it reads the collection statuses and defers the
+ * offline / error > syncing > synced precedence to {@link deriveSyncRollup}.
  *
  * @returns {{ state: SyncRollup, label: string, title: string }}
  */

@@ -9,6 +9,11 @@
  * real identity key-agreement key as the roster recipient, so the rebuilt
  * cipher genuinely unwraps the epoch.
  *
+ * The refresh is rationed ONCE PER COLLECTION PER SESSION, so two further
+ * properties are asserted here: rows decrypting concurrently share that one
+ * re-read (they all recover), and an envelope no descriptor will ever route
+ * cannot drive a second one.
+ *
  * @vitest-environment node
  */
 import 'fake-indexeddb/auto'
@@ -24,6 +29,10 @@ const COLLECTIONS: WasCollectionConfig[] = [{ key: 'notes', id: 'notes' }]
 const COLLECTION_KEY = 'notes'
 const COLLECTION_ID = 'notes'
 const SEED = new Uint8Array(32).map((_, index) => (index * 9 + 2) & 0xff)
+// A second identity, so a roster can be minted that this app is NOT in.
+const FOREIGN_SEED = new Uint8Array(32).map(
+  (_, index) => (index * 5 + 1) & 0xff
+)
 
 let dbCounter = 0
 const openStores: LocalStore[] = []
@@ -44,10 +53,29 @@ async function openStore(
 }
 
 /**
- * Mints a one-epoch descriptor whose sole recipient is the app's identity key.
+ * A descriptor source over a scripted answer, shaped exactly like the one the
+ * sync bootstrap installs (`remoteDescriptorSource`), with a spy on the single
+ * `collectionEncryption` read so refreshes can be counted.
  */
-async function mintDescriptor(): Promise<CollectionEncryption> {
-  const { keyAgreementKey } = await deriveIdentity({ seed: SEED })
+function descriptorSource(encryption?: CollectionEncryption) {
+  return {
+    collectionEncryption: vi.fn(
+      async ({ collectionId }: { collectionId: string }) => {
+        void collectionId
+        return encryption
+      }
+    )
+  }
+}
+
+/**
+ * Mints a one-epoch descriptor whose sole recipient is the given identity's key
+ * (the app's own by default).
+ */
+async function mintDescriptor(
+  seed: Uint8Array = SEED
+): Promise<CollectionEncryption> {
+  const { keyAgreementKey } = await deriveIdentity({ seed })
   let description: Record<string, unknown> = {
     name: 'notes',
     encryption: { scheme: 'edv' }
@@ -100,24 +128,101 @@ describe('LocalStore epoch-descriptor refresh', () => {
       data: envelope as unknown as Json
     })
 
-    // A refresher that hands back the descriptor; the single-key cipher hits an
+    // A source that hands back the descriptor; the single-key cipher hits an
     // UnknownEpochError, refreshes once, rebuilds, and decrypts.
-    const refresher = vi.fn(async () => encryption)
-    store.setEpochRefresher(refresher)
+    const source = descriptorSource(encryption)
+    store.setDescriptorSource(source)
 
     const listed = await store.listEntities<{ id: string; title: string }>(
       COLLECTION_KEY
     )
     expect(listed).toEqual([payload])
-    expect(refresher).toHaveBeenCalledTimes(1)
-    expect(refresher).toHaveBeenCalledWith(COLLECTION_ID)
+    expect(source.collectionEncryption).toHaveBeenCalledTimes(1)
+    expect(source.collectionEncryption).toHaveBeenCalledWith({
+      collectionId: COLLECTION_ID
+    })
+  })
+
+  it('shares one refresh across rows decrypting concurrently', async () => {
+    // Two rows written by another device under the same unseen epoch:
+    // `listEntities` decrypts them with `Promise.all`, so both meet the unknown
+    // epoch before either refresh completes. Both must recover, off ONE read.
+    const encryption = await mintDescriptor()
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({
+      seed: SEED
+    })
+    const descriptorCipher = await createDocCipher({
+      keyAgreementKey,
+      keyResolver,
+      collectionId: COLLECTION_ID,
+      encryption
+    })
+    const payloads = [
+      { id: 'note-a', title: 'first' },
+      { id: 'note-b', title: 'second' }
+    ]
+    const store = await openStore()
+    for (const payload of payloads) {
+      const { id, envelope } = await descriptorCipher.encrypt({ data: payload })
+      await store.rxCollection(COLLECTION_KEY).insert({
+        id,
+        updatedAt: new Date().toISOString(),
+        version: 0,
+        data: envelope as unknown as Json
+      })
+    }
+    const source = descriptorSource(encryption)
+    store.setDescriptorSource(source)
+
+    const listed = await store.listEntities<{ id: string; title: string }>(
+      COLLECTION_KEY
+    )
+    expect(listed).toHaveLength(2)
+    expect(
+      [...listed].sort((left, right) => left.id.localeCompare(right.id))
+    ).toEqual(payloads)
+    expect(source.collectionEncryption).toHaveBeenCalledTimes(1)
+  })
+
+  it('spends the refresh once per collection per session', async () => {
+    // An envelope sealed under a roster this app is not in: the refresh cannot
+    // help, so the decrypt still fails -- and must not buy a second re-read,
+    // now or on any later read of the same collection.
+    const foreign = await mintDescriptor(FOREIGN_SEED)
+    const identity = await deriveIdentity({ seed: FOREIGN_SEED })
+    const foreignCipher = await createDocCipher({
+      keyAgreementKey: identity.keyAgreementKey,
+      keyResolver: identity.keyResolver,
+      collectionId: COLLECTION_ID,
+      encryption: foreign
+    })
+    const { id, envelope } = await foreignCipher.encrypt({
+      data: { id: 'note-3', title: 'not for this app' }
+    })
+
+    const store = await openStore()
+    await store.rxCollection(COLLECTION_KEY).insert({
+      id,
+      updatedAt: new Date().toISOString(),
+      version: 0,
+      data: envelope as unknown as Json
+    })
+    // The refresh answers with the app's OWN roster, which does not carry the
+    // foreign epoch either.
+    const source = descriptorSource(await mintDescriptor())
+    store.setDescriptorSource(source)
+
+    await expect(store.listEntities(COLLECTION_KEY)).rejects.toThrow()
+    expect(source.collectionEncryption).toHaveBeenCalledTimes(1)
+    await expect(store.listEntities(COLLECTION_KEY)).rejects.toThrow()
+    expect(source.collectionEncryption).toHaveBeenCalledTimes(1)
   })
 
   it('opens epoch-aware from a cached descriptor (no refresh needed)', async () => {
     const encryption = await mintDescriptor()
     const store = await openStore({ [COLLECTION_ID]: encryption })
-    const refresher = vi.fn(async () => encryption)
-    store.setEpochRefresher(refresher)
+    const source = descriptorSource(encryption)
+    store.setDescriptorSource(source)
 
     await store.insertEntity(COLLECTION_KEY, { id: 'note-2', title: 'local' })
     const listed = await store.listEntities<{ id: string; title: string }>(
@@ -125,7 +230,7 @@ describe('LocalStore epoch-descriptor refresh', () => {
     )
     expect(listed).toEqual([{ id: 'note-2', title: 'local' }])
     // The write already went under the current epoch, so no refresh fired.
-    expect(refresher).not.toHaveBeenCalled()
+    expect(source.collectionEncryption).not.toHaveBeenCalled()
   })
 
   it('applyRemoteDescriptor rebuilds only when the epoch changes', async () => {

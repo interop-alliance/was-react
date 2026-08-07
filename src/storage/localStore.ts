@@ -40,11 +40,15 @@ import {
   type WasCollectionConfig
 } from '../config.js'
 import type { CollectionEncryption } from '@interop/was-client'
-import { UnknownEpochError } from '@interop/was-client/edv'
+import {
+  DescriptorRefreshPolicy,
+  type EncryptionDescriptorSource
+} from '@interop/wallet-core/descriptors'
 import {
   syncedDocSchema,
   createDocCipher,
   createPlaintextDocCodec,
+  isUnknownEpochError,
   makeLwwConflictHandler,
   remotePayloadWins,
   type Json,
@@ -109,12 +113,14 @@ export class LocalStore {
   // The encryption descriptor each private collection's current cipher was built
   // from (keyed by collection logical key), so a descriptor change can be detected.
   #descriptors: Record<string, CollectionEncryption | undefined>
-  // Fetches a private collection's fresh encryption descriptor (by WAS collection
-  // id) when a decrypt meets an unknown key epoch; injected once a remote store
-  // exists. Absent offline / local-only.
-  #epochRefresher?: (
-    collectionId: string
-  ) => Promise<CollectionEncryption | undefined>
+  // Reads a private collection's fresh encryption descriptor (a live Collection
+  // Description read); injected once a remote store exists. Absent offline /
+  // local-only, in which case an unknown epoch simply propagates.
+  #descriptorSource?: EncryptionDescriptorSource
+  // The once-per-collection-per-session unknown-epoch guard, and the in-flight
+  // refresh each collection's concurrent decrypts share (see `#spendRefresh`).
+  readonly #refreshPolicy: DescriptorRefreshPolicy
+  readonly #refreshing = new Map<string, Promise<void>>()
 
   private constructor({
     db,
@@ -144,6 +150,25 @@ export class LocalStore {
     this.#keyAgreementKey = keyAgreementKey
     this.#keyResolver = keyResolver
     this.#descriptors = descriptors
+    // The whole swap an unknown epoch calls for, handed to the policy that
+    // rations it: re-read the collection's descriptor through the installed
+    // source and rebuild that collection's cipher from it. With no source, or
+    // a collection the registry does not carry, or a read that answers no
+    // descriptor, nothing is swapped and the retry fails as the first attempt
+    // did.
+    this.#refreshPolicy = new DescriptorRefreshPolicy({
+      refresh: async ({ collectionId }: { collectionId: string }) => {
+        const key = this.#keyByCollectionId.get(collectionId)
+        const source = this.#descriptorSource
+        if (key === undefined || !source) {
+          return
+        }
+        const encryption = await source.collectionEncryption({ collectionId })
+        if (encryption) {
+          await this.rebuildCipher({ key, encryption })
+        }
+      }
+    })
   }
 
   /**
@@ -313,46 +338,73 @@ export class LocalStore {
   }
 
   /**
-   * Installs the epoch-descriptor refresher: given a WAS collection id, it fetches
-   * that collection's fresh encryption descriptor (a live description read). Called
-   * once a remote store exists; a decrypt that meets an unknown key epoch uses
-   * it to re-read the descriptor and rebuild the cipher exactly once.
+   * Installs the encryption-descriptor source: one live Collection Description
+   * read per collection id. Called once a remote store exists; a decrypt that
+   * meets an unknown key epoch uses it to re-read the descriptor and rebuild
+   * that collection's cipher, at most once per collection per session.
    *
-   * @param refresher {(collectionId: string) => Promise<CollectionEncryption | undefined>}
+   * @param source {EncryptionDescriptorSource}
    * @returns {void}
    */
-  setEpochRefresher(
-    refresher: (
-      collectionId: string
-    ) => Promise<CollectionEncryption | undefined>
-  ): void {
-    this.#epochRefresher = refresher
+  setDescriptorSource(source: EncryptionDescriptorSource): void {
+    this.#descriptorSource = source
   }
 
   /**
-   * Decrypts an at-rest envelope through the collection's cipher, with a
-   * one-shot recovery from a stale epoch descriptor: when the cipher throws
-   * {@link UnknownEpochError} (an envelope written under an epoch this device has
-   * not seen -- a rekey on another device / a wallet revoke-rotation) and a
-   * refresher is installed, re-read the descriptor, rebuild the cipher, and retry
-   * the decrypt once. A second failure propagates rather than looping.
+   * Decrypts an at-rest envelope through the collection's cipher, recovering
+   * from a stale epoch descriptor: when the cipher reports an unknown epoch (an
+   * envelope written under an epoch this device has not seen -- a rekey on
+   * another device / a wallet revoke-rotation), spend the collection's one
+   * descriptor refresh and retry the decrypt once. A second failure propagates
+   * rather than looping, and so does an unknown epoch met after the refresh is
+   * spent.
    */
   async #decryptWithRefresh(key: string, envelope: Json): Promise<Json> {
     try {
       return await this.#cipher(key).decrypt({ envelope })
     } catch (err) {
-      if (!(err instanceof UnknownEpochError) || !this.#epochRefresher) {
+      if (!isUnknownEpochError(err) || !this.#descriptorSource) {
         throw err
       }
-      const { id } = this.collectionConfig(key)
-      const encryption = await this.#epochRefresher(id)
-      if (!encryption) {
-        throw err
-      }
-      await this.rebuildCipher({ key, encryption })
-      // One retry only: a repeat UnknownEpochError propagates (no loop).
+      const { id: collectionId } = this.collectionConfig(key)
+      await this.#spendRefresh(collectionId)
+      // One retry, under the (possibly) swapped cipher. When the refresh was
+      // already spent this is a purely local re-attempt that fails the same
+      // way, so a genuinely foreign envelope still surfaces its unknown epoch
+      // and never buys a second description read.
       return await this.#cipher(key).decrypt({ envelope })
     }
+  }
+
+  /**
+   * Spends one collection's single unknown-epoch descriptor refresh for this
+   * session, resolving once it has been spent -- by this caller or by a
+   * concurrent one.
+   *
+   * `DescriptorRefreshPolicy` owns the once-per-collection-per-session guard
+   * (and the `reset` contract {@link applyRemoteDescriptor} honors); the promise
+   * memo on top of it is what makes CONCURRENT decrypts share the single
+   * re-read. {@link listEntities} decrypts a whole collection with
+   * `Promise.all`, so without it the first row to report an unknown epoch would
+   * win the guard and every other row would fail against the still-stale
+   * cipher, failing the hydrate outright. (Upstream's
+   * `createRefreshingEdvDocCipher` memoizes its own refresh the same way; the
+   * policy exposes no equivalent, because its `readWithRefresh` retries the
+   * whole read rather than one envelope.)
+   */
+  #spendRefresh(collectionId: string): Promise<void> {
+    let pending = this.#refreshing.get(collectionId)
+    if (!pending) {
+      pending = this.#refreshPolicy.readWithRefresh<void>({
+        collectionId,
+        // A read that only ever reports an unknown epoch: the value is not
+        // what is wanted here, the refresh is. The decrypt and its one retry
+        // stay at the call site, where the envelope is.
+        read: async () => ({ value: undefined, unknownEpoch: true })
+      })
+      this.#refreshing.set(collectionId, pending)
+    }
+    return pending
   }
 
   /**
@@ -393,6 +445,11 @@ export class LocalStore {
    * first-ever epochs), so subsequent writes stamp the current epoch. Returns
    * whether a rebuild happened. Unknown / public collections are ignored.
    *
+   * Installing a fresh descriptor here also RE-ARMS the collection's
+   * unknown-epoch refresh (the policy's documented `reset` contract): this path
+   * is the sync bootstrap's own install, so the next unknown epoch after it is
+   * evidence of a NEW rotation elsewhere and deserves its own re-read.
+   *
    * @param options {object}
    * @param options.collectionId {string}   the WAS collection id
    * @param options.encryption {CollectionEncryption}   the fetched descriptor
@@ -417,6 +474,8 @@ export class LocalStore {
       return false
     }
     await this.rebuildCipher({ key, encryption })
+    this.#refreshPolicy.reset({ collectionId })
+    this.#refreshing.delete(collectionId)
     return true
   }
 

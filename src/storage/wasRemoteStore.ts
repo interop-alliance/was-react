@@ -28,6 +28,7 @@ import type { IZcap } from '@interop/data-integrity-core'
 import { WasClient } from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
+import type { EncryptionDescriptorSource } from '@interop/wallet-core/descriptors'
 import { errorStatus, errorMessage } from '../sync/index.js'
 import type { WasCollectionConfig } from '../config.js'
 import { collectionPath, type ParsedGrants } from '../grants.js'
@@ -428,6 +429,37 @@ export class WasRemoteStore {
       const status = errorStatus(err)
       const message = errorMessage(err)
       return { collectionId, ok: false, status, error: message }
+    }
+  }
+}
+
+/**
+ * The `EncryptionDescriptorSource` (`@interop/wallet-core/descriptors`) over a
+ * delegated {@link WasRemoteStore}: one Collection Description read per
+ * collection, invoked with THAT collection's delegated zcap. It is the seam the
+ * descriptor-refresh machinery -- the local store's unknown-epoch policy and a
+ * shared collection's self-refreshing cipher -- re-reads a rotated key-epoch
+ * roster through.
+ *
+ * Deliberately NOT `wasDescriptorSource` from the same subpath: that one
+ * describes through the client's root capability, which a relying-party app
+ * never holds. Every read here must invoke the per-collection grant, which is
+ * exactly what {@link WasRemoteStore.readCollectionEncryption} does (and, like
+ * the rest of the descriptor plumbing, it answers `undefined` rather than
+ * throwing when the read is unauthorized or the app is offline).
+ *
+ * @param options {object}
+ * @param options.remoteStore {WasRemoteStore}
+ * @returns {EncryptionDescriptorSource}
+ */
+export function remoteDescriptorSource({
+  remoteStore
+}: {
+  remoteStore: WasRemoteStore
+}): EncryptionDescriptorSource {
+  return {
+    async collectionEncryption({ collectionId }: { collectionId: string }) {
+      return await remoteStore.readCollectionEncryption(collectionId)
     }
   }
 }

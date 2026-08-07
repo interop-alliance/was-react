@@ -254,8 +254,7 @@ export function Root() {
 import { useLogin } from '@interop/was-react'
 
 export function LoginPage() {
-  const { login, status, phase, error } = useLogin()
-  const busy = status === 'authenticating'
+  const { login, authenticating: busy, phase, error } = useLogin()
 
   return (
     <div>
@@ -415,8 +414,7 @@ a progress line (`connecting` to `verifying`):
    and seed-to-DID bound, then recovers the seed.
 6. **Derive identity.** The stable `did:key` controller and its signer are
    derived deterministically from the seed via `CapabilityAgent.fromSeed`
-   (`initAppSession` / `deriveIdentity`). The same seed yields the same identity
-   on every device.
+   (`deriveIdentity`). The same seed yields the same identity on every device.
 7. **Check grants.** The delegated zcaps ride in the same presentation's
    top-level `zcap` array. `checkGrants` asserts every zcap is controlled by the
    app DID, shares one space on a single WAS host, covers each configured
@@ -432,10 +430,11 @@ a progress line (`connecting` to `verifying`):
 ## Session lifecycle
 
 The session is owned by a zustand auth store built once per app by the provider
-(`createAuthStore`). Its `status` is `idle` to `restoring` to `unauthenticated`
-/ `authenticating` / `authenticated`, and it is the router gate: a protected
-route waits for the restore attempt to settle before choosing between the app
-and the login page.
+(`createAuthStore`). Its `status` is `boot` to `local` / `connected` /
+`reconnect`, and it is the router gate: a protected route waits for the restore
+attempt to settle before choosing between the app and the login page. A login in
+flight is NOT a status -- it is the `phase` field, which `useSession()` /
+`useLogin()` also surface as the derived boolean `authenticating`.
 
 - **Restore (zero popups).** On mount, `restore()` reads the persisted session
   from IndexedDB and, if present and consistent, re-derives the identity, opens
@@ -444,7 +443,8 @@ and the login page.
 - **Login.** `useLogin().login()` runs the full [login flow](#login-flow).
 - **Reconnect.** Grants are expiry-only. The store watches the earliest grant
   expiry and, once within the warning window (`expiry.warningMs`, default 1h) or
-  after a live 401/403, sets `accessExpired`. `useReconnect().reconnect()`
+  after a live 401/403, moves the status to `reconnect` (which `useReconnect()`
+  surfaces as the derived `accessExpired`). `useReconnect().reconnect()`
   re-requests grants with the existing seed (one wallet popup, same identity,
   same data) and restarts sync.
 - **Logout.** `useLogout()` stops sync, closes and forgets the local store,
@@ -455,15 +455,15 @@ and the login page.
 
 Hooks:
 
-| Hook              | Returns                                                                                 |
-| ----------------- | --------------------------------------------------------------------------------------- |
-| `useSession()`    | `status`, `phase`, `error`, `controllerDid`, `expires`, `accessExpired`, `reconnecting` |
-| `useLogin()`      | `{ login, status, phase, error }`                                                       |
-| `useLogout()`     | `() => Promise<void>`                                                                   |
-| `useReconnect()`  | `{ accessExpired, reconnecting, reconnect }`                                            |
-| `useSyncStatus()` | `{ state, label, title }` (see below)                                                   |
-| `useAppReady()`   | `{ ready, error }` -- the hydration gate                                                |
-| `useAuthStore()`  | the bound vanilla store (for `getState().restore()`, etc.)                              |
+| Hook              | Returns                                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `useSession()`    | `status`, `phase`, `authenticating`, `error`, `controllerDid`, `expires`, `accessExpired`, `reconnecting` |
+| `useLogin()`      | `{ login, authenticating, status, phase, error }`                                                         |
+| `useLogout()`     | `() => Promise<void>`                                                                                     |
+| `useReconnect()`  | `{ accessExpired, reconnecting, reconnect }`                                                              |
+| `useSyncStatus()` | `{ state, label, title }` (see below)                                                                     |
+| `useAppReady()`   | `{ ready, error }` -- the hydration gate                                                                  |
+| `useAuthStore()`  | the bound vanilla store (for `getState().restore()`, etc.)                                                |
 
 ## Sync architecture
 
@@ -494,7 +494,10 @@ Hooks:
   with `sequence`+1 (a mutable-head model); deletes are soft-delete tombstones.
 - **Status.** `useSyncStatus()` rolls the per-collection replication states up
   to an aggregate: `offline` (no replication running / local-only), or
-  `error > syncing > synced`. The `SyncStatusChip` MUI component renders it.
+  `error > syncing > synced`. The `SyncStatusChip` MUI component renders it. The
+  underlying `useSyncStatusStore().statuses` map is keyed by the registry's
+  logical collection `key`, like every other layer (two entries may share one
+  WAS collection `id`, so the id is not a unique status key).
 
 ## Entry points
 

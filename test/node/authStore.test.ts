@@ -32,7 +32,7 @@ import {
   createSeedStore,
   type SeedStore
 } from '../../src/identity/seedStore.js'
-import { initAppSession } from '../../src/identity/initAppSession.js'
+import { deriveIdentity } from '../../src/identity/agents.js'
 import { persistAppSession } from '../../src/identity/appSession.js'
 import { parseGrants } from '../../src/grants.js'
 import {
@@ -131,7 +131,7 @@ async function reopenReplica({
   seed: Uint8Array
   controllerDid: string
 }): Promise<LocalStore> {
-  const { keyAgreementKey, keyResolver } = await initAppSession({ seed })
+  const { keyAgreementKey, keyResolver } = await deriveIdentity({ seed })
   const store = await LocalStore.init({
     keyAgreementKey,
     keyResolver,
@@ -167,7 +167,7 @@ async function persistSession({
   expires?: string
 }): Promise<{ seed: Uint8Array; controllerDid: string }> {
   const seed = crypto.getRandomValues(new Uint8Array(32))
-  const identity = await initAppSession({ seed })
+  const identity = await deriveIdentity({ seed })
   await persistAppSession({
     session: {
       seed,
@@ -220,7 +220,6 @@ describe('boot()', () => {
 
     expect(store.getState().status).toBe('connected')
     expect(store.getState().controllerDid).toBe(controllerDid)
-    expect(store.getState().accessExpired).toBe(false)
     expect(hasStore()).toBe(true)
   })
 
@@ -247,12 +246,11 @@ describe('connectWithGrants()', () => {
     expect(store.getState().status).toBe('local')
 
     const seed = crypto.getRandomValues(new Uint8Array(32))
-    const identity = await initAppSession({ seed })
+    const identity = await deriveIdentity({ seed })
     await store.getState().connectWithGrants({ seed, grants: noteGrants() })
 
     expect(store.getState().status).toBe('connected')
     expect(store.getState().controllerDid).toBe(identity.controllerDid)
-    expect(store.getState().accessExpired).toBe(false)
     expect(hasStore()).toBe(true)
   })
 })
@@ -268,7 +266,7 @@ describe('login()', () => {
 
     // The wallet returns a fresh identity + grants (distinct from the anon one).
     const walletSeed = crypto.getRandomValues(new Uint8Array(32))
-    const identity = await initAppSession({ seed: walletSeed })
+    const identity = await deriveIdentity({ seed: walletSeed })
     const grants = noteGrants()
     loginWithWalletMock.mockResolvedValue({
       seed: walletSeed,
@@ -283,7 +281,7 @@ describe('login()', () => {
 
     expect(outcome).toEqual({ firstRun: false })
     expect(store.getState().status).toBe('connected')
-    expect(store.getState().authenticating).toBe(false)
+    expect(store.getState().phase).toBeNull()
     expect(store.getState().controllerDid).toBe(identity.controllerDid)
     // Nothing to adopt (the local replica is empty), so the anon seed survives.
     expect(await anon.loadSeed()).toEqual(anonSeed)
@@ -303,7 +301,7 @@ describe('login()', () => {
 
     expect(outcome).toBeNull()
     expect(store.getState().status).toBe('local')
-    expect(store.getState().authenticating).toBe(false)
+    expect(store.getState().phase).toBeNull()
     expect(store.getState().controllerDid).toBe(localDid)
     expect(store.getState().error).toBeNull()
     // The anonymous replica was never torn down.
@@ -324,7 +322,7 @@ describe('login()', () => {
     )
 
     expect(store.getState().status).toBe('local')
-    expect(store.getState().authenticating).toBe(false)
+    expect(store.getState().phase).toBeNull()
     expect(store.getState().controllerDid).toBe(localDid)
     expect(store.getState().error).toMatch(/Login failed/i)
     // The anonymous replica was never torn down.
@@ -374,7 +372,7 @@ describe('logout()', () => {
  */
 async function mockWalletLogin(): Promise<{ controllerDid: string }> {
   const walletSeed = crypto.getRandomValues(new Uint8Array(32))
-  const identity = await initAppSession({ seed: walletSeed })
+  const identity = await deriveIdentity({ seed: walletSeed })
   const grants = noteGrants()
   loginWithWalletMock.mockResolvedValue({
     seed: walletSeed,
@@ -641,7 +639,7 @@ describe('adoption', () => {
     // collect must decide off the PRE-LOGIN snapshot, not the live (`boot`)
     // status the destroy left behind.
     const walletSeed = crypto.getRandomValues(new Uint8Array(32))
-    const identity = await initAppSession({ seed: walletSeed })
+    const identity = await deriveIdentity({ seed: walletSeed })
     const grants = noteGrants()
     let releaseLogin!: () => void
     const popup = new Promise<void>(resolve => (releaseLogin = resolve))

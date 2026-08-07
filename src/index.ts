@@ -48,7 +48,11 @@ export {
   createDocumentLoader,
   type DocumentLoader
 } from './identity/documentLoader.js'
-export { createSeedStore, type SeedStore } from './identity/seedStore.js'
+export {
+  createSeedStore,
+  createDescriptorCache,
+  type SeedStore
+} from './identity/seedStore.js'
 export {
   APP_KEY_CREDENTIAL_TYPE,
   issueSeedCredential,
@@ -59,7 +63,6 @@ export {
   type SeedCredentialConfig,
   type ParsedSeedCredential
 } from './identity/seedCredential.js'
-export { initAppSession } from './identity/initAppSession.js'
 export {
   persistAppSession,
   restoreAppSession,
@@ -96,19 +99,12 @@ export {
   type LoginOutcome
 } from './auth/loginFlow.js'
 export type {
-  WalletAPIMessage,
-  IVPOffer,
-  IVPRequest,
   IVPRDetails,
   IVPRQuery,
-  IQueryByExample,
   IDIDAuthenticationQuery,
-  IZcapQuery,
   IAppConnectQuery,
   IAppConnectCapabilityQuery,
   ICapabilityQueryDetail,
-  WalletResponse,
-  WalletRequestProfile,
   IVerifiableCredential,
   IVerifiablePresentation,
   IZcap
@@ -135,6 +131,7 @@ export {
 export { createEntityStore, type EntityStore } from './storage/entityStore.js'
 export {
   WasRemoteStore,
+  remoteDescriptorSource,
   type DeclarationResult,
   type EqualityQueryPage
 } from './storage/wasRemoteStore.js'
@@ -157,11 +154,7 @@ export {
   scheduleRehydrate,
   cancelScheduledRehydrates
 } from './storage/rehydrate.js'
-export {
-  isAuthError,
-  SyncController,
-  createSyncController
-} from './storage/syncController.js'
+export { isAuthError, SyncController } from './storage/syncController.js'
 export { startWasSync, type WasSyncBootstrap } from './storage/wasSync.js'
 
 // Session lifecycle: the session auth store factory (the four-state machine).

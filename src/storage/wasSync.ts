@@ -29,7 +29,7 @@ import type {
 import type { SyncedDoc } from '../sync/index.js'
 import type { SharedCollectionConfig, WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
-import { WasRemoteStore } from './wasRemoteStore.js'
+import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
 import { SharedCollectionReader } from './sharedCollectionReader.js'
 import type { LocalStore } from './localStore.js'
 import type { SyncController } from './syncController.js'
@@ -162,11 +162,10 @@ export async function startWasSync({
       }
     })
   )
-  // Install the one-shot epoch refresher so a decrypt that meets an unseen epoch
-  // (a rotation on another device) re-reads the descriptor and rebuilds the cipher.
-  localStore.setEpochRefresher(collectionId =>
-    remoteStore.readCollectionEncryption(collectionId)
-  )
+  // Install the encryption-descriptor source so a decrypt that meets an unseen
+  // epoch (a rotation on another device) re-reads the descriptor and rebuilds
+  // the cipher -- once per collection per session.
+  localStore.setDescriptorSource(remoteDescriptorSource({ remoteStore }))
   if (onDescriptorsFetched) {
     await onDescriptorsFetched(descriptors)
   }

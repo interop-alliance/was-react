@@ -29,6 +29,7 @@ export { withFeedMasterRead } from './feedMasterPort.js'
 export {
   createDocCipher,
   createPlaintextDocCodec,
+  isUnknownEpochError,
   type DocCipher
 } from './docCipher.js'
 export { makeLwwConflictHandler } from './lwwConflictHandler.js'

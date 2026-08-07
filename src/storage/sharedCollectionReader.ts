@@ -39,15 +39,21 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import { UnknownEpochError } from '@interop/was-client/edv'
 import {
-  createDocCipher,
+  createRefreshingEdvDocCipher,
+  type EncryptionDescriptorCache,
+  type EncryptionDescriptorSource
+} from '@interop/wallet-core/descriptors'
+import {
   errorMessage,
   isEncryptedEnvelope,
   type DocCipher,
   type Json
 } from '../sync/index.js'
-import type { WasRemoteStore } from './wasRemoteStore.js'
+import {
+  remoteDescriptorSource,
+  type WasRemoteStore
+} from './wasRemoteStore.js'
 
 /**
  * Default page size for the `changes`-feed walk. The server clamps its own
@@ -90,17 +96,15 @@ export class SharedCollectionUnavailableError extends Error {
 export class SharedCollectionReader {
   readonly collectionId: string
   readonly #remoteStore: WasRemoteStore
-  readonly #keyAgreementKey: IKeyAgreementKey
-  readonly #keyResolver: IKeyResolver
-  #cipher: DocCipher
-  // The one unknown-epoch descriptor refresh this reader is allowed, memoized
-  // once started (it resolves to whether the rebuilt cipher is usable). An
-  // epoch rotation emits no change-feed entry, so a stale descriptor is the
-  // expected failure mode; one refresh per reader is enough to recover, and the
-  // cap keeps a genuinely undecryptable envelope from looping. Memoizing the
-  // PROMISE rather than a done flag also means bodies decrypting concurrently
-  // share the single re-read instead of racing it, so each of them recovers.
-  #refreshed?: Promise<boolean>
+  // Self-refreshing: it acquires the collection's descriptor when it is built
+  // and, on a decrypt that meets an unknown key epoch, re-reads the descriptor,
+  // swaps itself, and retries that decrypt -- exactly once per reader. An epoch
+  // rotation emits no change-feed entry, so a stale descriptor is the expected
+  // failure mode; one refresh per reader is enough to recover, and the cap keeps
+  // a genuinely undecryptable envelope from looping. The refresh is memoized as
+  // a PROMISE upstream, so bodies decrypting concurrently share the single
+  // re-read instead of racing it.
+  readonly #cipher: DocCipher
   // Whether the one-time "reading this collection the slow way" warning has
   // already been emitted for this reader.
   #warnedSlowPath = false
@@ -109,22 +113,16 @@ export class SharedCollectionReader {
   private constructor({
     collectionId,
     remoteStore,
-    keyAgreementKey,
-    keyResolver,
     cipher,
     pageSize
   }: {
     collectionId: string
     remoteStore: WasRemoteStore
-    keyAgreementKey: IKeyAgreementKey
-    keyResolver: IKeyResolver
     cipher: DocCipher
     pageSize: number
   }) {
     this.collectionId = collectionId
     this.#remoteStore = remoteStore
-    this.#keyAgreementKey = keyAgreementKey
-    this.#keyResolver = keyResolver
     this.#cipher = cipher
     this.#pageSize = pageSize
   }
@@ -160,18 +158,16 @@ export class SharedCollectionReader {
     collectionId: string
     pageSize?: number
   }): Promise<SharedCollectionReader> {
-    const encryption = await remoteStore.readCollectionEncryption(collectionId)
     const cipher = await buildSharedCipher({
       collectionId,
       keyAgreementKey,
       keyResolver,
-      encryption
+      source: remoteDescriptorSource({ remoteStore }),
+      cache: memoryDescriptorCache()
     })
     return new SharedCollectionReader({
       collectionId,
       remoteStore,
-      keyAgreementKey,
-      keyResolver,
       cipher,
       pageSize
     })
@@ -315,9 +311,16 @@ export class SharedCollectionReader {
   /**
    * Decrypts one fetched body, tolerating the two expected non-results: a body
    * that is not an EDV envelope at all, and a pre-share single-recipient
-   * envelope. An {@link UnknownEpochError} drives one descriptor re-read + cipher
-   * rebuild + retry (an epoch rotation emits no change-feed entry, so a stale
-   * descriptor is the expected failure mode).
+   * envelope.
+   *
+   * The unknown-epoch recovery lives INSIDE the cipher (it re-reads the
+   * descriptor, swaps itself, and retries once per reader), so what reaches
+   * this catch is a decrypt that stayed unreadable after the reader spent its
+   * one refresh -- or one that raised an unknown epoch when the refresh was
+   * already spent. Either way it is a body this app cannot read, and the
+   * reader's contract is to warn and skip it, never to fail the listing: a
+   * mid-session revoke (the refreshed roster no longer lists this app) degrades
+   * to the subset that still decrypts.
    */
   async #decryptBody({
     id,
@@ -339,67 +342,8 @@ export class SharedCollectionReader {
     try {
       return await this.#cipher.decrypt({ envelope: body })
     } catch (err) {
-      if (!(err instanceof UnknownEpochError)) {
-        return this.#skipUndecryptable({ id, err })
-      }
-      if (!(await this.#refreshCipherOnce())) {
-        return this.#skipUndecryptable({ id, err })
-      }
-      try {
-        return await this.#cipher.decrypt({ envelope: body })
-      } catch (retryErr) {
-        return this.#skipUndecryptable({ id, err: retryErr })
-      }
+      return this.#skipUndecryptable({ id, err })
     }
-  }
-
-  /**
-   * Runs the descriptor re-read + cipher rebuild an unknown epoch calls for --
-   * at most ONCE per reader, memoized -- and reports whether the rebuilt cipher
-   * is usable.
-   *
-   * The recovery itself may fail: `buildSharedCipher` throws
-   * `SharedCollectionUnavailableError` when the refreshed descriptor no longer
-   * lists this app (access removed mid-session -- removing a share rotates the
-   * epoch off this app's key), and the descriptor re-read can fail outright. Per
-   * the documented contract, that degrades THIS READER with a warning --
-   * `list()` still returns what it could decrypt -- rather than rejecting the
-   * whole listing (the same warn-and-skip the open-time path already applies).
-   * The failure is memoized with the attempt, so the warning fires once and a
-   * later unknown epoch is skipped without a second re-read.
-   *
-   * @returns {Promise<boolean>}
-   */
-  #refreshCipherOnce(): Promise<boolean> {
-    this.#refreshed ??= this.#rebuildCipher().then(
-      () => true,
-      (rebuildErr: unknown) => {
-        console.warn(
-          `Shared collection "${this.collectionId}" could not refresh its ` +
-            `key-epoch roster; access may have been removed. Skipping ` +
-            `resources sealed under the unknown epoch. ` +
-            `${errorMessage(rebuildErr)}`
-        )
-        return false
-      }
-    )
-    return this.#refreshed
-  }
-
-  /**
-   * Re-reads the collection's `encryption` descriptor and rebuilds the cipher from
-   * it. Used once per reader on an unknown epoch.
-   */
-  async #rebuildCipher(): Promise<void> {
-    const encryption = await this.#remoteStore.readCollectionEncryption(
-      this.collectionId
-    )
-    this.#cipher = await buildSharedCipher({
-      collectionId: this.collectionId,
-      keyAgreementKey: this.#keyAgreementKey,
-      keyResolver: this.#keyResolver,
-      encryption
-    })
   }
 
   /**
@@ -421,45 +365,78 @@ export class SharedCollectionReader {
 }
 
 /**
- * Builds the epoch-aware cipher for a shared collection, turning the two
- * "cannot read this collection" outcomes into one descriptive error: no
- * multi-recipient roster at all, and a roster this app is not in.
+ * The reader's descriptor cache: a plain in-memory Map, one per reader. Nothing
+ * about a WALLET-owned collection belongs in this app's offline descriptor
+ * cache (that one is keyed by the app's own collection ids and survives a
+ * reload); here the cache exists only so the self-refreshing cipher has the
+ * durable seam it is written against, and so the descriptor it acquired at open
+ * can be inspected afterwards.
+ *
+ * @returns {EncryptionDescriptorCache}
+ */
+function memoryDescriptorCache(): EncryptionDescriptorCache {
+  const descriptors = new Map<string, CollectionEncryption>()
+  return {
+    async readDescriptor({ collectionId }: { collectionId: string }) {
+      return descriptors.get(collectionId)
+    },
+    async writeDescriptor({
+      collectionId,
+      descriptor
+    }: {
+      collectionId: string
+      descriptor: CollectionEncryption
+    }) {
+      descriptors.set(collectionId, descriptor)
+    }
+  }
+}
+
+/**
+ * Builds the self-refreshing epoch-aware cipher for a shared collection,
+ * turning the two "cannot read this collection" outcomes into one descriptive
+ * error: no multi-recipient roster at all, and a roster this app is not in.
+ *
+ * The build is the reader's ONE descriptor read at open (`acquireDescriptor`
+ * fetches through `source` and caches the result), so the roster check below
+ * reads the cache rather than fetching a second time. A descriptor with no
+ * epochs builds a single-key cipher rather than throwing, which is why the
+ * no-roster case is detected after the build and not before it.
  *
  * Only the cipher's `decrypt` is ever exercised here -- the reader has no write
- * path -- so the seam's write-side id model is irrelevant.
+ * path -- so the seam's write-side id model is irrelevant and left at its
+ * default.
  *
  * @param options {object}
  * @param options.collectionId {string}
  * @param options.keyAgreementKey {IKeyAgreementKey}
  * @param options.keyResolver {IKeyResolver}
- * @param [options.encryption] {CollectionEncryption}
+ * @param options.source {EncryptionDescriptorSource}
+ * @param options.cache {EncryptionDescriptorCache}
  * @returns {Promise<DocCipher>}
  */
 async function buildSharedCipher({
   collectionId,
   keyAgreementKey,
   keyResolver,
-  encryption
+  source,
+  cache
 }: {
   collectionId: string
   keyAgreementKey: IKeyAgreementKey
   keyResolver: IKeyResolver
-  encryption?: CollectionEncryption
+  source: EncryptionDescriptorSource
+  cache: EncryptionDescriptorCache
 }): Promise<DocCipher> {
-  if (!encryption?.epochs || encryption.epochs.length === 0) {
-    throw new SharedCollectionUnavailableError(
-      `Shared collection "${collectionId}" carries no key-epoch roster, so it ` +
-        `is not multi-recipient and this app cannot be a recipient of it. The ` +
-        `wallet has not shared it with this app.`
-    )
-  }
+  let cipher: DocCipher
   try {
-    return await createDocCipher({
+    cipher = (await createRefreshingEdvDocCipher({
       keyAgreementKey,
       keyResolver,
       collectionId,
-      encryption
-    })
+      source,
+      cache
+    })) as unknown as DocCipher
   } catch (err) {
     throw new SharedCollectionUnavailableError(
       `Cannot read shared collection "${collectionId}": this app is not a ` +
@@ -469,4 +446,13 @@ async function buildSharedCipher({
       { cause: err }
     )
   }
+  const encryption = await cache.readDescriptor({ collectionId })
+  if (!encryption?.epochs || encryption.epochs.length === 0) {
+    throw new SharedCollectionUnavailableError(
+      `Shared collection "${collectionId}" carries no key-epoch roster, so it ` +
+        `is not multi-recipient and this app cannot be a recipient of it. The ` +
+        `wallet has not shared it with this app.`
+    )
+  }
+  return cipher
 }

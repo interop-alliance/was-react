@@ -45,10 +45,8 @@
  * Crypto that Node 24 provides.
  */
 import { CapabilityAgent } from '@interop/webkms-client'
-import { Ed25519Signature2020 } from '@interop/ed25519-signature'
-import { ZcapClient } from '@interop/ezcap'
-import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
-import { singleKeyResolver } from '@interop/wallet-core/identity'
+import type { ZcapClient } from '@interop/ezcap'
+import { agentsFromKeyAgent } from '@interop/wallet-core/identity'
 import type {
   IKeyAgreementKey,
   IKeyResolver
@@ -109,31 +107,18 @@ export async function deriveIdentity({
   seed: Uint8Array
   identityHandle?: string
 }): Promise<IdentityAgents> {
+  if (seed.length !== 32) {
+    throw new Error(`Master seed must be 32 bytes (got ${seed.length}).`)
+  }
   const keyAgent = await CapabilityAgent.fromSeed({
     seed,
     handle: identityHandle,
     keyName: IDENTITY_KEY_NAME
   })
-  const signer = keyAgent.getSigner()
-  const zcapClient = new ZcapClient({
-    SuiteClass: Ed25519Signature2020,
-    invocationSigner: signer,
-    delegationSigner: signer
-  })
-  // The identity KAK: the Ed25519-to-X25519 (Montgomery) conversion of the
-  // controller key pair -- the same conversion a wallet applies to the
-  // controller did:key when it writes this app into a shared collection's
-  // epoch roster.
-  const keyAgreementKey =
-    X25519KeyAgreementKey2020.fromEd25519VerificationKey2020({
-      keyPair: keyAgent.getVerificationKeyPair()
-    }) as unknown as IKeyAgreementKey
-  const keyResolver = singleKeyResolver({ keyAgreementKey })
-  return {
-    controllerDid: keyAgent.id,
-    keyAgent,
-    zcapClient,
-    keyAgreementKey,
-    keyResolver
-  }
+  // The assembly (signer, ZcapClient, the Ed25519-to-X25519 Montgomery
+  // conversion of the controller key pair, key resolver) is shared with the
+  // wallet side via `agentsFromKeyAgent`, so the conversion that both sides of
+  // a share must agree on has exactly one implementation. Only the pinned
+  // derivation inputs above (seed bytes + keyName) stay local.
+  return { ...agentsFromKeyAgent({ keyAgent }), keyAgent }
 }

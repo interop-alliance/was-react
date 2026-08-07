@@ -29,7 +29,7 @@ import {
   createSeedStore,
   type SeedStore
 } from '../../src/identity/seedStore.js'
-import { initAppSession } from '../../src/identity/initAppSession.js'
+import { deriveIdentity } from '../../src/identity/agents.js'
 import {
   persistAppSession,
   restoreAppSession
@@ -146,7 +146,7 @@ async function connectedStore({
   expires?: string
 }): Promise<{ store: WasAuthStore; seed: Uint8Array }> {
   const seed = crypto.getRandomValues(new Uint8Array(32))
-  const identity = await initAppSession({ seed })
+  const identity = await deriveIdentity({ seed })
   await persistAppSession({
     session: {
       seed,
@@ -167,7 +167,7 @@ async function connectedStore({
 describe('activateConnected fallback on failure', () => {
   it('falls back to a usable local replica and surfaces the open error', async () => {
     const seed = crypto.getRandomValues(new Uint8Array(32))
-    const identity = await initAppSession({ seed })
+    const identity = await deriveIdentity({ seed })
     const seedStore = newSeedStore()
     await persistAppSession({
       session: {
@@ -228,7 +228,7 @@ describe('reconnect() with a failing re-grant', () => {
 
     // Model the exact bug: the persisted record is now past its expiry (only
     // the grants need renewing; the seed survives).
-    const identity = await initAppSession({ seed })
+    const identity = await deriveIdentity({ seed })
     await persistAppSession({
       session: {
         seed,
@@ -275,7 +275,6 @@ describe('reconnect() storage-location continuity', () => {
     await store.getState().reconnect()
 
     expect(store.getState().status).toBe('reconnect')
-    expect(store.getState().accessExpired).toBe(true)
     expect(store.getState().reconnecting).toBe(false)
     expect(store.getState().error).toMatch(/different storage location/)
     // The session was never re-pointed: no replication against the new target.
@@ -300,7 +299,6 @@ describe('reconnect() storage-location continuity', () => {
     await store.getState().reconnect()
 
     expect(store.getState().status).toBe('connected')
-    expect(store.getState().accessExpired).toBe(false)
     expect(store.getState().error).toBeNull()
     expect(store.getState().expires).toBe(expires)
     // Replication restarted under the renewed grants.
@@ -321,12 +319,10 @@ describe('near-expiry watch', () => {
     })
 
     expect(store.getState().status).toBe('connected')
-    expect(store.getState().accessExpired).toBe(false)
 
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(store.getState().status).toBe('reconnect')
-    expect(store.getState().accessExpired).toBe(true)
   })
 
   it('leaves a far-future session connected', async () => {
@@ -339,7 +335,6 @@ describe('near-expiry watch', () => {
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(store.getState().status).toBe('connected')
-    expect(store.getState().accessExpired).toBe(false)
   })
 })
 
@@ -354,7 +349,6 @@ describe('boot() grant coverage', () => {
     const { store } = await connectedStore({ config, seedStore })
 
     expect(store.getState().status).toBe('reconnect')
-    expect(store.getState().accessExpired).toBe(true)
   })
 
   it('lands connected when every collection is covered', async () => {
@@ -363,7 +357,6 @@ describe('boot() grant coverage', () => {
     const { store } = await connectedStore({ config, seedStore })
 
     expect(store.getState().status).toBe('connected')
-    expect(store.getState().accessExpired).toBe(false)
   })
 })
 

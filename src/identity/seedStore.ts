@@ -10,7 +10,15 @@
  * `createSeedStore` binds a database name (each app supplies its own) and an
  * optional `idb` factory (injectable for tests, e.g. fake-indexeddb), returning
  * the five bound operations.
+ *
+ * {@link createDescriptorCache} presents the descriptor record of one such
+ * store as the `EncryptionDescriptorCache` seam
+ * (`@interop/wallet-core/descriptors`), which is what the session's
+ * descriptor acquisition reads and writes through.
  */
+import type { CollectionEncryption } from '@interop/was-client'
+import type { EncryptionDescriptorCache } from '@interop/wallet-core/descriptors'
+
 const SESSION_STORE = 'session'
 const SEED_RECORD = 'seed'
 const SESSION_RECORD = 'record'
@@ -138,6 +146,62 @@ export function createSeedStore({
       await withSessionStore('readwrite', store =>
         store.delete(DESCRIPTORS_RECORD)
       )
+    }
+  }
+}
+
+/**
+ * Presents a {@link SeedStore}'s persisted descriptor record as the
+ * `EncryptionDescriptorCache` seam that `@interop/wallet-core/descriptors`
+ * acquires through: per-collection get/put over the single stored blob, already
+ * scoped to one session's Space by the store it is bound to.
+ *
+ * The blob is read-modify-written on every put. That is fine at this scale (an
+ * app registers a handful of collections) and it is the only shape the existing
+ * one-record persistence allows; concurrent puts are serialized through a
+ * promise chain so two of them cannot lose one another's entry.
+ *
+ * @param options {object}
+ * @param options.store {SeedStore}   the session seed store to persist through
+ * @returns {EncryptionDescriptorCache}
+ */
+export function createDescriptorCache({
+  store
+}: {
+  store: SeedStore
+}): EncryptionDescriptorCache {
+  async function readAll(): Promise<Record<string, CollectionEncryption>> {
+    const stored = await store.loadDescriptors()
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+      return { ...(stored as Record<string, CollectionEncryption>) }
+    }
+    return {}
+  }
+
+  // Serializes the read-modify-write of the single stored record.
+  let writes: Promise<void> = Promise.resolve()
+
+  return {
+    async readDescriptor({ collectionId }: { collectionId: string }) {
+      return (await readAll())[collectionId]
+    },
+    writeDescriptor({
+      collectionId,
+      descriptor
+    }: {
+      collectionId: string
+      descriptor: CollectionEncryption
+    }) {
+      const next = writes.then(async () => {
+        const descriptors = await readAll()
+        descriptors[collectionId] = descriptor
+        await store.saveDescriptors(descriptors)
+      })
+      writes = next.then(
+        () => {},
+        () => {}
+      )
+      return next
     }
   }
 }

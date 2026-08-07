@@ -24,9 +24,9 @@
  * edit until the next unrelated pull. The caller debounces, and a re-hydrate
  * after this replica's own optimistic write is idempotent.
  *
- * Construct via {@link createSyncController}, which captures the collection
- * registry and sync tuning; the returned controller is single-use per session
- * (started once, stopped on logout).
+ * A controller captures the collection registry and sync tuning at construction
+ * and is single-use per session (started once, stopped on logout); prefer one
+ * per session over a module-level singleton.
  */
 import type { RxReplicationState } from 'rxdb/plugins/replication'
 import type { RxChangeEvent } from 'rxdb/plugins/core'
@@ -101,8 +101,7 @@ export function isAuthError(err: unknown): boolean {
 }
 
 /**
- * A per-session controller around background replication. Construct via
- * {@link createSyncController}.
+ * A per-session controller around background replication.
  */
 export class SyncController {
   #collections: WasCollectionConfig[]
@@ -178,10 +177,10 @@ export class SyncController {
           console.warn(
             `Skipping sync for "${id}": no delegated capability covers it.`
           )
-          setStatus(id, 'error')
+          setStatus(key, 'error')
           continue
         }
-        setStatus(id, 'idle')
+        setStatus(key, 'idle')
         // Wrap the verbatim port so the 412 conflict re-read resolves `version`
         // from the changes-feed body (CORS hides the `GET` ETag cross-origin).
         const wasPort = withFeedMasterRead(
@@ -202,11 +201,11 @@ export class SyncController {
 
         const subscriptions: Unsubscribable[] = [
           state.active$.subscribe(active => {
-            setStatus(id, active ? 'syncing' : 'synced')
+            setStatus(key, active ? 'syncing' : 'synced')
           }),
           state.error$.subscribe(err => {
             console.error(`Sync error for "${id}":`, err)
-            setStatus(id, 'error')
+            setStatus(key, 'error')
             if (onAuthError && isAuthError(err)) {
               onAuthError()
             }
@@ -243,8 +242,8 @@ export class SyncController {
       // the session can surface it.
       await this.#teardownReplications()
       this.#started = false
-      for (const { id } of this.#collections) {
-        setStatus(id, 'error')
+      for (const { key } of this.#collections) {
+        setStatus(key, 'error')
       }
       throw err
     }
@@ -308,24 +307,4 @@ export class SyncController {
     useSyncStatusStore.getState().reset()
     this.#started = false
   }
-}
-
-/**
- * Builds a fresh {@link SyncController} bound to the collection registry and
- * sync tuning. Prefer one controller per session (started once, stopped on
- * logout) over a module-level singleton.
- *
- * @param options {object}
- * @param options.collections {WasCollectionConfig[]}
- * @param [options.sync] {WasSyncConfig}
- * @returns {SyncController}
- */
-export function createSyncController({
-  collections,
-  sync
-}: {
-  collections: WasCollectionConfig[]
-  sync?: WasSyncConfig
-}): SyncController {
-  return new SyncController({ collections, ...(sync && { sync }) })
 }

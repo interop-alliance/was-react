@@ -3,10 +3,10 @@
  */
 /**
  * Zustand store holding per-collection replication status, mirroring the WAS
- * per-replica sync-status vocabulary. The sync controller writes to it off the
- * RxDB replication `active$` / `error$` streams; UI (e.g. a header indicator or
- * a settings page) reads from it. In-memory only, like the session -- cleared on
- * logout.
+ * per-replica sync-status vocabulary, keyed by the registry's logical collection
+ * key. The sync controller writes to it off the RxDB replication `active$` /
+ * `error$` streams; UI (e.g. a header indicator or a settings page) reads from
+ * it. In-memory only, like the session -- cleared on logout.
  */
 import { create } from 'zustand'
 
@@ -21,16 +21,20 @@ export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error'
 
 export const useSyncStatusStore = create<{
   /**
-   * Keyed by WAS collection id (e.g. `action-items`).
+   * Keyed by the registry's LOGICAL collection key (`WasCollectionConfig.key`,
+   * e.g. `actionItems`), not the WAS wire id. Two registry entries may share one
+   * WAS id, so the id is not a unique status key; every other layer (the entity
+   * stores, the rehydrate mechanism, the local replica's RxDB collections)
+   * routes on the logical key too.
    */
   statuses: Record<string, SyncStatus>
-  setStatus: (collectionId: string, status: SyncStatus) => void
+  setStatus: (collectionKey: string, status: SyncStatus) => void
   reset: () => void
 }>()(set => ({
   statuses: {},
-  setStatus: (collectionId, status) =>
+  setStatus: (collectionKey, status) =>
     set(state => ({
-      statuses: { ...state.statuses, [collectionId]: status }
+      statuses: { ...state.statuses, [collectionKey]: status }
     })),
   reset: () => set({ statuses: {} })
 }))

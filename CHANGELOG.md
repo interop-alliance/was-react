@@ -1,6 +1,28 @@
 # @interop/was-react Changelog
 
-## 0.8.4 - TBD
+## 0.9.0 - TBD
+
+### Breaking
+
+- `AuthState.accessExpired` removed: it was always `status === 'reconnect'`.
+  `useSession()` and `useReconnect()` still return `accessExpired`, now
+  computed.
+- `AuthState.authenticating` removed: it always moved with `phase`, which is now
+  the single source of truth for a login in flight. `useSession()` and
+  `useLogin()` still return `authenticating`, computed as `phase !== null`.
+- `initAppSession` removed -- call `deriveIdentity` (which now enforces the
+  32-byte master-seed rule the wrapper used to add).
+- `createSyncController` removed -- use
+  `new SyncController({ collections, sync })`.
+- The wallet-side request types are no longer exported: `WalletAPIMessage`,
+  `IVPOffer`, `IVPRequest`, `IQueryByExample`, `IZcapQuery`, `WalletResponse`,
+  `WalletRequestProfile`. The relying-party types this library emits and
+  consumes (`IVPRDetails`, `IVPRQuery`, `IDIDAuthenticationQuery`,
+  `IAppConnectQuery`, `IAppConnectCapabilityQuery`, `ICapabilityQueryDetail`)
+  stay.
+- `useSyncStatusStore().statuses` is keyed by the registry's logical collection
+  `key` instead of the WAS collection id (two entries may share one id, and
+  every other layer routes on `key`).
 
 ### Fixed
 
@@ -14,6 +36,12 @@
 
 ### Changed
 
+- Identity assembly (signer, `ZcapClient`, the Ed25519-to-X25519 conversion, key
+  resolver) now comes from `@interop/wallet-core/identity`'s
+  `agentsFromKeyAgent`, so the conversion both sides of a share must agree on
+  has one implementation; only the pinned derivation inputs (seed bytes,
+  `keyName`) stay local. `@interop/x25519-key-agreement-key` is no longer a
+  runtime dependency.
 - `getClientId` no longer throws in an environment without `localStorage`; it
   falls back to a process-stable unpersisted id.
 - Reuse `@interop/was-client/sync` primitives (`isEncryptedEnvelope`,
@@ -32,6 +60,24 @@
   once-per-reader epoch refresh is promise-memoized so concurrent decrypts after
   a key rotation share one descriptor re-read (previously only the first would
   recover).
+- Encryption-descriptor acquisition and the unknown-epoch refresh now run on
+  `@interop/wallet-core/descriptors` instead of hand-rolled copies:
+  `SharedCollectionReader` builds a `createRefreshingEdvDocCipher`, `LocalStore`
+  drives one `DescriptorRefreshPolicy`, and the offline descriptor cache is an
+  `EncryptionDescriptorCache` over the session store (`createDescriptorCache`).
+  Descriptor reads go through a new `remoteDescriptorSource`, which invokes the
+  per-collection delegated zcap.
+- `LocalStore`'s unknown-epoch descriptor refresh is now spent once per
+  collection per SESSION rather than once per decrypt call, so an envelope no
+  descriptor will ever route cannot drive a description read per resource;
+  concurrent decrypts of the same collection share that one re-read. A fresh
+  descriptor installed by the sync bootstrap (`applyRemoteDescriptor`) re-arms
+  it. `LocalStore.setEpochRefresher(fn)` is replaced by
+  `setDescriptorSource({ collectionEncryption })`.
+- A mid-session revoke on a shared collection is now reported by the ordinary
+  skip warning for an undecryptable resource; the separate "could not refresh
+  its key-epoch roster" warning is gone. `list()` still degrades to the subset
+  it can decrypt.
 - Internal dedup: one shared App Connect round trip for login and reconnect, one
   store-teardown path (`deactivateStore({ deleteDb })`), one `bodiesEqual` /
   wire-field copier / scalar-or-array helper, a shared `collectionPath` URL

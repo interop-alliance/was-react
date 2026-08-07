@@ -428,16 +428,17 @@ describe('SharedCollectionReader mid-session revoke', () => {
         collectionId: COLLECTION_ID
       })
 
-      // The rebuild throws (access removed mid-session), so the reader degrades
-      // to the subset it could decrypt rather than rejecting.
+      // The refreshed descriptor no longer carries a roster (access removed
+      // mid-session), so the retry under the swapped cipher fails too and the
+      // reader degrades to the subset it could decrypt rather than rejecting.
       expect(await reader.list()).toEqual([
         { id: readable.id, data: { id: 'credential-1', title: 'before' } }
       ])
       expect(remoteStore.encryptionReads()).toBe(2)
-      const revokeWarnings = warn.mock.calls.filter(call =>
-        String(call[0]).includes('could not refresh its key-epoch roster')
+      const skipWarnings = warn.mock.calls.filter(call =>
+        String(call[0]).includes('is not a recipient of its envelope')
       )
-      expect(revokeWarnings).toHaveLength(1)
+      expect(skipWarnings).toHaveLength(1)
 
       // A subsequent undecryptable resource is skipped too (no second refresh,
       // no rejection).

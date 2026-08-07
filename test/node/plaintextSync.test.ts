@@ -31,10 +31,7 @@ import {
   setRemoteStore
 } from '../../src/storage/storageManager.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
-import {
-  createSyncController,
-  type SyncController
-} from '../../src/storage/syncController.js'
+import { SyncController } from '../../src/storage/syncController.js'
 import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
 import type { ZcapClient } from '@interop/ezcap'
 import type { WasCollectionConfig } from '../../src/config.js'
@@ -172,7 +169,7 @@ async function openSyncedReplica(dbName: string): Promise<LocalStore> {
     dbName
   })
   stores.push(store)
-  const controller = createSyncController({
+  const controller = new SyncController({
     collections: REGISTRY,
     sync: { pollMs: 500, retryMs: 500 }
   })
