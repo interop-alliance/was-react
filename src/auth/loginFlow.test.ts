@@ -106,14 +106,17 @@ beforeEach(() => {
 /**
  * An UNSIGNED structural grant (checkGrants is structural, not cryptographic).
  */
-function grantFor(collectionId: string): IZcap {
+function grantFor(
+  collectionId: string,
+  actions: string[] = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+): IZcap {
   return {
     '@context': 'https://w3id.org/zcap/v1',
     id: `urn:zcap:${crypto.randomUUID()}`,
     controller: appDid,
     parentCapability: `urn:zcap:root:${encodeURIComponent(SPACE_URL)}`,
     invocationTarget: `${SPACE_URL}/${collectionId}`,
-    allowedAction: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE'],
+    allowedAction: actions,
     expires: new Date(Date.now() + 86_400_000).toISOString()
   } as unknown as IZcap
 }
@@ -317,6 +320,50 @@ describe('App Connect grant checking', () => {
     await expect(loginWithWallet({ config: loginConfig })).rejects.toThrow(
       /No grant covers the "projects"/
     )
+  })
+
+  it('completes a public-collection login against a wallet that caps public grants add-only', async () => {
+    // The FW-106 regression: a config declaring a public collection must
+    // request within the add-only ceiling and accept the GET/HEAD/POST grant a
+    // conformant wallet returns -- not reject it over PUT/DELETE the
+    // public-collection ceiling forbids.
+    const credential = await appKeyCredential()
+    mockGet.mockImplementation(async ({ vpr }) => {
+      // The request itself stays within the ceiling per collection.
+      const queries = Array.isArray(vpr.query) ? vpr.query : [vpr.query]
+      const appConnect = queries.find(
+        entry => entry.type === 'AppConnectQuery'
+      ) as { capabilityQuery: Array<{ allowedAction: string[] }> }
+      expect(
+        appConnect.capabilityQuery.map(entry => entry.allowedAction)
+      ).toEqual([
+        ['GET', 'HEAD', 'POST'],
+        ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+      ])
+      return walletVp({
+        challenge: vpr.challenge as string,
+        credential,
+        zcaps: [
+          grantFor('microblog-posts', ['GET', 'HEAD', 'POST']),
+          grantFor('notes')
+        ]
+      })
+    })
+
+    const outcome = await loginWithWallet({
+      config: {
+        ...loginConfig,
+        collections: [
+          { id: 'microblog-posts', visibility: 'public' },
+          { id: 'notes' }
+        ]
+      }
+    })
+
+    expect(Object.keys(outcome.parsed.byCollectionId).sort()).toEqual([
+      'microblog-posts',
+      'notes'
+    ])
   })
 
   it('does not require a declined share to be covered', async () => {

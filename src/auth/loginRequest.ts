@@ -13,8 +13,16 @@
  * delegated zcaps embedded in the response VP, so first-run and returning are a
  * single request/response with no store popup and no separate grants popup.
  *
- * Only collection-scoped capabilities are requested (no whole-space grant). A
- * `visibility: 'public'` collection is requested with the distinct descriptor
+ * Only collection-scoped capabilities are requested (no whole-space grant),
+ * and each request stays within the ACTION CEILING of the descriptor class it
+ * uses (the App Connect spec's "Action ceilings" table): a private collection
+ * asks for the full vocabulary ({@link RW_ACTIONS}), a public collection at
+ * most the add-only set ({@link PUBLIC_ACTIONS}). A configured action set
+ * naming an action above a requested collection's ceiling is a configuration
+ * error thrown here, at build time -- a conformant wallet can never grant it,
+ * so letting it ride would surface later as a failed login instead.
+ *
+ * A `visibility: 'public'` collection is requested with the distinct descriptor
  * type `https://w3id.org/byoe#public-collection` (the wallet provisions it plaintext with a
  * collection-level public-read policy and renders a world-readable consent
  * warning); wallets that predate the type render it UNSATISFIABLE, which is the
@@ -45,9 +53,21 @@ import type {
 } from './walletRequestTypes.js'
 
 /**
- * Default read/write actions requested on each app collection.
+ * Default read/write actions requested on each private app collection -- also
+ * the `https://w3id.org/byoe#collection` class ceiling (the full WAS action
+ * vocabulary).
  */
 export const RW_ACTIONS = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+
+/**
+ * The `https://w3id.org/byoe#public-collection` class ceiling: add-only, reads
+ * plus `POST`, never `PUT` or `DELETE`. A write to a plaintext world-readable
+ * collection is publication under the user's identity and irreversible in
+ * practice, so a conformant wallet caps a public grant here no matter what was
+ * asked -- and the App Connect spec forbids an application from requiring an
+ * action above it.
+ */
+export const PUBLIC_ACTIONS = ['GET', 'HEAD', 'POST']
 
 /**
  * The actions requested on a SHARED (wallet-owned) collection: read-only, and
@@ -55,6 +75,20 @@ export const RW_ACTIONS = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
  * asks to write it.
  */
 export const SHARED_ACTIONS = ['GET', 'HEAD']
+
+/**
+ * The action ceiling of the descriptor class a collection is requested with
+ * (the App Connect spec's "Action ceilings" table): add-only for
+ * `visibility: 'public'` (`https://w3id.org/byoe#public-collection`), the full
+ * vocabulary otherwise (`https://w3id.org/byoe#collection`). Shares have their
+ * own fixed {@link SHARED_ACTIONS} and never consult a configured action set.
+ *
+ * @param [visibility] {'private' | 'public'}
+ * @returns {string[]}
+ */
+export function actionCeiling(visibility?: 'private' | 'public'): string[] {
+  return visibility === 'public' ? PUBLIC_ACTIONS : RW_ACTIONS
+}
 
 /**
  * One collection to request a grant for: the WAS collection id plus its
@@ -78,6 +112,51 @@ export interface GrantRequestCollection {
  */
 export function newChallenge(): string {
   return crypto.randomUUID()
+}
+
+/**
+ * The actions to request for one collection: the configured set capped at the
+ * collection's class ceiling, kept in ceiling order. When no set is configured
+ * the whole ceiling is requested. An EXPLICIT set naming an action above the
+ * ceiling is a configuration error thrown here, at request build time: a
+ * conformant wallet can never grant it, so silently capping would leave the
+ * app believing it asked for more than any correct wallet returns, and the
+ * mismatch would surface later as a failed login instead of as the config bug
+ * it is.
+ *
+ * @param options {object}
+ * @param options.id {string}   the WAS collection id (for error messages)
+ * @param [options.visibility] {'private' | 'public'}
+ * @param [options.actions] {string[]}   the configured action set
+ * @returns {string[]}
+ */
+function requestedActions({
+  id,
+  visibility,
+  actions
+}: {
+  id: string
+  visibility?: 'private' | 'public'
+  actions?: string[]
+}): string[] {
+  const ceiling = actionCeiling(visibility)
+  if (actions === undefined) {
+    return ceiling
+  }
+  const excess = actions.filter(action => !ceiling.includes(action))
+  if (excess.length > 0) {
+    throw new Error(
+      `Collection "${id}" cannot request action(s) above its class ceiling: ` +
+        `${excess.join(', ')} (the ceiling is ${ceiling.join(', ')}).`
+    )
+  }
+  const capped = ceiling.filter(action => actions.includes(action))
+  if (capped.length === 0) {
+    // An empty allowedAction array means EVERY action in the zcap model, so an
+    // action-less request must never be built.
+    throw new Error(`Collection "${id}" requests no actions.`)
+  }
+  return capped
 }
 
 /**
@@ -105,8 +184,11 @@ export function newChallenge(): string {
  * @param [options.sharedCollections] {string[]}   WAS collection ids of
  *   wallet-owned collections to request read-and-decrypt access to; each gets a
  *   `https://w3id.org/byoe#shared-collection` descriptor with {@link SHARED_ACTIONS}
- * @param [options.actions] {string[]}   the RW action set (defaults to
- *   `RW_ACTIONS`)
+ * @param [options.actions] {string[]}   the action set to request on each app
+ *   collection; when omitted each collection requests exactly its class
+ *   ceiling ({@link actionCeiling}). An explicit set naming an action above a
+ *   requested collection's ceiling throws (a configuration error, surfaced at
+ *   build time rather than as a failed login)
  * @returns {IVPRDetails}
  */
 export function buildAppConnectVpr({
@@ -116,7 +198,7 @@ export function buildAppConnectVpr({
   credential,
   collections,
   sharedCollections = [],
-  actions = RW_ACTIONS
+  actions
 }: {
   challenge: string
   domain: string
@@ -129,7 +211,7 @@ export function buildAppConnectVpr({
   const capabilityQuery: IAppConnectCapabilityQuery[] = collections.map(
     ({ id, visibility }) => ({
       referenceId: id,
-      allowedAction: actions,
+      allowedAction: requestedActions({ id, visibility, actions }),
       invocationTarget: {
         type:
           visibility === 'public'

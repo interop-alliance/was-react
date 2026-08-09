@@ -78,7 +78,9 @@ export {
 export { DEFAULT_MEDIATOR_BASE, loadChapi, chapiGet } from './auth/chapi.js'
 export {
   RW_ACTIONS,
+  PUBLIC_ACTIONS,
   SHARED_ACTIONS,
+  actionCeiling,
   newChallenge,
   buildAppConnectVpr,
   type GrantRequestCollection

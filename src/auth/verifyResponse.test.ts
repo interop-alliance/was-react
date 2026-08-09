@@ -47,6 +47,9 @@ const TEST_COLLECTIONS = [
   'thoughts',
   'current-focus'
 ]
+// The same collections in the shape checkGrants takes (id + visibility; all
+// private here, so each requires the full RW ceiling).
+const TEST_COLLECTION_REQUESTS = TEST_COLLECTIONS.map(id => ({ id }))
 const documentLoader = createDocumentLoader()
 
 const ZCAP_TERM_CONTEXT = {
@@ -411,7 +414,7 @@ describe('checkGrants', () => {
     const checked = checkGrants({
       grants,
       controllerDid: appDid,
-      collections: TEST_COLLECTIONS
+      collections: TEST_COLLECTION_REQUESTS
     })
     expect(checked.parsed.serverUrl).toBe(SERVER_URL)
     expect(checked.parsed.spaceId).toBe('e2e-space')
@@ -426,7 +429,7 @@ describe('checkGrants', () => {
       checkGrants({
         grants: [],
         controllerDid: appDid,
-        collections: TEST_COLLECTIONS
+        collections: TEST_COLLECTION_REQUESTS
       })
     ).toThrow(/no storage grants/)
   })
@@ -438,7 +441,7 @@ describe('checkGrants', () => {
       checkGrants({
         grants,
         controllerDid: appDid,
-        collections: TEST_COLLECTIONS
+        collections: TEST_COLLECTION_REQUESTS
       })
     ).toThrow(/controlled by/)
   })
@@ -452,7 +455,7 @@ describe('checkGrants', () => {
       checkGrants({
         grants,
         controllerDid: appDid,
-        collections: TEST_COLLECTIONS
+        collections: TEST_COLLECTION_REQUESTS
       })
     ).toThrow(/expired/)
   })
@@ -469,7 +472,7 @@ describe('checkGrants', () => {
       checkGrants({
         grants,
         controllerDid: appDid,
-        collections: TEST_COLLECTIONS
+        collections: TEST_COLLECTION_REQUESTS
       })
     ).toThrow(/two spaces/)
   })
@@ -482,7 +485,7 @@ describe('checkGrants', () => {
       checkGrants({
         grants,
         controllerDid: appDid,
-        collections: TEST_COLLECTIONS
+        collections: TEST_COLLECTION_REQUESTS
       })
     ).toThrow(new RegExp(`No grant covers the "${TEST_COLLECTIONS[0]}"`))
   })
@@ -494,8 +497,52 @@ describe('checkGrants', () => {
       checkGrants({
         grants,
         controllerDid: appDid,
-        collections: TEST_COLLECTIONS
+        collections: TEST_COLLECTION_REQUESTS
       })
     ).toThrow(/lacks required actions/)
+  })
+
+  it('accepts an add-only grant on a public collection (the wallet ceiling)', () => {
+    // A conformant wallet caps a #public-collection grant at GET/HEAD/POST;
+    // the default RW requirement must be capped at that ceiling too, not
+    // reject every correct wallet.
+    const grants = [
+      grantFor({ collectionId: 'posts', actions: ['GET', 'HEAD', 'POST'] })
+    ]
+    const checked = checkGrants({
+      grants,
+      controllerDid: appDid,
+      collections: [{ id: 'posts', visibility: 'public' }]
+    })
+    expect(Object.keys(checked.parsed.byCollectionId)).toEqual(['posts'])
+  })
+
+  it('still rejects a public-collection grant below the add-only ceiling', () => {
+    const grants = [
+      grantFor({ collectionId: 'posts', actions: ['GET', 'HEAD'] })
+    ]
+    expect(() =>
+      checkGrants({
+        grants,
+        controllerDid: appDid,
+        collections: [{ id: 'posts', visibility: 'public' }]
+      })
+    ).toThrow(/lacks required actions: POST/)
+  })
+
+  it('caps an explicit above-ceiling requirement at the class ceiling', () => {
+    // An app that configures the full RW set as required must not fail a
+    // public-collection login over the actions the ceiling forbids.
+    const grants = [
+      grantFor({ collectionId: 'posts', actions: ['GET', 'HEAD', 'POST'] })
+    ]
+    expect(() =>
+      checkGrants({
+        grants,
+        controllerDid: appDid,
+        collections: [{ id: 'posts', visibility: 'public' }],
+        requiredActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+      })
+    ).not.toThrow()
   })
 })

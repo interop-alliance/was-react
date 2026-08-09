@@ -157,10 +157,13 @@ function appConnectFirstRun(presentation: IVerifiablePresentation): boolean {
  * not a login failure, so such a login completes with no remote storage and
  * the missing readers are warned about downstream.
  *
- * Only the app-owned collections are REQUIRED to be covered. A shared
- * collection the wallet declined to grant is not a login failure -- the reader
- * for it is simply not opened, with a warning -- so its id is not passed to
- * `checkGrants`; it still reaches the routing table through `parseGrants`.
+ * Only the app-owned collections are REQUIRED to be covered, each at its own
+ * class ceiling: the collections are passed to `checkGrants` with their
+ * declared visibility, so a `visibility: 'public'` collection requires at most
+ * the add-only set a conformant wallet grants. A shared collection the wallet
+ * declined to grant is not a login failure -- the reader for it is simply not
+ * opened, with a warning -- so it is not passed to `checkGrants`; it still
+ * reaches the routing table through `parseGrants`.
  *
  * @param options {object}
  * @param options.presentation {IVerifiablePresentation}
@@ -181,9 +184,8 @@ function checkGrantsForCollections({
   collections: GrantRequestCollection[]
   sharedCollections?: string[]
 }): CheckedGrants {
-  const collectionIds = collections.map(collection => collection.id)
   const grants = grantsOf(presentation)
-  if (collectionIds.length === 0 && grants.length === 0) {
+  if (collections.length === 0 && grants.length === 0) {
     if (sharedCollections.length > 0) {
       console.warn(
         'The wallet returned no storage grants; the requested shared ' +
@@ -200,7 +202,7 @@ function checkGrantsForCollections({
   return checkGrants({
     grants,
     controllerDid,
-    collections: collectionIds
+    collections
   })
 }
 

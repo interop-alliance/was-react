@@ -1,5 +1,26 @@
 # @interop/was-react Changelog
 
+## 0.10.0 - TBD
+
+### Breaking
+
+- `checkGrants` takes `collections` as `GrantRequestCollection[]` (id +
+  visibility) instead of `string[]`, so the required actions can be capped at
+  each collection's class ceiling.
+- `buildAppConnectVpr` no longer defaults `actions` to `RW_ACTIONS`: when
+  omitted, each collection now requests exactly its class ceiling. An explicit
+  `actions` set naming an action above a requested collection's ceiling (or an
+  empty set) throws at build time as a configuration error.
+
+### Fixed
+
+- Public collections no longer fail login against a conformant wallet: a
+  `visibility: 'public'` collection is requested with at most the add-only set
+  (`GET`, `HEAD`, `POST`) and its required actions are capped at that ceiling,
+  so the add-only grant the wallet returns now validates instead of being
+  rejected over `PUT`/`DELETE`. Added `PUBLIC_ACTIONS` and `actionCeiling`
+  exports.
+
 ## 0.9.0 - 2026-08-06
 
 ### Breaking

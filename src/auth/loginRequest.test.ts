@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildAppConnectVpr,
+  PUBLIC_ACTIONS,
   RW_ACTIONS,
   SHARED_ACTIONS
 } from './loginRequest.js'
@@ -110,13 +111,46 @@ describe('buildAppConnectVpr', () => {
         { type: 'https://w3id.org/byoe#collection', name: 'drafts' },
         { type: 'https://w3id.org/byoe#collection', name: 'notes' }
       ])
-      // Public collections get the same RW zcap request: public covers only
-      // unauthenticated reads; writes stay capability-only.
-      for (const entry of capabilityQuery) {
-        expect(entry.allowedAction).toEqual(RW_ACTIONS)
-      }
+      // Each collection requests exactly its class ceiling: add-only for a
+      // public collection (a conformant wallet caps the grant there anyway),
+      // the full RW vocabulary for a private one.
+      expect(capabilityQuery.map(entry => entry.allowedAction)).toEqual([
+        PUBLIC_ACTIONS,
+        RW_ACTIONS,
+        RW_ACTIONS
+      ])
     }
   )
+
+  it('throws at build time when an explicit action set exceeds a public ceiling', () => {
+    expect(() =>
+      buildAppConnectVpr({
+        ...BASE,
+        collections: [{ id: 'microblog-posts', visibility: 'public' }],
+        actions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+      })
+    ).toThrow(/above its class ceiling: PUT, DELETE/)
+  })
+
+  it('caps an explicit within-ceiling action set to ceiling order', () => {
+    const vpr = buildAppConnectVpr({
+      ...BASE,
+      collections: [{ id: 'microblog-posts', visibility: 'public' }],
+      actions: ['POST', 'GET']
+    })
+    const capabilityQuery = capabilityQueriesOf(vpr)
+    expect(capabilityQuery[0]?.allowedAction).toEqual(['GET', 'POST'])
+  })
+
+  it('throws on an explicit empty action set (empty allowedAction means every action)', () => {
+    expect(() =>
+      buildAppConnectVpr({
+        ...BASE,
+        collections: [{ id: 'notes' }],
+        actions: []
+      })
+    ).toThrow(/requests no actions/)
+  })
 
   it('requests no whole-space (https://w3id.org/byoe#space) query', () => {
     const vpr = buildAppConnectVpr({ ...BASE, collections: [{ id: 'notes' }] })

@@ -15,9 +15,13 @@
  *    the `challenge` echoes this request's fresh nonce.
  * 3. Grant structure: every zcap is controlled by OUR seed-derived DID,
  *    targets a single space on a single WAS host, is unexpired, and the
- *    collection set is fully covered with sufficient actions. (Delegation-
- *    chain proofs are enforced server-side at invocation; the RP checks
- *    structure.)
+ *    collection set is fully covered with sufficient actions -- where
+ *    "sufficient" is capped at each collection's class ceiling: a conformant
+ *    wallet caps a public-collection grant add-only, so requiring `PUT` or
+ *    `DELETE` there would reject every correct wallet (the App Connect spec
+ *    forbids failing a connection over an action the class ceiling excludes).
+ *    (Delegation-chain proofs are enforced server-side at invocation; the RP
+ *    checks structure.)
  *
  * Note on holder binding: the wallet signs the VP as ITS holder DID (did:web
  * or the wallet's did:key) -- not as this app's controller DID, which never
@@ -34,7 +38,11 @@ import type { DocumentLoader } from '../identity/documentLoader.js'
 import { parseGrants, type ParsedGrants } from '../grants.js'
 import { earliestExpiry, isExpired } from '../identity/appSession.js'
 import { asArray } from '../jsonLd.js'
-import { RW_ACTIONS } from './loginRequest.js'
+import {
+  actionCeiling,
+  RW_ACTIONS,
+  type GrantRequestCollection
+} from './loginRequest.js'
 
 /**
  * Verifies a login response VP cryptographically and structurally (steps 1-2
@@ -170,10 +178,12 @@ function actionsOf(zcap: IZcap): string[] {
  * @param options {object}
  * @param options.grants {IZcap[]}
  * @param options.controllerDid {string}   this app's seed-derived DID
- * @param options.collections {string[]}   the WAS collection ids that must be
- *   covered
+ * @param options.collections {GrantRequestCollection[]}   the collections that
+ *   must be covered (WAS collection id + visibility; the visibility selects
+ *   the class ceiling the required actions are capped at)
  * @param [options.requiredActions] {string[]}   the actions each collection
- *   grant must allow (defaults to `RW_ACTIONS`)
+ *   grant must allow, capped per collection at its class ceiling (defaults to
+ *   `RW_ACTIONS`, so each collection requires exactly its ceiling)
  * @returns {CheckedGrants}
  */
 export function checkGrants({
@@ -184,7 +194,7 @@ export function checkGrants({
 }: {
   grants: IZcap[]
   controllerDid: string
-  collections: string[]
+  collections: GrantRequestCollection[]
   requiredActions?: string[]
 }): CheckedGrants {
   if (grants.length === 0) {
@@ -208,13 +218,19 @@ export function checkGrants({
   // user's Space lives; the sync layer derives its target from the grants.
   const parsed = parseGrants(grants)
 
-  for (const id of collections) {
+  for (const { id, visibility } of collections) {
     const grant = parsed.byCollectionId[id]
     if (!grant) {
       throw new Error(`No grant covers the "${id}" collection.`)
     }
     const actions = actionsOf(grant)
-    const missing = requiredActions.filter(action => !actions.includes(action))
+    // The requirement is capped at the class ceiling: a conformant wallet caps
+    // a public grant add-only, so an above-ceiling requirement (explicit or
+    // the RW default) must cost the excess actions, never the login.
+    const required = actionCeiling(visibility).filter(action =>
+      requiredActions.includes(action)
+    )
+    const missing = required.filter(action => !actions.includes(action))
     if (missing.length > 0) {
       throw new Error(
         `The "${id}" grant lacks required actions: ${missing.join(', ')}.`
