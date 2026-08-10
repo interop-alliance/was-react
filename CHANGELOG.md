@@ -1,5 +1,17 @@
 # @interop/was-react Changelog
 
+## 0.10.1 - TBD
+
+### Fixed
+
+- `logout` and `clearLocalData` now ride the serialized boot/destroy lifecycle
+  chain. Previously a logout clicked during the StrictMode remount churn after
+  a reload (boot -> destroy -> boot) ran its teardown and fresh-local re-open
+  concurrently with the queued boot's hot restore -- the two open/teardown
+  sequences on the process-wide holder could deadlock the re-open (the logout
+  never resolved and the app never returned to the login page), or the boot
+  could resurrect the session the logout had just torn down.
+
 ## 0.10.0 - 2026-08-09
 
 ### Breaking

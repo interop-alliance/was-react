@@ -346,9 +346,12 @@ export function createAuthStore({
   // awaits user interaction (boot starts replication in the background, never
   // blocking on it), so the chain cannot deadlock. `connectWithGrants` rides
   // the same chain (fired from mount-time effects, it IS part of this race --
-  // see its comment); `login` and the other user-driven transitions stay off
-  // it -- they are guarded by their own flags and never run as part of the
-  // mount/unmount race.
+  // see its comment), and so do `logout` and `clearLocalData` -- user-driven,
+  // but they tear down and re-open the process-wide holder, so overlapping an
+  // in-flight boot's bring-up would race two open/teardown sequences (see the
+  // comment at `logout`). `login` and `reconnect` stay off it: they are
+  // guarded by their own flags, and both await the CHAPI popup -- chaining
+  // them would hold boots and destroys hostage to user interaction.
   let lifecycle: Promise<void> = Promise.resolve()
   function serializeLifecycle(task: () => Promise<void>): Promise<void> {
     const run = lifecycle.then(task, task)
@@ -1161,19 +1164,30 @@ export function createAuthStore({
         }
       },
 
-      logout: async ({ wipe = false } = {}) => {
-        await resetToFreshLocal({ deleteDb: wipe })
-        await clearAppSession({ store: sessionStore })
-        // `resetToFreshLocal` already landed `local` (fresh anon replica); clear
-        // the remaining transients.
-        set({ phase: null, reconnecting: false })
-      },
+      // Serialized with boot/destroy: a logout clicked during the StrictMode
+      // remount churn after a reload (boot -> destroy -> boot, each a
+      // multi-await bring-up/teardown) would otherwise tear the store down and
+      // re-open the anonymous replica CONCURRENTLY with the queued boot's hot
+      // restore -- two overlapping open/teardown sequences on the process-wide
+      // holder, which can deadlock the re-open. Queued behind the chain, the
+      // in-flight boot completes first and logout tears down a fully-open
+      // session. Neither body awaits user interaction, so the chain cannot
+      // deadlock.
+      logout: ({ wipe = false } = {}) =>
+        serializeLifecycle(async () => {
+          await resetToFreshLocal({ deleteDb: wipe })
+          await clearAppSession({ store: sessionStore })
+          // `resetToFreshLocal` already landed `local` (fresh anon replica);
+          // clear the remaining transients.
+          set({ phase: null, reconnecting: false })
+        }),
 
-      clearLocalData: async () => {
-        await resetToFreshLocal({ deleteDb: true, discardAnonSeed: true })
-        await clearAppSession({ store: sessionStore })
-        set({ phase: null, reconnecting: false })
-      },
+      clearLocalData: () =>
+        serializeLifecycle(async () => {
+          await resetToFreshLocal({ deleteDb: true, discardAnonSeed: true })
+          await clearAppSession({ store: sessionStore })
+          set({ phase: null, reconnecting: false })
+        }),
 
       hasLocalData: async () => {
         if (get().status !== 'local' || !hasStore()) {

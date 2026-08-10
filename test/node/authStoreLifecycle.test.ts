@@ -23,10 +23,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { IDBFactory } from 'fake-indexeddb'
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie'
 import type { RxStorage } from 'rxdb/plugins/core'
+import type { IZcap } from '@interop/data-integrity-core'
 import {
   createAuthStore,
   type WasAuthStore
 } from '../../src/session/authStore.js'
+import { deriveIdentity } from '../../src/identity/agents.js'
+import {
+  persistAppSession,
+  restoreAppSession
+} from '../../src/identity/appSession.js'
 import {
   createSeedStore,
   type SeedStore
@@ -215,5 +221,65 @@ describe('serialized boot/destroy lifecycle', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0]!.id).toBe(noteId)
     expect(rows[0]!.title).toBe('kept')
+  })
+
+  it('a logout fired during an in-flight hot-restore boot is serialized behind it', async () => {
+    const config = baseConfig()
+    const seedStore = newSeedStore()
+
+    // Persist a valid connected-session record so `boot()` hot-restores.
+    const seed = crypto.getRandomValues(new Uint8Array(32))
+    const identity = await deriveIdentity({ seed })
+    await persistAppSession({
+      session: {
+        seed,
+        controllerDid: identity.controllerDid,
+        serverUrl: 'http://localhost:3999',
+        spaceId: 'space-1',
+        grants: [
+          {
+            id: 'urn:zcap:notes',
+            invocationTarget: 'http://localhost:3999/space/space-1/notes'
+          }
+        ] as unknown as IZcap[],
+        // Well beyond the 1h near-expiry warning, so the watch never fires.
+        expires: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString()
+      },
+      store: seedStore
+    })
+
+    const { storage, entered, release } = gatedStorage()
+    const store = makeStore(config, seedStore, storage)
+
+    // Mount: the boot begins its hot restore and parks inside
+    // `LocalStore.init`, before the holder is installed.
+    const booting = store.getState().boot()
+    await entered
+
+    // "Log out, erase data" clicked while that boot is still bringing the
+    // session up -- the e2e shape: a wipe landing inside the StrictMode
+    // remount churn after a reload. Unserialized, the logout's teardown and
+    // fresh-local re-open interleave with the parked boot's bring-up, and the
+    // boot resurrects the connected session the logout just tore down (or the
+    // two opens deadlock).
+    const loggingOut = store.getState().logout({ wipe: true })
+    // Give an unserialized logout time to run to completion before the boot
+    // resumes (serialized, it stays queued instead) -- the released boot must
+    // then not resurrect the session the logout tore down. Cannot await
+    // `loggingOut` here: serialized, it resolves only after the boot the gate
+    // is still holding.
+    await new Promise(resolve => setTimeout(resolve, 100))
+    release()
+    await Promise.all([booting, loggingOut])
+
+    // The logout wins: a fresh, usable anonymous local replica, and the
+    // persisted session record is gone.
+    expect(store.getState().status).toBe('local')
+    expect(store.getState().error).toBeNull()
+    expect(hasStore()).toBe(true)
+    expect(await restoreAppSession({ store: seedStore })).toBeNull()
+    const id = crypto.randomUUID()
+    await requireStore().insertEntity('notes', { id, title: 'after-logout' })
+    expect(await requireStore().listEntities('notes')).toHaveLength(1)
   })
 })
