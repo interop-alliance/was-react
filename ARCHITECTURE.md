@@ -42,7 +42,7 @@ carrying `DIDAuthentication` plus one `AppConnectQuery`:
 - `app: { name, credentialType, vocabBase }` -- `appName` from `WasAppConfig`
   plus the `SeedCredentialConfig` pair;
 - `capabilityQuery` entries -- the usual capability descriptors
-  (`https://w3id.org/byoe#collection` / `#public-collection`) _minus_
+  (`https://w3id.org/byoe#private-collection` / `#public-collection`) _minus_
   `controller` (the wallet fills it with the app-key subject DID; the app cannot
   know a returning user's DID in advance) and minus `reason`.
 
@@ -95,19 +95,21 @@ Three kinds, and the distinctions are load-bearing:
 - **App-owned private** (`collections`, `visibility: 'private'`, the default).
   The app provisions, writes, and replicates it. Encrypted with the app's
   identity X25519 key-agreement key -- the same key a shared collection's roster
-  entry names. Requested with the `https://w3id.org/byoe#collection` descriptor.
+  entry names. Requested with the `https://w3id.org/byoe#private-collection`
+  descriptor.
 - **App-owned public** (`collections`, `visibility: 'public'`). Plaintext and
   world-readable; no key derivation, and the stored resource id IS the payload
   uuid, so a public document has a stable share URL. Requested with
   `https://w3id.org/byoe#public-collection`.
 - **Shared, wallet-owned** (`sharedCollections`). One of the WALLET's own
   encrypted collections that the user chooses to let this app read and decrypt.
-  Requested with `https://w3id.org/byoe#shared-collection` and the read-only
-  `SHARED_ACTIONS` set. It is read-only by construction: no RxDB collection, no
-  local replica, no replication, no writes, and the sync bootstrap's
-  collection-description PUTs skip it. Reads go straight to the server through a
-  `SharedCollectionReader`, which fetches the stored EDV envelope raw (the
-  `encryption: 'plaintext'` handle override) and decrypts it locally.
+  Requested with `https://w3id.org/byoe#shared-wallet-collection` and the
+  read-only `SHARED_ACTIONS` set. It is read-only by construction: no RxDB
+  collection, no local replica, no replication, no writes, and the sync
+  bootstrap's collection-description PUTs skip it. Reads go straight to the
+  server through a `SharedCollectionReader`, which fetches the stored EDV
+  envelope raw (the `encryption: 'plaintext'` handle override) and decrypts it
+  locally.
 
 `SharedCollectionReader.list()` has two paths. The fast one pages the `changes`
 feed -- whole pages of documents with their bodies, undecrypted by the server,
@@ -148,8 +150,8 @@ same process anyway.
 
 ### Failing closed, and the honest ceiling
 
-`https://w3id.org/byoe#shared-collection` is a distinct descriptor type rather
-than a flag, for the same reason `#public-collection` is: an unknown type
+`https://w3id.org/byoe#shared-wallet-collection` is a distinct descriptor type
+rather than a flag, for the same reason `#public-collection` is: an unknown type
 already resolves to unsatisfiable, so a wallet that predates the feature refuses
 visibly. Silently degrading matters more here than elsewhere -- a share fuses
 the read zcap with the roster entry, and half a share is ciphertext the app

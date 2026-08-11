@@ -79,7 +79,7 @@ describe('buildAppConnectVpr', () => {
     )
     for (const entry of capabilityQuery) {
       expect(entry.invocationTarget).toEqual({
-        type: 'https://w3id.org/byoe#collection',
+        type: 'https://w3id.org/byoe#private-collection',
         name: entry.referenceId
       })
       expect(entry.allowedAction).toEqual(RW_ACTIONS)
@@ -91,7 +91,7 @@ describe('buildAppConnectVpr', () => {
 
   it(
     'emits https://w3id.org/byoe#public-collection for visibility: public and keeps ' +
-      'private collections on https://w3id.org/byoe#collection',
+      'private collections on https://w3id.org/byoe#private-collection',
     () => {
       const vpr = buildAppConnectVpr({
         ...BASE,
@@ -108,8 +108,8 @@ describe('buildAppConnectVpr', () => {
           type: 'https://w3id.org/byoe#public-collection',
           name: 'microblog-posts'
         },
-        { type: 'https://w3id.org/byoe#collection', name: 'drafts' },
-        { type: 'https://w3id.org/byoe#collection', name: 'notes' }
+        { type: 'https://w3id.org/byoe#private-collection', name: 'drafts' },
+        { type: 'https://w3id.org/byoe#private-collection', name: 'notes' }
       ])
       // Each collection requests exactly its class ceiling: add-only for a
       // public collection (a conformant wallet caps the grant there anyway),
@@ -180,36 +180,41 @@ describe('buildAppConnectVpr', () => {
     expect(capabilityQueriesOf(vpr)).toEqual([])
   })
 
-  it('appends one read-only https://w3id.org/byoe#shared-collection descriptor per shared id', () => {
-    const vpr = buildAppConnectVpr({
-      ...BASE,
-      collections: [{ id: 'notes' }],
-      sharedCollections: ['private-credentials', 'contacts']
-    })
-    const capabilityQuery = capabilityQueriesOf(vpr)
-    expect(capabilityQuery).toHaveLength(3)
-    // App collections first, then the shares, in declaration order.
-    expect(capabilityQuery.slice(1)).toEqual([
-      {
-        referenceId: 'private-credentials',
-        allowedAction: SHARED_ACTIONS,
-        invocationTarget: {
-          type: 'https://w3id.org/byoe#shared-collection',
-          name: 'private-credentials'
+  it(
+    'appends one read-only https://w3id.org/byoe#shared-wallet-collection ' +
+      'descriptor per shared id',
+    () => {
+      const vpr = buildAppConnectVpr({
+        ...BASE,
+        collections: [{ id: 'notes' }],
+        sharedCollections: ['private-credentials', 'contacts']
+      })
+      const capabilityQuery = capabilityQueriesOf(vpr)
+      expect(capabilityQuery).toHaveLength(3)
+      // App collections first, then the shares, in declaration order.
+      expect(capabilityQuery.slice(1)).toEqual([
+        {
+          referenceId: 'private-credentials',
+          allowedAction: SHARED_ACTIONS,
+          invocationTarget: {
+            type: 'https://w3id.org/byoe#shared-wallet-collection',
+            name: 'private-credentials'
+          }
+        },
+        {
+          referenceId: 'contacts',
+          allowedAction: SHARED_ACTIONS,
+          invocationTarget: {
+            type: 'https://w3id.org/byoe#shared-wallet-collection',
+            name: 'contacts'
+          }
         }
-      },
-      {
-        referenceId: 'contacts',
-        allowedAction: SHARED_ACTIONS,
-        invocationTarget: {
-          type: 'https://w3id.org/byoe#shared-collection',
-          name: 'contacts'
-        }
-      }
-    ])
-    // Read-only by construction: a custom RW action set never reaches a share.
-    expect(SHARED_ACTIONS).toEqual(['GET', 'HEAD'])
-  })
+      ])
+      // Read-only by construction: a custom RW action set never reaches a
+      // share.
+      expect(SHARED_ACTIONS).toEqual(['GET', 'HEAD'])
+    }
+  )
 
   it('keeps shared descriptors read-only even under a custom action set', () => {
     const vpr = buildAppConnectVpr({

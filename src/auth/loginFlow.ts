@@ -69,8 +69,8 @@ export interface LoginConfig {
   collections: GrantRequestCollection[]
   /**
    * WAS collection ids of wallet-owned collections to request read-and-decrypt
-   * access to (the `https://w3id.org/byoe#shared-collection` grant). Read-only; never
-   * replicated.
+   * access to (the `https://w3id.org/byoe#shared-wallet-collection` grant).
+   * Read-only; never replicated.
    */
   sharedCollections?: string[]
   /**

@@ -1,5 +1,15 @@
 # @interop/was-react Changelog
 
+## 0.11.1 - TBD
+
+### Breaking
+
+- Emit the renamed App Connect descriptor type IRIs:
+  `https://w3id.org/byoe#private-collection` (was `byoe#collection`) and
+  `https://w3id.org/byoe#shared-wallet-collection` (was
+  `byoe#shared-collection`), per the 2026-08-10 spec rename. No dual-emit or
+  dual-read tolerance: logging in requires a wallet that resolves the new IRIs.
+
 ## 0.11.0 - 2026-08-10
 
 ### Breaking

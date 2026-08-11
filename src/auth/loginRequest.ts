@@ -32,8 +32,9 @@
  * fails closed rather than degrading into a partial generic flow.
  *
  * A SHARED collection -- one the wallet already owns and encrypts, which the app
- * asks to read and decrypt -- uses the `https://w3id.org/byoe#shared-collection` descriptor
- * type, and the actions are read-only by construction ({@link SHARED_ACTIONS}):
+ * asks to read and decrypt -- uses the
+ * `https://w3id.org/byoe#shared-wallet-collection` descriptor type, and the
+ * actions are read-only by construction ({@link SHARED_ACTIONS}):
  * the app never requests writes on a wallet collection. Exactly like
  * `https://w3id.org/byoe#public-collection`, a wallet that predates the type resolves the
  * descriptor UNSATISFIABLE and fails closed -- which is the point here. A share
@@ -54,8 +55,8 @@ import type {
 
 /**
  * Default read/write actions requested on each private app collection -- also
- * the `https://w3id.org/byoe#collection` class ceiling (the full WAS action
- * vocabulary).
+ * the `https://w3id.org/byoe#private-collection` class ceiling (the full WAS
+ * action vocabulary).
  */
 export const RW_ACTIONS = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
 
@@ -80,8 +81,9 @@ export const SHARED_ACTIONS = ['GET', 'HEAD']
  * The action ceiling of the descriptor class a collection is requested with
  * (the App Connect spec's "Action ceilings" table): add-only for
  * `visibility: 'public'` (`https://w3id.org/byoe#public-collection`), the full
- * vocabulary otherwise (`https://w3id.org/byoe#collection`). Shares have their
- * own fixed {@link SHARED_ACTIONS} and never consult a configured action set.
+ * vocabulary otherwise (`https://w3id.org/byoe#private-collection`). Shares
+ * have their own fixed {@link SHARED_ACTIONS} and never consult a configured
+ * action set.
  *
  * @param [visibility] {'private' | 'public'}
  * @returns {string[]}
@@ -101,8 +103,8 @@ export interface GrantRequestCollection {
   id: string
   /**
    * Who can read the collection; selects the descriptor type
-   * (`https://w3id.org/byoe#collection` for `'private'`/unset, `https://w3id.org/byoe#public-collection`
-   * for `'public'`).
+   * (`https://w3id.org/byoe#private-collection` for `'private'`/unset,
+   * `https://w3id.org/byoe#public-collection` for `'public'`).
    */
   visibility?: 'private' | 'public'
 }
@@ -169,8 +171,8 @@ function requestedActions({
  * shape MINUS `controller` (the wallet fills it with the app-key subject DID)
  * and MINUS `reason` (the App Connect consent screen supersedes per-grant
  * reasons). A `visibility: 'public'` collection uses the
- * `https://w3id.org/byoe#public-collection` descriptor type; everything else uses
- * `https://w3id.org/byoe#collection`.
+ * `https://w3id.org/byoe#public-collection` descriptor type; everything else
+ * uses `https://w3id.org/byoe#private-collection`.
  *
  * @param options {object}
  * @param options.challenge {string}
@@ -182,8 +184,9 @@ function requestedActions({
  * @param options.collections {GrantRequestCollection[]}   the collections to
  *   request (WAS collection id + visibility)
  * @param [options.sharedCollections] {string[]}   WAS collection ids of
- *   wallet-owned collections to request read-and-decrypt access to; each gets a
- *   `https://w3id.org/byoe#shared-collection` descriptor with {@link SHARED_ACTIONS}
+ *   wallet-owned collections to request read-and-decrypt access to; each gets
+ *   a `https://w3id.org/byoe#shared-wallet-collection` descriptor with
+ *   {@link SHARED_ACTIONS}
  * @param [options.actions] {string[]}   the action set to request on each app
  *   collection; when omitted each collection requests exactly its class
  *   ceiling ({@link actionCeiling}). An explicit set naming an action above a
@@ -216,7 +219,7 @@ export function buildAppConnectVpr({
         type:
           visibility === 'public'
             ? 'https://w3id.org/byoe#public-collection'
-            : 'https://w3id.org/byoe#collection',
+            : 'https://w3id.org/byoe#private-collection',
         name: id
       }
     })
@@ -226,7 +229,7 @@ export function buildAppConnectVpr({
       referenceId: id,
       allowedAction: SHARED_ACTIONS,
       invocationTarget: {
-        type: 'https://w3id.org/byoe#shared-collection',
+        type: 'https://w3id.org/byoe#shared-wallet-collection',
         name: id
       }
     })

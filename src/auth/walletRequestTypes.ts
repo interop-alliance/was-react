@@ -49,8 +49,9 @@ export type IDIDAuthenticationQuery = {
  * (`controller`) wants on which storage target (`invocationTarget`), with an
  * optional human-readable `reason` and RP-chosen `referenceId`. The
  * `invocationTarget` is either a plain URL (satisfied only under the user's own
- * Space) or a wallet-defined descriptor object (`https://w3id.org/byoe#collection`), resolved
- * by `resolveInvocationTarget`. Login requests only ever ask for
+ * Space) or a wallet-defined descriptor object
+ * (`https://w3id.org/byoe#private-collection`), resolved by
+ * `resolveInvocationTarget`. Login requests only ever ask for
  * collection-scoped capabilities.
  */
 export type ICapabilityQueryDetail = {

@@ -4,10 +4,10 @@
 /**
  * SharedCollectionReader: a READ-ONLY view over one wallet-owned encrypted
  * collection the wallet has shared with this app (the
- * `https://w3id.org/byoe#shared-collection` grant). It is the app-side other half of the
- * wallet's share flow, and it is read-only BY CONSTRUCTION -- there is no write
- * verb on this class, the collection is never replicated into RxDB, and the
- * sync bootstrap never PUTs a description onto it.
+ * `https://w3id.org/byoe#shared-wallet-collection` grant). It is the app-side
+ * other half of the wallet's share flow, and it is read-only BY CONSTRUCTION --
+ * there is no write verb on this class, the collection is never replicated
+ * into RxDB, and the sync bootstrap never PUTs a description onto it.
  *
  * A share fuses two axes, and both are needed here:
  *
