@@ -19,6 +19,7 @@ import {
   createDefaultDidResolver,
   securityLoader
 } from '@interop/security-document-loader'
+import { contexts as byoeContexts } from 'byoe-context'
 
 /**
  * The envelope shape returned for every resolved URL.
@@ -37,10 +38,16 @@ didResolver.use(
   createDidWebvhDriver() as unknown as Parameters<typeof didResolver.use>[0]
 )
 
-const baseLoader = securityLoader({
+const loader = securityLoader({
   fetchRemoteContexts: true,
   didResolver
-}).build()
+})
+// The BYOE App Connect context is registered here, not bundled in the security
+// loader, so vocabulary additions ship with a `byoe-context` bump alone.
+for (const [url, context] of byoeContexts) {
+  loader.addStatic(url, context)
+}
+const baseLoader = loader.build()
 
 /**
  * Builds the JSON-LD document loader handed to `@interop/vc` issuance and

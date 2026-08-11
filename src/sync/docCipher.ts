@@ -51,10 +51,9 @@ export function isUnknownEpochError(err: unknown): boolean {
  * A per-collection document cipher. `encrypt` is the create path (mints a random
  * envelope id); `encryptUpdate` is the in-place update path (re-encrypts under
  * an existing id, advancing `sequence` from the prior envelope); `decrypt`
- * reverses either. A multi-recipient (key-epoch) cipher also surfaces the
- * `epoch` id it encrypted under, which rides the content push as the
- * `WAS-Key-Epoch` header; a single-recipient cipher (and the plaintext codec)
- * returns none.
+ * reverses either. An EDV (key-epoch) cipher also surfaces the `epoch` id it
+ * encrypted under, which rides the content push as the `Key-Epoch` header; the
+ * plaintext codec returns none.
  */
 export interface DocCipher {
   encrypt(options: {
@@ -123,6 +122,28 @@ export function createPlaintextDocCodec({
 }
 
 /**
+ * Whether an encryption descriptor carries a usable key-epoch roster -- a
+ * non-empty `epochs` list plus the `currentEpoch` writes go under. Under
+ * was-client's epoch-from-birth model this is the ONLY state an EDV cipher
+ * can be built from (`createEdvDocCipher` refuses a rosterless descriptor
+ * fail-closed), so a bare `{ scheme: 'edv' }` declaration is treated the same
+ * as an absent descriptor.
+ *
+ * @param [encryption] {CollectionEncryption}
+ * @returns {boolean}
+ */
+export function hasKeyEpochs(
+  encryption?: CollectionEncryption
+): encryption is CollectionEncryption {
+  return Boolean(
+    encryption &&
+    typeof encryption.currentEpoch === 'string' &&
+    Array.isArray(encryption.epochs) &&
+    encryption.epochs.length > 0
+  )
+}
+
+/**
  * Builds a {@link DocCipher} for one collection from the caller's derived key
  * material (the app's identity X25519 key agreement key, the same one every
  * other collection uses). Keys are supplied directly (no
@@ -130,23 +151,22 @@ export function createPlaintextDocCodec({
  * place via `sequence` -- the mutable head-document model every entity here uses
  * (constant bump / toggle / re-categorize edits).
  *
- * Delegates to `@interop/was-client`'s `createEdvDocCipher`: with no
- * `encryption` descriptor (or a descriptor with no key epochs) the cipher is
- * single-recipient (the key-agreement key encrypts and decrypts directly, the
- * behavior every collection has had); with epochs on the descriptor the cipher
- * becomes multi-recipient -- writes stamp the descriptor's current epoch and reads
- * route by the envelope's recipient key id, while a pre-epoch envelope still
- * decrypts through the single-key path (a permanent tolerance, not a migration
- * shim). The returned cipher's shape matches {@link DocCipher} exactly; only the
- * nominal `Json` origin differs, so it crosses the boundary with a cast.
+ * Delegates to `@interop/was-client`'s `createEdvDocCipher`, which requires an
+ * epoch-bearing `encryption` descriptor (epoch-from-birth: every encrypted
+ * collection carries a key-epoch roster from creation, and a rosterless
+ * descriptor is refused fail-closed upstream). Writes stamp the descriptor's
+ * current epoch and reads route by the envelope's recipient key id. For a
+ * collection whose descriptor is not available yet, use
+ * {@link createUnprovisionedDocCipher} instead. The returned cipher's shape
+ * matches {@link DocCipher} exactly; only the nominal `Json` origin differs,
+ * so it crosses the boundary with a cast.
  *
  * @param options {object}
  * @param options.keyAgreementKey {IKeyAgreementKey}
  * @param options.keyResolver {IKeyResolver}
  * @param options.collectionId {string}   labels errors; the codec is agnostic
- * @param [options.encryption] {CollectionEncryption}   the collection's
- *   encryption descriptor; when it carries key epochs the cipher becomes
- *   multi-recipient
+ * @param options.encryption {CollectionEncryption}   the collection's
+ *   encryption descriptor; must carry the key-epoch roster
  * @returns {Promise<DocCipher>}
  */
 export async function createDocCipher({
@@ -158,14 +178,52 @@ export async function createDocCipher({
   keyAgreementKey: IKeyAgreementKey
   keyResolver: IKeyResolver
   collectionId: string
-  encryption?: CollectionEncryption
+  encryption: CollectionEncryption
 }): Promise<DocCipher> {
   const cipher = await createEdvDocCipher({
     keyAgreementKey,
     keyResolver,
     collectionId,
     idDerivation: 'random',
-    ...(encryption && { encryption })
+    encryption
   })
   return cipher as unknown as DocCipher
+}
+
+/**
+ * The fail-closed placeholder cipher for a private collection whose
+ * epoch-bearing encryption descriptor has not been read yet (an offline boot
+ * before any sync has cached it). Writes refuse with a descriptive error
+ * (there is no epoch to seal under); `decrypt` throws `UnknownEpochError`,
+ * deliberately the same signal a stale epoch descriptor produces, so the
+ * store's unknown-epoch recovery re-reads the collection's descriptor, swaps
+ * in a real cipher, and retries -- a session that comes online recovers per
+ * collection without a reboot.
+ *
+ * @param options {object}
+ * @param options.collectionId {string}   labels errors only
+ * @returns {DocCipher}
+ */
+export function createUnprovisionedDocCipher({
+  collectionId
+}: {
+  collectionId: string
+}): DocCipher {
+  const refuseWrite = (): never => {
+    throw new Error(
+      `Collection "${collectionId}" has no key-epoch encryption descriptor ` +
+        `yet; writes are refused until one is read from the server.`
+    )
+  }
+  return {
+    async encrypt() {
+      return refuseWrite()
+    },
+    async encryptUpdate() {
+      return refuseWrite()
+    },
+    async decrypt() {
+      throw new UnknownEpochError({ collectionId, kids: [] })
+    }
+  }
 }

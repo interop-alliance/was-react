@@ -139,7 +139,7 @@ beforeAll(async () => {
   const provisioned = await provisionDevGrants({
     serverUrl,
     seed: SEED,
-    collections: [PUBLIC_ID, PRIVATE_ID]
+    collections: [{ id: PUBLIC_ID, visibility: 'public' }, PRIVATE_ID]
   })
   parsed = parseGrants(provisioned.grants)
   ;({ zcapClient } = await deriveIdentity({ seed: SEED }))

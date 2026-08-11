@@ -8,9 +8,9 @@
  * sequence advances) / delete, and that the at-rest row is ciphertext only. A
  * second block covers PUBLIC (plaintext) collections: payloads stored as-is
  * under their own logical id, alongside a private collection in the same store.
- * A third covers the row-level key-epoch stamp: a multi-recipient write persists
- * the epoch it sealed under, and a single-recipient re-encrypt clears a stale
- * one (so the push clears the server's stamp too).
+ * A third covers the row-level key-epoch stamp: a write persists the epoch it
+ * sealed under, and a re-encrypt replaces a stale one (so the push keeps the
+ * server's stamp in step).
  *
  * @vitest-environment node
  */
@@ -63,14 +63,42 @@ async function openStore(
   collections: WasCollectionConfig[] = COLLECTIONS,
   descriptors?: Record<string, CollectionEncryption>
 ): Promise<LocalStore> {
+  // Epoch-from-birth: a private collection only gets a real cipher from an
+  // epoch-bearing descriptor, so unless a test supplies its own set, use one
+  // shared minted descriptor per private collection (as the offline cache
+  // would hold after any synced session). Shared -- not re-minted per open --
+  // so a reopened store still holds the epoch its rows were sealed under.
+  const withDefaults =
+    descriptors ??
+    Object.fromEntries(
+      await Promise.all(
+        collections
+          .filter(config => config.visibility !== 'public')
+          .map(async config => [config.id, await defaultDescriptor(config.id)])
+      )
+    )
   const store = await LocalStore.init({
     ...(await identityKeys()),
     collections,
     dbName,
-    ...(descriptors && { descriptors })
+    descriptors: withDefaults
   })
   openStores.push(store)
   return store
+}
+
+// The memoized per-collection default descriptors `openStore` falls back to.
+const defaultDescriptors = new Map<string, Promise<CollectionEncryption>>()
+
+function defaultDescriptor(
+  collectionId: string
+): Promise<CollectionEncryption> {
+  let pending = defaultDescriptors.get(collectionId)
+  if (!pending) {
+    pending = mintDescriptor()
+    defaultDescriptors.set(collectionId, pending)
+  }
+  return pending
 }
 
 /**
@@ -295,7 +323,7 @@ describe('LocalStore key-epoch stamping', () => {
     const note = makeNote('Sealed under an epoch')
 
     await store.insertEntity(COLLECTION, note)
-    // The stamp rides the content push as the `WAS-Key-Epoch` header.
+    // The stamp rides the content push as the `Key-Epoch` header.
     expect((await rawRow(store)).epoch).toBe(encryption.currentEpoch)
 
     // A re-encrypt under the same multi-recipient cipher keeps it.
@@ -304,15 +332,19 @@ describe('LocalStore key-epoch stamping', () => {
     expect(await store.listEntities<NoteDoc>(COLLECTION)).toHaveLength(1)
   })
 
-  it('clears a stale epoch when the re-encrypt is single-recipient', async () => {
-    const store = await openStore(`was-react-test-${++dbCounter}`)
+  it('replaces a stale epoch stamp on re-encrypt', async () => {
+    const encryption = await mintDescriptor()
+    const store = await openStore(
+      `was-react-test-${++dbCounter}`,
+      COLLECTIONS,
+      { [COLLECTION]: encryption }
+    )
     const note = makeNote('Stamped once')
     await store.insertEntity(COLLECTION, note)
-    // A single-recipient cipher stamps nothing.
-    expect((await rawRow(store)).epoch).toBeUndefined()
+    expect((await rawRow(store)).epoch).toBe(encryption.currentEpoch)
 
-    // Stamp the row as an earlier multi-recipient write (or a pulled row that
-    // carried the server's stamp) would have.
+    // Fake a stale stamp, as a pulled row written under a rotated-away epoch
+    // would carry.
     const rows = await store.rxCollection(COLLECTION).find().exec()
     await rows[0]!.incrementalModify(docData => {
       docData.epoch = 'epoch-stale'
@@ -322,9 +354,9 @@ describe('LocalStore key-epoch stamping', () => {
 
     await store.updateEntity(COLLECTION, { ...note, title: 'Re-encrypted' })
 
-    // The stale stamp is REMOVED (not merely left behind), so the push clears
-    // the server's stamp too.
-    expect((await rawRow(store)).epoch).toBeUndefined()
+    // The stale stamp is REPLACED by the epoch the re-encrypt sealed under,
+    // so the push keeps the server's stamp in step with the envelope.
+    expect((await rawRow(store)).epoch).toBe(encryption.currentEpoch)
   })
 })
 

@@ -157,7 +157,7 @@ export interface SyncedDoc {
   /**
    * The opaque key-epoch id `data` was encrypted under, when known (stamped by
    * the encrypting cipher on a local write, or pulled off the feed). Sent as
-   * the `WAS-Key-Epoch` header on the content push so the server's stamp stays
+   * the `Key-Epoch` header on the content push so the server's stamp stays
    * in step with the envelope.
    */
   epoch?: string
@@ -239,7 +239,7 @@ export interface WasSyncBasePort {
    * Conditionally writes the content body verbatim (`PUT /:id`). Pass
    * `ifNoneMatch: true` for a create-if-absent, or `ifMatch` (a quoted ETag over
    * the content `version`) for an update-if-unchanged. `epoch` is the opaque
-   * key-epoch id the body was encrypted under, sent as the `WAS-Key-Epoch`
+   * key-epoch id the body was encrypted under, sent as the `Key-Epoch`
    * header (an absent epoch clears any prior stamp on the server, per the
    * `key-epochs` feature). Returns the new content `version` parsed from the
    * response ETag (the acked master revision), or `undefined` when the server

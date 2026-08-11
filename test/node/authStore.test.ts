@@ -29,10 +29,15 @@ import {
   type WasAuthStore
 } from '../../src/session/authStore.js'
 import {
+  createDescriptorCache,
   createSeedStore,
   type SeedStore
 } from '../../src/identity/seedStore.js'
-import { deriveIdentity } from '../../src/identity/agents.js'
+import type { CollectionEncryption } from '@interop/was-client'
+import {
+  deriveIdentity,
+  type IdentityAgents
+} from '../../src/identity/agents.js'
 import { persistAppSession } from '../../src/identity/appSession.js'
 import { parseGrants } from '../../src/grants.js'
 import {
@@ -40,6 +45,7 @@ import {
   LoginCancelledError
 } from '../../src/auth/loginFlow.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
+import { mintRecordEncryption } from '@interop/wallet-core/keyring'
 import { hasStore, requireStore } from '../../src/storage/storageManager.js'
 import {
   LocalStore,
@@ -49,10 +55,77 @@ import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
 // Inert replication: the machine's activate / persist / teardown logic runs
-// without opening any network or `window`-backed replication machinery.
+// without opening any network or `window`-backed replication machinery. The
+// login-time descriptor read serves the mocked "server side" of descriptor
+// provisioning (see `serveRemoteDescriptors`), so it stays correct for
+// whichever identity connects and no test has to re-arm it.
 vi.mock('../../src/storage/wasSync.js', () => ({
-  startWasSync: vi.fn(async () => ({}))
+  startWasSync: vi.fn(async () => ({})),
+  readRemoteDescriptors: vi.fn(
+    async (options: Parameters<typeof serveRemoteDescriptors>[0]) =>
+      await serveRemoteDescriptors(options)
+  )
 }))
+
+// The mocked server's provisioned identities (what the wallet or the dev
+// provisioner would have installed collections for), keyed by controller DID.
+const provisionedKaks = new Map<string, IdentityAgents['keyAgreementKey']>()
+
+// One epoch-bearing descriptor per (controller, collection), minted on first
+// read and memoized like a real server's stored descriptor: a reconnect under
+// the same seed must reuse the descriptor its earlier rows were sealed under.
+const mintedDescriptors = new Map<string, CollectionEncryption>()
+
+function provisionIdentity(identity: IdentityAgents): void {
+  provisionedKaks.set(identity.controllerDid, identity.keyAgreementKey)
+}
+
+/**
+ * Answers a login-time descriptor read the way a provisioned server would: an
+ * epoch-bearing descriptor per private collection, sealed to the connecting
+ * identity's KAK (resolved from the invocation signer's controller DID). An
+ * unprovisioned identity reads empty, leaving its collections fail-closed.
+ */
+async function serveRemoteDescriptors({
+  zcapClient,
+  collections
+}: {
+  zcapClient: unknown
+  collections: { id: string; visibility?: string }[]
+}): Promise<Record<string, CollectionEncryption>> {
+  const { invocationSigner } = zcapClient as {
+    invocationSigner: { id: string }
+  }
+  const controllerDid = invocationSigner.id.split('#')[0]!
+  const keyAgreementKey = provisionedKaks.get(controllerDid)
+  if (!keyAgreementKey) {
+    return {}
+  }
+  const descriptors: Record<string, CollectionEncryption> = {}
+  for (const { id, visibility } of collections) {
+    if (visibility === 'public') {
+      continue
+    }
+    const mintKey = `${controllerDid}:${id}`
+    let descriptor = mintedDescriptors.get(mintKey)
+    if (!descriptor) {
+      descriptor = await mintRecordEncryption({ keyAgreementKey })
+      mintedDescriptors.set(mintKey, descriptor)
+    }
+    descriptors[id] = descriptor
+  }
+  return descriptors
+}
+
+/**
+ * Mints a wallet seed whose identity the mocked server has provisioned, so a
+ * `connectWithGrants` under it opens epoch-aware.
+ */
+async function provisionedSeed(): Promise<Uint8Array> {
+  const seed = crypto.getRandomValues(new Uint8Array(32))
+  provisionIdentity(await deriveIdentity({ seed }))
+  return seed
+}
 
 // Keep the real login flow but make the wallet step controllable per test.
 vi.mock('../../src/auth/loginFlow.js', async importOriginal => {
@@ -132,11 +205,27 @@ async function reopenReplica({
   controllerDid: string
 }): Promise<LocalStore> {
   const { keyAgreementKey, keyResolver } = await deriveIdentity({ seed })
+  // Probe with the descriptors the anon replica minted at birth (persisted
+  // beside the anon seed), so a surviving replica's rows still decrypt. After
+  // a discard the cache is gone too, which is fine: the probe then expects an
+  // empty database, and an empty listing runs no decrypts.
+  const cache = createDescriptorCache({
+    store: createSeedStore({ dbName: `${config.dbName}-anon` }),
+    controller: controllerDid
+  })
+  const descriptors: Record<string, CollectionEncryption> = {}
+  for (const { id } of config.collections) {
+    const descriptor = await cache.readDescriptor({ collectionId: id })
+    if (descriptor) {
+      descriptors[id] = descriptor
+    }
+  }
   const store = await LocalStore.init({
     keyAgreementKey,
     keyResolver,
     collections: config.collections,
-    dbName: dbNameForController({ dbName: config.dbName!, controllerDid })
+    dbName: dbNameForController({ dbName: config.dbName!, controllerDid }),
+    descriptors
   })
   probeStores.push(store)
   return store
@@ -168,6 +257,7 @@ async function persistSession({
 }): Promise<{ seed: Uint8Array; controllerDid: string }> {
   const seed = crypto.getRandomValues(new Uint8Array(32))
   const identity = await deriveIdentity({ seed })
+  provisionIdentity(identity)
   await persistAppSession({
     session: {
       seed,
@@ -247,6 +337,7 @@ describe('connectWithGrants()', () => {
 
     const seed = crypto.getRandomValues(new Uint8Array(32))
     const identity = await deriveIdentity({ seed })
+    provisionIdentity(identity)
     await store.getState().connectWithGrants({ seed, grants: noteGrants() })
 
     expect(store.getState().status).toBe('connected')
@@ -267,6 +358,7 @@ describe('login()', () => {
     // The wallet returns a fresh identity + grants (distinct from the anon one).
     const walletSeed = crypto.getRandomValues(new Uint8Array(32))
     const identity = await deriveIdentity({ seed: walletSeed })
+    provisionIdentity(identity)
     const grants = noteGrants()
     loginWithWalletMock.mockResolvedValue({
       seed: walletSeed,
@@ -382,6 +474,9 @@ async function mockWalletLogin(): Promise<{ controllerDid: string }> {
     expires: futureIso(FAR_FUTURE_MS),
     firstRun: false
   })
+  // The wallet's provisioning would have installed the collections
+  // server-side; the descriptor-read mock serves them from this registration.
+  provisionIdentity(identity)
   return { controllerDid: identity.controllerDid }
 }
 
@@ -479,7 +574,7 @@ describe('adoption', () => {
     const store = makeStore(config, newSeedStore())
     await store.getState().boot()
 
-    const walletSeed = crypto.getRandomValues(new Uint8Array(32))
+    const walletSeed = await provisionedSeed()
     const grants = noteGrants()
     // First connect (anon replica empty): opens the connected replica.
     await store.getState().connectWithGrants({ seed: walletSeed, grants })
@@ -518,7 +613,7 @@ describe('adoption', () => {
     const store = makeStore(config, newSeedStore())
     await store.getState().boot()
 
-    const walletSeed = crypto.getRandomValues(new Uint8Array(32))
+    const walletSeed = await provisionedSeed()
     const grants = noteGrants()
     await store.getState().connectWithGrants({ seed: walletSeed, grants })
     const uuid = crypto.randomUUID()
@@ -556,7 +651,7 @@ describe('adoption', () => {
       title: 'adopt-me'
     })
 
-    const seed = crypto.getRandomValues(new Uint8Array(32))
+    const seed = await provisionedSeed()
     await store.getState().connectWithGrants({ seed, grants: noteGrants() })
 
     expect(store.getState().status).toBe('connected')
@@ -580,7 +675,7 @@ describe('adoption', () => {
       title: 'stay-local'
     })
 
-    const seed = crypto.getRandomValues(new Uint8Array(32))
+    const seed = await provisionedSeed()
     await store
       .getState()
       .connectWithGrants({ seed, grants: noteGrants(), adopt: 'leave' })
@@ -640,6 +735,7 @@ describe('adoption', () => {
     // status the destroy left behind.
     const walletSeed = crypto.getRandomValues(new Uint8Array(32))
     const identity = await deriveIdentity({ seed: walletSeed })
+    provisionIdentity(identity)
     const grants = noteGrants()
     let releaseLogin!: () => void
     const popup = new Promise<void>(resolve => (releaseLogin = resolve))
@@ -707,7 +803,7 @@ describe('hasLocalData()', () => {
     await requireStore().insertEntity('notes', { id: crypto.randomUUID() })
     expect(await store.getState().hasLocalData()).toBe(true)
 
-    const seed = crypto.getRandomValues(new Uint8Array(32))
+    const seed = await provisionedSeed()
     await store
       .getState()
       .connectWithGrants({ seed, grants: noteGrants(), adopt: 'leave' })

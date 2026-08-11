@@ -12,6 +12,7 @@
  */
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it } from 'vitest'
+import { mintRecordEncryption } from '@interop/wallet-core/keyring'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import { mergeAdopted } from '../../src/storage/adopt.js'
@@ -39,7 +40,12 @@ async function openStore(seedByte: number): Promise<LocalStore> {
     keyAgreementKey,
     keyResolver,
     collections: COLLECTIONS,
-    dbName: `was-react-adopt-${++dbCounter}`
+    dbName: `was-react-adopt-${++dbCounter}`,
+    // Epoch-from-birth: each replica's private collection needs an
+    // epoch-bearing descriptor sealed to its own identity KAK.
+    descriptors: {
+      [COLLECTION]: await mintRecordEncryption({ keyAgreementKey })
+    }
   })
   openStores.push(store)
   return store

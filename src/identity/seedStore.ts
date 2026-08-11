@@ -45,9 +45,10 @@ export interface SeedStore {
    */
   loadRecord(): Promise<unknown | null>
   /**
-   * Persists the collection-encryption descriptor cache (keyed by WAS collection
-   * id), so an offline / hot-restore session can rebuild its epoch-aware
-   * ciphers without a live description read.
+   * Persists the collection-encryption descriptor cache (descriptors keyed by
+   * WAS collection id, stamped with the controller DID they belong to), so an
+   * offline / hot-restore session can rebuild its epoch-aware ciphers without
+   * a live description read.
    */
   saveDescriptors(descriptors: unknown): Promise<void>
   /**
@@ -156,6 +157,13 @@ export function createSeedStore({
  * acquires through: per-collection get/put over the single stored blob, already
  * scoped to one session's Space by the store it is bound to.
  *
+ * The blob is stamped with the `controller` DID whose descriptors it holds, and
+ * a cache bound to a different controller reads it as empty (and overwrites the
+ * stamp on its first write). Descriptors name key-epoch rosters a specific
+ * identity is a recipient of, so a login under a different controller than the
+ * one that cached them must never trust them: a stale hit would build ciphers
+ * the new identity cannot unwrap.
+ *
  * The blob is read-modify-written on every put. That is fine at this scale (an
  * app registers a handful of collections) and it is the only shape the existing
  * one-record persistence allows; concurrent puts are serialized through a
@@ -163,17 +171,29 @@ export function createSeedStore({
  *
  * @param options {object}
  * @param options.store {SeedStore}   the session seed store to persist through
+ * @param options.controller {string}   the controller DID the cached
+ *   descriptors belong to
  * @returns {EncryptionDescriptorCache}
  */
 export function createDescriptorCache({
-  store
+  store,
+  controller
 }: {
   store: SeedStore
+  controller: string
 }): EncryptionDescriptorCache {
   async function readAll(): Promise<Record<string, CollectionEncryption>> {
-    const stored = await store.loadDescriptors()
-    if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
-      return { ...(stored as Record<string, CollectionEncryption>) }
+    const stored = (await store.loadDescriptors()) as {
+      controller?: unknown
+      descriptors?: unknown
+    } | null
+    if (
+      stored?.controller === controller &&
+      stored.descriptors &&
+      typeof stored.descriptors === 'object' &&
+      !Array.isArray(stored.descriptors)
+    ) {
+      return { ...(stored.descriptors as Record<string, CollectionEncryption>) }
     }
     return {}
   }
@@ -195,7 +215,7 @@ export function createDescriptorCache({
       const next = writes.then(async () => {
         const descriptors = await readAll()
         descriptors[collectionId] = descriptor
-        await store.saveDescriptors(descriptors)
+        await store.saveDescriptors({ controller, descriptors })
       })
       writes = next.then(
         () => {},

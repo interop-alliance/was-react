@@ -26,7 +26,7 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import type { SyncedDoc } from '../sync/index.js'
+import { hasKeyEpochs, type SyncedDoc } from '../sync/index.js'
 import type { SharedCollectionConfig, WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
 import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
@@ -42,6 +42,51 @@ import type { SyncController } from './syncController.js'
 export interface WasSyncBootstrap {
   remoteStore: WasRemoteStore
   sharedCollections: Record<string, SharedCollectionReader>
+}
+
+/**
+ * One live encryption-descriptor read per granted private collection, invoked
+ * with the grants' delegated zcaps and keyed by WAS collection id. Only
+ * epoch-bearing descriptors are returned (a rosterless one cannot build a
+ * cipher). Used at login time, BEFORE any replication exists: the connected
+ * replica must open epoch-aware -- epoch-from-birth leaves no single-key
+ * fallback, and the adoption merge writes into it before sync starts. The
+ * sync bootstrap later re-reads through its own remote store.
+ *
+ * @param options {object}
+ * @param options.parsed {ParsedGrants}
+ * @param options.zcapClient {ZcapClient}   invocation signer = grants' controller
+ * @param options.collections {WasCollectionConfig[]}   the collections to read
+ *   descriptors for (public ones are skipped)
+ * @returns {Promise<Record<string, CollectionEncryption>>}
+ */
+export async function readRemoteDescriptors({
+  parsed,
+  zcapClient,
+  collections
+}: {
+  parsed: ParsedGrants
+  zcapClient: ZcapClient
+  collections: WasCollectionConfig[]
+}): Promise<Record<string, CollectionEncryption>> {
+  const remoteStore = WasRemoteStore.fromGrants({
+    parsed,
+    zcapClient,
+    collections
+  })
+  const descriptors: Record<string, CollectionEncryption> = {}
+  await Promise.all(
+    collections.map(async ({ id, visibility }) => {
+      if (visibility === 'public' || !parsed.byCollectionId[id]) {
+        return
+      }
+      const encryption = await remoteStore.readCollectionEncryption(id)
+      if (hasKeyEpochs(encryption)) {
+        descriptors[id] = encryption
+      }
+    })
+  )
+  return descriptors
 }
 
 /**
@@ -140,9 +185,19 @@ export async function startWasSync({
       if (visibility !== 'public') {
         const encryption =
           await remoteStore.readCollectionEncryption(collectionId)
-        if (encryption) {
+        // Only an epoch-bearing descriptor enters the offline cache or
+        // rebuilds a cipher; a collection without a key-epoch roster stays
+        // fail-closed, stated plainly here rather than surfacing later as
+        // per-row decrypt failures.
+        if (hasKeyEpochs(encryption)) {
           descriptors[collectionId] = encryption
           await localStore.applyRemoteDescriptor({ collectionId, encryption })
+        } else {
+          console.warn(
+            `Collection "${collectionId}" has no key-epoch roster on its ` +
+              `encryption descriptor; it stays unreadable (fail-closed) ` +
+              `until its provisioner installs one.`
+          )
         }
         const declared = await remoteStore.markCollectionEncrypted(
           collectionId,

@@ -29,6 +29,8 @@ export { withFeedMasterRead } from './feedMasterPort.js'
 export {
   createDocCipher,
   createPlaintextDocCodec,
+  createUnprovisionedDocCipher,
+  hasKeyEpochs,
   isUnknownEpochError,
   type DocCipher
 } from './docCipher.js'

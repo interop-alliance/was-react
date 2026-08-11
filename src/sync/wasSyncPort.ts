@@ -160,7 +160,7 @@ export function createWasSyncPort({
           path: resourcePath(id),
           method: 'PUT',
           json: data as object,
-          // `epoch` rides as the `WAS-Key-Epoch` header so the server's stamp
+          // `epoch` rides as the `Key-Epoch` header so the server's stamp
           // stays in step with the envelope (an absent epoch clears any prior
           // stamp, per the `key-epochs` feature).
           headers: writeHeaders({

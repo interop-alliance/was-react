@@ -29,7 +29,7 @@ export function syncedDocSchema(): RxJsonSchema<SyncedDoc> {
       updatedAt: { type: 'string', maxLength: 64 },
       version: { type: 'number' },
       metaVersion: { type: 'number' },
-      // The opaque key-epoch id `data` was encrypted under (the `WAS-Key-Epoch`
+      // The opaque key-epoch id `data` was encrypted under (the `Key-Epoch`
       // content-push header), when known.
       epoch: { type: 'string', maxLength: 256 },
       // Opaque stored bodies -- content and metadata envelopes -- moved verbatim.

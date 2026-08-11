@@ -158,8 +158,8 @@ update.
 
 Two limits the reader states plainly, matching the wallet's consent copy:
 removing access stops future reads but cannot take back what was already read;
-and resources written before the collection's FIRST share are single-recipient
-envelopes sealed to the owner alone, never re-encrypted, so they do not decrypt
-here. Those are skipped with a distinguishable warning rather than treated as
-corruption. Every other failure -- no covering grant, no roster, not a recipient
--- degrades one reader with a warning and never the session.
+and resources written before the collection's FIRST share are sealed under a
+pre-share epoch whose roster names the owner alone, never re-encrypted, so they
+do not decrypt here. Those are skipped with a distinguishable warning rather
+than treated as corruption. Every other failure -- no covering grant, no roster,
+not a recipient -- degrades one reader with a warning and never the session.

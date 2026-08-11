@@ -129,7 +129,7 @@ describe('createWasSyncPort error mapping', () => {
 })
 
 describe('createWasSyncPort request building', () => {
-  it('sends the key epoch as the was-key-epoch header on a content write', async () => {
+  it('sends the key epoch as the key-epoch header on a content write', async () => {
     const { calls, port } = recordingPort()
 
     const version = await port.putContent({
@@ -147,11 +147,11 @@ describe('createWasSyncPort request building', () => {
     })
     expect(calls[0]!.headers).toEqual({
       'if-match': '"2"',
-      'was-key-epoch': 'e2'
+      'key-epoch': 'e2'
     })
   })
 
-  it('sends no was-key-epoch header when the write carries no epoch', async () => {
+  it('sends no key-epoch header when the write carries no epoch', async () => {
     const { calls, port } = recordingPort()
 
     await port.putContent({ id: 'a', data: { x: 1 }, ifNoneMatch: true })

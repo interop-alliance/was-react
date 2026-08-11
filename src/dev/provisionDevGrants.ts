@@ -6,22 +6,25 @@
  * this:
  *
  *   1. derives a throwaway "provisioner" identity (stands in for the wallet that
- *      owns the Space) and the app's own controller DID from the supplied seed;
+ *      owns the Space) and the app's own identity from the supplied seed;
  *   2. creates a Space (owned by the provisioner) and the requested collections,
- *      PLAINTEXT -- deliberately WITHOUT an encryption descriptor, mirroring what a
- *      wallet does when it provisions RP-requested collections;
+ *      mirroring what a wallet does when it provisions RP-requested collections:
+ *      a PRIVATE collection is declared `edv` and gets its epoch[0] roster
+ *      installed (`ensureFirstEpoch`) with the app's identity key-agreement key
+ *      as the sole recipient -- epoch-from-birth, no plaintext interlude; a
+ *      PUBLIC collection stays plaintext with no descriptor;
  *   3. delegates a per-collection read/write zcap to the app's controller DID;
  *   4. returns the signed grants and (optionally) writes them to a JSON file the
  *      app loads in dev-sync mode;
  *   5. optionally probes the open question: does the delegated, collection-scoped
- *      RW zcap authorize an RP-side PUT of the collection description carrying the
- *      { encryption: { scheme: 'edv' } } descriptor?
+ *      RW zcap authorize an RP-side PUT of the collection description?
  *
  * Node only (uses `fs`); consumed through the package `./dev` subpath.
  */
 import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { WasClient, type ActionInput } from '@interop/was-client'
+import { ensureFirstEpoch, ownerRecipient } from '@interop/was-client/edv'
 import type { IDelegatedZcap } from '@interop/data-integrity-core'
 import { CapabilityAgent } from '@interop/webkms-client'
 import { agentsFromKeyAgent } from '@interop/wallet-core/identity'
@@ -69,7 +72,8 @@ export interface ProvisionDevGrantsResult {
   provisionerDid: string
   /**
    * Present only when `probe` was requested: the result of PUTting the
-   * encryption descriptor with the app's delegated RW zcap.
+   * collection description (read first, written back verbatim) with the app's
+   * delegated RW zcap.
    */
   probe?: {
     authorized: boolean
@@ -110,8 +114,11 @@ async function provisionerClient({
  * @param options.serverUrl {string}   base URL of a running was-teaching-server
  * @param options.seed {Uint8Array}   the app (relying party) master seed; the
  *   app DID the grants are delegated to is derived from it
- * @param options.collections {string[]}   the WAS collection ids to create and
- *   grant (e.g. `['action-items', 'projects']`)
+ * @param options.collections {Array<string | object>}   the WAS collections to
+ *   create and grant: a bare id string (private by default) or
+ *   `{ id, visibility }`. A private collection is declared `edv` and gets its
+ *   epoch[0] roster (sole recipient: the app's identity key-agreement key); a
+ *   public one stays plaintext
  * @param [options.spaceName] {string}   human-readable Space name (defaults to
  *   `'Dev Space'`)
  * @param [options.outFile] {string}   when given, the `{ grants }` JSON is
@@ -123,7 +130,8 @@ async function provisionerClient({
  * @param [options.actions] {ActionInput[]}   the RW action set delegated per
  *   collection (defaults to the auth layer's `RW_ACTIONS`)
  * @param [options.probe] {boolean}   when true, probe whether the delegated RW
- *   zcap authorizes a PUT of the `{ encryption: { scheme: 'edv' } }` descriptor
+ *   zcap authorizes a PUT of the collection description (read first and written
+ *   back verbatim, so an installed epoch roster is never clobbered)
  * @param [options.log] {(message: string) => void}   progress sink (defaults to
  *   a no-op; the CLI passes `console.log`)
  * @returns {Promise<ProvisionDevGrantsResult>}
@@ -144,7 +152,7 @@ export async function provisionDevGrants({
 }: {
   serverUrl: string
   seed: Uint8Array
-  collections: string[]
+  collections: Array<string | { id: string; visibility?: 'private' | 'public' }>
   spaceName?: string
   outFile?: string
   provisionerSeed?: Uint8Array
@@ -154,7 +162,7 @@ export async function provisionDevGrants({
   log?: (message: string) => void
 }): Promise<ProvisionDevGrantsResult> {
   const [
-    { controllerDid: appDid, zcapClient: appZcapClient },
+    { controllerDid: appDid, zcapClient: appZcapClient, keyAgreementKey },
     { was: provisioner, did: provisionerDid }
   ] = await Promise.all([
     deriveIdentity({ seed, identityHandle }),
@@ -189,17 +197,33 @@ export async function provisionDevGrants({
   // `Promise.all` preserves input order, so `grants[i]` still corresponds to
   // `collections[i]` (the probe below relies on that for `[0]`).
   const grants: IDelegatedZcap[] = await Promise.all(
-    collections.map(async id => {
-      // Plaintext collection (no encryption descriptor) -- mirrors wallet
-      // provisioning.
-      await space.createCollection({ id, name: id })
+    collections.map(async entry => {
+      const { id, visibility = 'private' } =
+        typeof entry === 'string' ? { id: entry } : entry
+      // A private collection mirrors wallet provisioning: declared `edv` at
+      // creation, epoch[0] installed with the app's identity key-agreement
+      // key as the sole recipient (the roster entry a wallet would write for
+      // an app-owned collection). A public collection stays plaintext.
+      const collection = await space.createCollection({
+        id,
+        name: id,
+        ...(visibility === 'private' && {
+          encryption: { scheme: 'edv' as const }
+        })
+      })
+      if (visibility === 'private') {
+        await ensureFirstEpoch({
+          collection,
+          recipients: [ownerRecipient({ keyAgreementKey })]
+        })
+      }
       const zcap = await provisioner.grant({
         to: appDid,
         actions,
         target: `${spaceUrl}/${id}`,
         capability: spaceRoot
       })
-      log(`  collection "${id}": created + delegated RW to app`)
+      log(`  collection "${id}": created (${visibility}) + delegated RW to app`)
       return zcap
     })
   )
@@ -222,24 +246,35 @@ export async function provisionDevGrants({
     return result
   }
 
-  // --- Encryption-descriptor probe ---------------------------------------------
+  // --- Description-write probe --------------------------------------------------
   // Using the app's OWN delegated RW zcap (not the provisioner root key),
-  // attempt to PUT the collection description with the edv descriptor.
+  // attempt to PUT the collection description. The description is read first
+  // and written back verbatim: authorization is what is probed, and a blind
+  // descriptor PUT would try to clobber the installed epoch roster (which the
+  // server refuses -- epochs are append-only -- muddying the answer).
   const appWas = new WasClient({ serverUrl, zcapClient: appZcapClient })
-  const probeCollectionId = collections[0]!
+  const firstEntry = collections[0]!
+  const probeCollectionId =
+    typeof firstEntry === 'string' ? firstEntry : firstEntry.id
   const probeCapability = grants[0]!
+  const probePath = collectionPath({
+    spaceId: space.id,
+    collectionId: probeCollectionId
+  })
   log(
-    `\nEncryption-descriptor probe on "${probeCollectionId}" (delegated RW zcap):`
+    `\nDescription-write probe on "${probeCollectionId}" (delegated RW zcap):`
   )
   try {
+    const current = await appWas.request({
+      capability: probeCapability,
+      path: probePath,
+      method: 'GET'
+    })
     const response = await appWas.request({
       capability: probeCapability,
-      path: collectionPath({
-        spaceId: space.id,
-        collectionId: probeCollectionId
-      }),
+      path: probePath,
       method: 'PUT',
-      json: { id: probeCollectionId, encryption: { scheme: 'edv' } }
+      json: (current.data ?? { id: probeCollectionId }) as object
     })
     log(`  AUTHORIZED -- server responded ${response.status}`)
     result.probe = { authorized: true, status: response.status }

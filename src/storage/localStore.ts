@@ -48,6 +48,8 @@ import {
   syncedDocSchema,
   createDocCipher,
   createPlaintextDocCodec,
+  createUnprovisionedDocCipher,
+  hasKeyEpochs,
   isUnknownEpochError,
   makeLwwConflictHandler,
   remotePayloadWins,
@@ -164,7 +166,7 @@ export class LocalStore {
           return
         }
         const encryption = await source.collectionEncryption({ collectionId })
-        if (encryption) {
+        if (hasKeyEpochs(encryption)) {
           await this.rebuildCipher({ key, encryption })
         }
       }
@@ -178,10 +180,12 @@ export class LocalStore {
    * is derived ONCE, by the caller, and shared by every private collection: an
    * epoch-roster recipient is always the X25519 twin of a controller did:key.
    *
-   * When `descriptors` carries an encryption descriptor for a private collection (from
-   * the offline descriptor cache), that collection's cipher is built epoch-aware so
-   * a multi-recipient envelope decrypts before any live description read; a
-   * collection with no cached descriptor keeps the single-key behavior.
+   * When `descriptors` carries an epoch-bearing encryption descriptor for a
+   * private collection (from the offline descriptor cache), that collection's
+   * cipher is built before any live description read; a collection with no
+   * cached roster opens FAIL-CLOSED behind a placeholder cipher until a live
+   * descriptor read supplies one (epoch-from-birth: there is no single-key
+   * cipher to fall back to).
    *
    * @param options {object}
    * @param options.keyAgreementKey {IKeyAgreementKey}   the app's identity KAK
@@ -238,14 +242,23 @@ export class LocalStore {
           ciphers[key] = createPlaintextDocCodec({ collectionId: id })
           return
         }
+        // Epoch-from-birth: an EDV cipher exists only from an epoch-bearing
+        // descriptor. Without one cached (an offline boot before any sync)
+        // the collection opens fail-closed behind the placeholder cipher; the
+        // first live descriptor read swaps in the real one via the
+        // unknown-epoch recovery or the sync bootstrap.
         const encryption = descriptors[id]
-        ciphers[key] = await createDocCipher({
-          keyAgreementKey,
-          keyResolver,
-          collectionId: id,
-          ...(encryption && { encryption })
-        })
-        builtDescriptors[key] = encryption
+        if (hasKeyEpochs(encryption)) {
+          ciphers[key] = await createDocCipher({
+            keyAgreementKey,
+            keyResolver,
+            collectionId: id,
+            encryption
+          })
+          builtDescriptors[key] = encryption
+        } else {
+          ciphers[key] = createUnprovisionedDocCipher({ collectionId: id })
+        }
       })
     )
 
@@ -408,8 +421,8 @@ export class LocalStore {
   }
 
   /**
-   * Rebuilds one private collection's cipher from a new encryption descriptor, on
-   * the same identity KAK the store was opened with. A public (plaintext)
+   * Rebuilds one private collection's cipher from a new (epoch-bearing)
+   * encryption descriptor, on the same identity KAK the store was opened with. A public (plaintext)
    * collection has no EDV cipher and is a no-op. The new cipher replaces the
    * held one in place, so the conflict handler and every read path pick it up.
    *
@@ -443,7 +456,10 @@ export class LocalStore {
    * rebuilds that collection's cipher when the descriptor's current epoch differs
    * from the one the current cipher was built from (a wallet-side rotation, or
    * first-ever epochs), so subsequent writes stamp the current epoch. Returns
-   * whether a rebuild happened. Unknown / public collections are ignored.
+   * whether a rebuild happened. Unknown / public collections are ignored, and
+   * so is a descriptor with no key-epoch roster (a bare `edv` declaration): no
+   * cipher can be built from it, so the collection keeps its current cipher --
+   * the fail-closed placeholder, when it opened without a cached roster.
    *
    * Installing a fresh descriptor here also RE-ARMS the collection's
    * unknown-epoch refresh (the policy's documented `reset` contract): this path
@@ -467,7 +483,7 @@ export class LocalStore {
       return false
     }
     const config = this.collectionConfig(key)
-    if (config.visibility === 'public') {
+    if (config.visibility === 'public' || !hasKeyEpochs(encryption)) {
       return false
     }
     if (descriptorsEqual(this.#descriptors[key], encryption)) {
@@ -519,7 +535,7 @@ export class LocalStore {
       version: 0,
       data: envelope,
       // The epoch the envelope was sealed under rides the content push as the
-      // `WAS-Key-Epoch` header (absent on a single-recipient cipher).
+      // `Key-Epoch` header (absent on the plaintext codec).
       ...(epoch !== undefined && { epoch })
     })
     const index = await this.#ensureIndex(key)
@@ -569,8 +585,8 @@ export class LocalStore {
       data: payload as Json,
       current
     })
-    // `incrementalModify` (not `incrementalPatch`): a re-encrypt under a
-    // single-recipient cipher must CLEAR a stale `epoch` stamp, and a patch
+    // `incrementalModify` (not `incrementalPatch`): a re-encrypt that yields
+    // no `epoch` (the plaintext cipher) must CLEAR a stale stamp, and a patch
     // cannot remove a field.
     await doc.incrementalModify(docData => {
       docData.data = envelope

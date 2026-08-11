@@ -360,12 +360,17 @@ describe('SharedCollectionReader unknown-epoch refresh', () => {
     const payload = { id: 'credential-1', title: 'written after the rotation' }
     const { id, envelope } = await ownerCipher.encrypt({ data: payload })
 
-    // A second envelope this app can never decrypt (sealed to the owner alone,
-    // as a pre-share resource is): it must NOT trigger a second refresh.
+    // A second envelope this app can never decrypt (sealed under an owner-only
+    // roster's epoch, as a pre-share resource is): it must NOT trigger a
+    // second refresh.
+    const preShareRoster = await mintRoster({
+      recipients: [ownerRecipient({ keyAgreementKey: owner.keyAgreementKey })]
+    })
     const preShareCipher = await createDocCipher({
       keyAgreementKey: owner.keyAgreementKey,
       keyResolver: owner.keyResolver,
-      collectionId: COLLECTION_ID
+      collectionId: COLLECTION_ID,
+      encryption: preShareRoster
     })
     const preShare = await preShareCipher.encrypt({
       data: { id: 'credential-0', title: 'written before the share' }

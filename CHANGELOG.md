@@ -1,12 +1,47 @@
 # @interop/was-react Changelog
 
-## 0.10.1 - TBD
+## 0.11.0 - TBD
+
+### Breaking
+
+- Epoch-from-birth (`@interop/was-client@0.32` / `@interop/wallet-core@0.24`): a
+  private collection's cipher now only exists from an epoch-bearing `encryption`
+  descriptor; the single-recipient cipher path is gone. A collection with no
+  descriptor yet opens behind a fail-closed placeholder
+  (`createUnprovisionedDocCipher`, exported along with `hasKeyEpochs`) that
+  refuses writes and treats reads as unknown-epoch until a live descriptor read
+  swaps in the real cipher.
+- The key-epoch wire header is now `Key-Epoch` (was `WAS-Key-Epoch`); requires a
+  server release that reads the new spelling.
+- `createDescriptorCache` takes a required `controller` DID and stamps the
+  persisted blob with it: a cache bound to a different controller reads as
+  empty, so a login under a new controller never builds ciphers from another
+  identity's cached descriptors.
+- `provisionDevGrants` creates private collections with
+  `encryption: { scheme: 'edv' }` plus a first key epoch (the app identity KAK
+  as sole recipient), and `collections` entries accept
+  `string | { id, visibility }`.
+
+### Added
+
+- `readRemoteDescriptors({ parsed, zcapClient, collections })`: the login-time
+  read that completes the descriptor cache before the connected replica opens.
+- The anonymous replica mints its own one-epoch descriptors at local birth
+  (persisted beside the anon seed and wiped with it), so local-only data is
+  epoch-sealed the same way connected data is.
+
+### Changed
+
+- Register the BYOE App Connect context (`byoe-context`, now `^0.3.0` with the
+  `appUrl` term) directly on the document loader, instead of relying on
+  `@interop/security-document-loader` bundling it; update to
+  `@interop/security-document-loader@10` (which no longer bundles it).
 
 ### Fixed
 
 - `logout` and `clearLocalData` now ride the serialized boot/destroy lifecycle
-  chain. Previously a logout clicked during the StrictMode remount churn after
-  a reload (boot -> destroy -> boot) ran its teardown and fresh-local re-open
+  chain. Previously a logout clicked during the StrictMode remount churn after a
+  reload (boot -> destroy -> boot) ran its teardown and fresh-local re-open
   concurrently with the queued boot's hot restore -- the two open/teardown
   sequences on the process-wide holder could deadlock the re-open (the logout
   never resolved and the app never returned to the login page), or the boot
