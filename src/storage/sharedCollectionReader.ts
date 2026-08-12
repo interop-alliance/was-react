@@ -29,9 +29,10 @@
  *
  * - access can be removed later, which stops FUTURE reads but cannot take back
  *   what has already been read;
- * - resources written BEFORE the collection's first share are sealed under
- *   pre-share epochs whose roster does not include this app, and an old
- *   envelope is never re-encrypted. They will not decrypt here. That is
+ * - a share escrows this app into every existing epoch, so the collection's
+ *   existing contents decrypt too; the one residue is pre-epoch legacy
+ *   envelopes (single-recipient, written before the collection had any epoch
+ *   roster), which are never re-encrypted and will not decrypt here. That is
  *   expected, not corruption -- they are skipped with a warning.
  */
 import { NotImplementedError } from '@interop/was-client'
@@ -176,8 +177,8 @@ export class SharedCollectionReader {
 
   /**
    * Lists the LIVE resources of the shared collection, decrypted. A body that is
-   * not an EDV envelope, or one sealed under a pre-share epoch this app is not
-   * in the roster of, is SKIPPED with a warning rather than failing the whole
+   * not an EDV envelope, or a pre-epoch legacy envelope this app is not a
+   * recipient of, is SKIPPED with a warning rather than failing the whole
    * listing.
    *
    * Two paths, same result. The fast path pages the `changes` feed
@@ -311,8 +312,8 @@ export class SharedCollectionReader {
 
   /**
    * Decrypts one fetched body, tolerating the two expected non-results: a body
-   * that is not an EDV envelope at all, and an envelope sealed under a
-   * pre-share epoch this app is not in the roster of.
+   * that is not an EDV envelope at all, and a pre-epoch legacy envelope this
+   * app is not a recipient of.
    *
    * The unknown-epoch recovery lives INSIDE the cipher (it re-reads the
    * descriptor, swaps itself, and retries once per reader), so what reaches
@@ -349,18 +350,18 @@ export class SharedCollectionReader {
 
   /**
    * Warns about, and skips, one envelope this app cannot decrypt. The
-   * overwhelmingly likely cause is a resource written BEFORE the collection's
-   * first share -- sealed under a pre-share epoch this app is not in the
-   * roster of, never re-encrypted -- which is expected rather than corruption,
-   * so it is called out by name.
+   * overwhelmingly likely cause is a pre-epoch legacy envelope -- a
+   * single-recipient envelope written before the collection had any epoch
+   * roster, sealed to the owner alone and never re-encrypted -- which is
+   * expected rather than corruption, so it is called out by name.
    */
   #skipUndecryptable({ id, err }: { id: string; err: unknown }): undefined {
     console.warn(
       `Skipping resource "${id}" of shared collection ` +
         `"${this.collectionId}": this app is not a recipient of its envelope ` +
-        `(expected for resources written before the collection was first ` +
-        `shared -- those stay sealed under pre-share epochs and are never ` +
-        `re-encrypted). ${errorMessage(err)}`
+        `(expected for legacy resources written before the collection had ` +
+        `an epoch roster -- those stay sealed to the owner alone and are ` +
+        `never re-encrypted). ${errorMessage(err)}`
     )
     return undefined
   }

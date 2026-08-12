@@ -163,9 +163,9 @@ function appConnectFirstRun(presentation: IVerifiablePresentation): boolean {
  *
  * Only the app-owned collections are REQUIRED to be covered, each at its own
  * class ceiling: the collections are passed to `checkGrants` with their
- * declared visibility, so a `visibility: 'public'` collection requires at most
- * the add-only set a conformant wallet grants. A shared collection the wallet
- * declined to grant is not a login failure -- the reader for it is simply not
+ * declared visibility (both classes allow the full action vocabulary, so the
+ * ceiling narrows only what the app itself requested). A shared collection the
+ * wallet declined to grant is not a login failure -- the reader for it is simply not
  * opened, with a warning -- so it is not passed to `checkGrants`; it still
  * reaches the routing table through `parseGrants`.
  *

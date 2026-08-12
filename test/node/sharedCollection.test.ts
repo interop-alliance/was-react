@@ -361,7 +361,7 @@ describe('SharedCollectionReader unknown-epoch refresh', () => {
     const { id, envelope } = await ownerCipher.encrypt({ data: payload })
 
     // A second envelope this app can never decrypt (sealed under an owner-only
-    // roster's epoch, as a pre-share resource is): it must NOT trigger a
+    // roster's epoch, as a pre-epoch legacy resource is): it must NOT trigger a
     // second refresh.
     const preShareRoster = await mintRoster({
       recipients: [ownerRecipient({ keyAgreementKey: owner.keyAgreementKey })]
@@ -398,7 +398,7 @@ describe('SharedCollectionReader unknown-epoch refresh', () => {
 
       expect(await reader.list()).toEqual([{ id, data: payload }])
       // Exactly one refresh: the open's read plus the unknown-epoch re-read.
-      // The undecryptable pre-share envelope did not buy another.
+      // The undecryptable legacy envelope did not buy another.
       expect(remoteStore.encryptionReads()).toBe(2)
 
       // A later unknown epoch does not refresh again either.

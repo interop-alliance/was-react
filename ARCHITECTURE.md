@@ -1,115 +1,342 @@
 # Architecture
 
-How `@interop/was-react` is laid out and how Login With Wallet works. For
+How `@interop/was-react` is laid out: the session state machine, how Login With
+Wallet works, the storage and sync layers, and the app-facing facades. For
 contribution conventions see [CONTRIBUTING.md](CONTRIBUTING.md); for
 agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
 [AGENTS.md](AGENTS.md).
 
 ## Directory map
 
-- `src/config.ts` -- the central `WasAppConfig` + `StoreRegistry` contract, the
-  `{ key, id }` collection registry the storage layer routes on, and the
-  separate read-only `sharedCollections` registry.
-- `src/grants.ts` -- parses granted zcaps into server URL / space id / topology.
+- `src/config.ts` -- the central `WasAppConfig` + `StoreRegistry` contract: the
+  app identity (`appName`, `appOrigin`, `appUrl`), the `{ key, id }` collection
+  registry the storage layer routes on, the separate read-only
+  `sharedCollections` registry, the `onboarding` knob, the `seedLocal` fixtures
+  hook, and the sync/expiry tuning. `validateCollections` and
+  `validateSharedCollections` are the fail-closed registry checks the storage
+  layer runs before any replica opens.
+- `src/grants.ts` -- parses granted zcaps into server URL / space id /
+  per-collection routing (`ParsedGrants`), over was-client's own
+  `parseSpaceTarget`.
 - `src/identity/` -- seed-derived agents (`deriveIdentity`, which enforces the
   32-byte seed rule and yields the identity key-agreement key every encrypted
-  collection is read with), the seed credential (issue/parse/verify), seed
-  persistence, and the persisted app-session record.
+  collection is read with), the app-key credential (issue/locate/parse), seed
+  and descriptor persistence (`createSeedStore`, `createDescriptorCache`), the
+  persisted app-session record, and the JSON-LD document loader.
 - `src/auth/` -- the relying-party side of Login With Wallet (App Connect):
   CHAPI wrappers, VPR construction, response verification, and the
   login/reconnect orchestration.
 - `src/sync/` -- the collection-agnostic RxDB-to-WAS replication core (nothing
   here imports React): replication, doc cipher, LWW conflict handling, the
   `WasSyncPort`.
-- `src/storage/` -- the encrypted `LocalStore`, the process-wide store holder,
-  generic entity stores, the delegated remote store, the read-only
-  `SharedCollectionReader`, the sync controller, sync status, and the rehydrate
-  mechanism.
-- `src/session/` -- the wallet-mode auth store factory (`createAuthStore`).
-- `src/react/` -- the `WasSessionProvider` + the hooks (`useSession`,
-  `useLogin`, `useLogout`, `useReconnect`, `useSyncStatus`, ...).
+- `src/storage/` -- the encrypted `LocalStore`, the process-wide store holder
+  (`storageManager.ts`, which also resolves the per-install `writerId`), generic
+  entity stores, the delegated remote store, the read-only
+  `SharedCollectionReader`, the replication bootstrap (`wasSync.ts`), the sync
+  controller, sync status, the rehydrate mechanism, the local-to-connected
+  adoption merge (`adopt.ts`), and the public share-URL helper (`publicUrl.ts`).
+- `src/session/` -- the session auth store factory (`createAuthStore`): the
+  four-state machine described below.
+- `src/react/` -- the `WasSessionProvider`, the hooks (`useSession`, `useLogin`,
+  `useLogout`, `useClearData`, `useHasLocalData`, `useReconnect`,
+  `useSharedCollection`, `useSyncStatus`), and the `defineDocumentApp` facade.
 - `src/mui/` -- optional MUI + react-router components (`ProtectedRoute`,
-  `ReconnectBanner`, `SyncStatusChip`).
+  `ReconnectBanner`, `SyncStatusChip`, and the `LogoutDialog` /
+  `ClearDataDialog` / `AdoptDialog` confirmations over `ConfirmDialog`).
 - `src/dev/` -- Node-only dev-grant provisioner (`provisionDevGrants`).
+
+## The session state machine
+
+`createAuthStore` (`src/session/authStore.ts`) is a factory rather than a
+module-level store: the library cannot bind a store to an app's config, so the
+React provider calls it once with the app's `WasAppConfig` and `StoreRegistry`
+and shares the returned vanilla zustand store through context. It owns the whole
+session lifecycle -- boot, login, the non-CHAPI `connectWithGrants` path,
+logout, clear-data, reconnect -- and the open/hydrate/sync ordering.
+
+Four states (`SessionStatus`):
+
+- `boot` -- attempting a zero-popup hot restore. Both successors finish
+  open-and-hydrate before this status is left, so "app ready" is exactly
+  `status !== 'boot'`.
+- `local` -- an encrypted, anonymous-seed replica with no remote. A restore miss
+  (or any error during restore) lands here rather than on a dead login screen.
+- `connected` -- a wallet-derived identity, parsed grants, running replication.
+- `reconnect` -- connected but access expired or revoked; the replica stays
+  usable and remote invocations are paused until a re-grant.
+
+### The anonymous local-first replica
+
+`local` is a fully usable product state, not a degraded one. The store mints (or
+reloads) a persisted anonymous 32-byte seed in its own IndexedDB database
+(`<dbName>-anon`, so it can never collide with a wallet session or a connected
+replica), derives an ordinary `IdentityAgents` from it, and opens the same
+encrypted `LocalStore` a connected session uses. Epoch-from-birth applies
+locally too: with no wallet to provision an encryption descriptor, the app mints
+one at the collection's local birth -- a one-epoch roster sealed to the
+anonymous identity's key-agreement key alone -- and persists it beside the anon
+seed, so a reload decrypts what the previous session sealed. `seedLocal` (an
+optional config hook) is called exactly once, only when a brand-new anonymous
+replica is created, which is why it never re-runs on reload.
+
+The `onboarding` config knob decides only what the router does with this state:
+`'local-first'` renders the app immediately over the anonymous replica
+(connecting a wallet is a bonus), `'login-gated'` redirects to the login path
+until a wallet is connected. It is read by `ProtectedRoute` and never affects
+the store's own transitions -- boot always opens a replica either way. The
+default is `'login-gated'`, preserving the historical behavior for apps that do
+not opt in.
+
+### Adoption (`adopt: 'merge' | 'leave'`)
+
+Logging in tears the anonymous replica down and opens the connected replica
+under the wallet-derived seed. Both keys derive from different seeds, so
+envelopes are not portable between the two replicas: adoption is necessarily a
+decrypt-and-re-encrypt copy (`src/storage/adopt.ts`).
+
+`adopt: 'merge'` (the default for `login` and for `connectWithGrants`) first
+detaches the anonymous replica, then re-derives its identity from the persisted
+seed and collects the decrypted payloads through a fresh store handle -- the
+ordering is load-bearing: holding the live store and the collect handle at once
+would double the open-collection count and trip RxDB's process-wide cap. The
+payloads are LWW-merged into the connected replica before its first hydrate and
+before sync starts -- so they enter the entity stores by ordinary hydration and
+reach the server as ordinary creates -- and the anonymous seed and database are
+deleted once the activation lands. The merge policy is per logical uuid and
+deterministic: insert when the connected replica holds nothing under that uuid;
+otherwise replace only when the adopted payload wins the same
+`remotePayloadWins` last-write-wins rule replication runs, with a connected doc
+carrying no LWW fields always losing to a stamped adopted one. Adopted payloads
+missing `updatedAt` / `writerId` are stamped at adoption time with the session's
+resolved `writerId`, so the repair carries the same attribution identity as the
+app's own writes; payloads that already carry them keep their original values.
+
+`adopt: 'leave'` sets the anonymous replica aside untouched instead; it returns
+after a logout. A cancelled or failed login leaves `local` intact either way.
+`hasLocalData()` is the check a login screen runs to decide whether to offer the
+choice at all (`AdoptDialog` is the shipped affordance).
+
+`logout({ wipe })` returns to a fresh `local`, optionally deleting the connected
+replica's database; `clearLocalData()` deletes the local replica, mints a
+brand-new anonymous seed and replica, and drops any persisted connected session,
+so clearing while connected fully disconnects. `destroy()` tears the live
+replica down without wiping the persisted session record, and boot/destroy are
+serialized through one promise chain so a React dev-mode remount cannot race two
+bring-up or teardown sequences.
+
+### `writerId`
+
+The per-install LWW attribution label, resolved once at store creation from
+`WasAppConfig.storageKeyPrefix` and exposed as `useSession().writerId`. It is an
+unkeyed, clearable, unrecoverable stamp whose only jobs are attribution and
+breaking last-write-wins ties -- never an identity. (The keyed client identity
+of an (app, user) pair is the app-key credential's subject DID.) `getWriterId`
+adopts a value left under the older `<prefix>clientId` key once and removes it,
+so an existing install keeps its id.
 
 ## Login With Wallet: the App Connect protocol
 
-Login is a **single CHAPI `get`** (since the App Connect rewrite; the old probe
-/ store-key / grants three-popup flow is gone, with no dual-protocol window --
-was-react and freewallet releases pair). `buildAppConnectVpr` emits a VPR
-carrying `DIDAuthentication` plus one `AppConnectQuery`:
+Login is a single CHAPI `get`. `buildAppConnectVpr` emits a verifiable
+presentation request carrying a `DIDAuthentication` query plus exactly one
+`AppConnectQuery`:
 
-- `app: { name, credentialType, vocabBase }` -- `appName` from `WasAppConfig`
-  plus the `SeedCredentialConfig` pair;
-- `capabilityQuery` entries -- the usual capability descriptors
-  (`https://w3id.org/byoe#private-collection` / `#public-collection`) _minus_
-  `controller` (the wallet fills it with the app-key subject DID; the app cannot
-  know a returning user's DID in advance) and minus `reason`.
+- `app: { name, appUrl }` -- `name` is `appName` from `WasAppConfig`, display
+  metadata for the wallet's consent surface and never evidence of who is asking;
+  `appUrl` is the application's canonical URL, which identifies it among the
+  applications served from its origin. It must parse as an absolute URL, must
+  carry no fragment, and its origin must equal the attested requesting origin;
+  the value emitted is the parsed URL's serialization (`serializedAppUrl` from
+  `@interop/wallet-core/request`), so spellings differing only in a default
+  port, in percent-encoding case, or in dot-segments do not name distinct
+  applications.
+- `capabilityQuery` -- one collection-scoped entry per requested collection:
+  `invocationTarget` (an invocation target descriptor), `allowedAction`
+  (non-empty), and `referenceId`. The entries carry no `controller` (the wallet
+  fills it with the app-key subject DID; a public client cannot know a returning
+  user's DID in advance, and dropping it is what collapses the flow to one
+  round) and no `reason` (the App Connect consent surface supersedes per-grant
+  reason strings).
 
-The protocol's normative definition is the **App Connect companion spec**
+The protocol's normative definition is the App Connect companion spec
 (<https://github.com/interop-alliance/app-connect-spec>; local checkout
-`../app-connect-spec` -- read `spec.md` there instead of fetching the rendered
+`../app-connect-spec` -- read `spec.md` there rather than fetching the rendered
 version): the `AppConnectQuery`, the app-key credential and its binding rules,
-the descriptor vocabulary with per-class action ceilings, and the response
+the descriptor vocabulary with its allowed-actions table, and the response
 presentation this library verifies.
 
-The wallet finds -- or on first run **mints, wallet-side** -- the app-key seed
-credential for this origin (satisfying `parseSeedCredential`: carrying the
-shared `AppKeyCredential` marker type, self-issued by the seed-derived did:key,
-origin-bound, seed base64url-no-pad), delegates the requested capabilities to
-its subject DID, and answers with one signed VP: the credential in
-`verifiableCredential`, the grants in the top-level `zcap` array, and a
-wallet-provided `appConnect: { firstRun: boolean }` member (absent or non-`true`
-reads as returning). `loginWithWallet` verifies the presentation, parses the
-seed credential, and runs `checkGrants` with the parsed subject DID as
-controller (skipped when the app requests no collections). A null CHAPI response
-is a user cancel (`LoginCancelledError`); a VP without an app-key credential is
-an old, pre-App-Connect wallet and throws `WalletUnsupportedError` (fail closed,
-"update Freewallet" copy). The `login()` outcome contract is `{ firstRun }` /
-`null` / reject; `LoginPhase` is `'connecting' | 'verifying'`.
+`domain` is this app's own live browser origin -- the origin the CHAPI mediator
+attests to the wallet -- and the `challenge` is a fresh, unpredictable nonce per
+request, retained for the response check. `liveOrigin` reads
+`window.location.origin` rather than trusting configuration: a configured
+`appOrigin` differing from the live origin is warned about and is never used as
+the bind. That one string is what the request sends as `domain`, what the
+`appUrl` is validated against, and what the returned credential's `origin` claim
+is checked against.
 
-Every app key carries the marker type `AppKeyCredential`
-(`https://w3id.org/byoe#AppKeyCredential` -- one stable IRI for every app,
-defined in the inline `@context`, never interpolated from `vocabBase`), and
-`parseSeedCredential` requires it. The marker turns "presents as an app key"
-into a term check rather than a shape heuristic, which is what lets a wallet
-refuse a foreign app key at store time; requiring it here keeps both sides on
-one rule. It is a self-declaration, not evidence -- a planted credential
-controls its own `type` array -- so the seed-to-DID binding stays the only thing
-that authenticates. The claim terms are shared for the same reason: `seed` and
-`origin` map to `https://w3id.org/byoe#seed` / `#origin`, and `vocabBase`
-namespaces only the app's own type term. `findSeedCredential` deliberately still
-matches on the app type alone, so a returned credential missing the marker
-surfaces as a parse error rather than a `null` the caller would read as first
-run and answer by minting a second key.
+### The app-key credential
+
+The wallet finds -- or on first run mints, wallet-side -- the app-key credential
+for this (origin, `appUrl`) pair, delegates the requested capabilities to its
+subject DID, and answers with one signed presentation: the credential in
+`verifiableCredential`, the grants in the top-level `zcap` array, and a
+wallet-provided `appConnect: { firstRun }` member, all added before signing so
+the authentication proof covers them.
+
+The credential's vocabulary is fixed and shared by every application:
+
+- `type` is the two-entry array `["VerifiableCredential", "AppKeyCredential"]`,
+  in that order (`APP_KEY_TYPE_ARRAY`). Nothing in it is application-scoped.
+- `@context` begins with the VC 1.0 context and the hosted App Connect profile
+  context `https://w3id.org/byoe/app-connect/v1`, which defines the credential's
+  terms as well as the presentation's `zcap` and `appConnect` members. It is
+  registered as a static context by `createDocumentLoader` (out of
+  `byoe-context`), so verification still needs no network fetch; the signature
+  suite appends its own third entry when the credential is signed.
+- `credentialSubject` carries `id`, `seed` (32 bytes, base64url without
+  padding), `appUrl`, and `origin`. `issuer` equals `credentialSubject.id`, and
+  both equal the did:key derived from the embedded seed.
+
+App identity is therefore scoped to the triple (user, origin, `appUrl`): the
+same application at two URLs on one origin is two identities, and one URL can
+carry only one.
+
+`issueSeedCredential({ seed, origin, appUrl, appName, documentLoader })`
+self-issues that credential (used by the dev-grant path; the wallet mints it in
+production). The exported names `issueSeedCredential`, `parseSeedCredential`,
+and `findSeedCredential` predate the spec's term for the artifact -- read "seed
+credential" in an identifier as the spec's app-key credential.
+
+Historical note (pre-0.13 code and data only, nothing here acts on it): before
+the `appUrl` profile the request's `app` block carried `credentialType` and
+`vocabBase`, the credential's type array carried a third per-app entry, and its
+`@context` was an inline term object interpolated from `vocabBase`. None of that
+is emitted, accepted, or configurable any more, and `SeedCredentialConfig` is
+gone. Recovering such a credential -- re-issuing it in place under the same
+seed, since a fresh mint would roll the seed and orphan the identity the app
+encrypted its data under -- is wallet-side work in `@interop/wallet-core`, not
+this library's.
+
+### Verifying the response
+
+`loginWithWallet` runs the spec's application-side verification in order,
+aborting on the first failure:
+
+1. `verifyLoginPresentation` verifies the presentation proof and every embedded
+   credential proof through `@interop/verifier-core`, with `registries: []` --
+   issuer-registry lookup must not be required, since the app-key credential is
+   self-issued by design.
+2. The same call makes the proof checks verifier-core does not: every
+   presentation-level proof has `proofPurpose` of `authentication`, echoes this
+   request's fresh challenge, and carries this app's origin as `domain`.
+3. `findSeedCredential({ presentation, appUrl })` locates the credential by the
+   `credentialSubject.appUrl` claim alone. The `AppKeyCredential` marker type is
+   deliberately NOT required at this step: requiring it would make "the wallet
+   returned a credential that is wrong" indistinguishable from "the wallet
+   returned nothing", and an application that reads absence as first run would
+   answer by minting a second key. No such credential means the
+   wallet-unsupported outcome (`WalletUnsupportedError`).
+4. `parseSeedCredential({ credential, origin, appUrl })` enforces the six parse
+   checks, in order: the `type` array includes `AppKeyCredential`;
+   `credentialSubject.appUrl` equals the `appUrl` this request sent, as an exact
+   string; `issuer` and `credentialSubject.id` are both present and equal;
+   `credentialSubject.origin` equals this app's own live origin, as an exact
+   string; `credentialSubject.seed` is a non-empty string decoding as
+   base64url-no-pad to exactly 32 bytes (fail closed, never truncate or pad);
+   and the DID derived from those bytes equals `credentialSubject.id`. The
+   derived `IdentityAgents` come back on the result so the login flow does not
+   re-derive them.
+5. `checkGrants` validates the grants against the connecting DID parsed in step
+   4 -- never against a DID taken from the response.
+
+These checks duplicate checks the wallet already made; that is the point. They
+are defense in depth over an origin binding and an identity binding this app is
+fully able to check itself.
+
+The marker type is a self-declaration, not evidence -- a planted credential
+controls its own `type` array -- so the seed-to-subject binding is what
+authenticates internal consistency, and the wallet's store-time refusal (app-key
+credentials are wallet-minted, never imported) is what keeps foreign credentials
+out in the first place.
+
+The `login()` outcome contract is `{ firstRun }` / `null` / reject:
+`appConnect.firstRun === true` is the only value read as first run (an absent
+member, a non-boolean, or `false` all mean returning); a null CHAPI response is
+a user cancel (`LoginCancelledError`); a verified presentation with no app-key
+credential is `WalletUnsupportedError` (fail closed, "update Freewallet" copy).
+`LoginPhase` is `'connecting' | 'verifying'`.
+
+### Grant checks and the skip condition
+
+`checkGrants` enforces that every grant's `controller` is the connecting DID,
+that each carries an unexpired `expires`, that each `invocationTarget` is a
+single non-empty string parsing under the WAS URL template and naming a
+collection (never the Space itself or a reserved sub-endpoint), that the whole
+set resolves to one host and one Space, and that every app-owned collection the
+app requested is covered with the actions it requires.
+
+`checkGrantsForCollections` (`src/auth/loginFlow.ts`) wraps it with one skip:
+when the configured app-owned `collections` list is empty AND the response
+carries no grants, `checkGrants` -- which rejects an empty grant set -- is
+skipped, and an empty grant set with a far-future expiry is returned instead.
+That covers both the app that requests nothing at all and the shared-only app
+(`collections: []` plus some `sharedCollections`) whose user declined every
+share; the declined shares are warned about, and the readers are simply not
+opened. Shared collections are never passed to `checkGrants`: a declined share
+is not a login failure. They still reach the routing table through
+`parseGrants`.
+
+### Allowed actions
+
+Each request stays within the allowed actions of the descriptor class it uses
+(the spec's normative "Allowed actions" table). Both collection classes --
+`https://w3id.org/byoe#private-collection` and
+`https://w3id.org/byoe#public-collection` -- allow the full vocabulary
+`GET, HEAD, POST, PUT, DELETE` (`RW_ACTIONS`, in table order), since published
+content is still the application's own data and un-publishing and revision are
+data management like any other write. A share is read-only (`SHARED_ACTIONS`,
+`GET` and `HEAD`).
+
+The exported helper is named `actionCeiling(visibility)`; read "ceiling" as
+local shorthand for the class's allowed-actions row. A configured action set
+naming an action outside its class's allowed actions is a configuration error
+thrown at request-build time -- a conformant wallet can never grant it, so
+letting it ride would surface later as a failed login instead of as the config
+bug it is. A request that would end up with no actions is likewise refused,
+because an empty `allowedAction` array means every action in the zcap model.
 
 The seed never transits a server: minting happens in the wallet, delivery is the
-browser-direct CHAPI channel. Dev mode (`provisionDevGrants` /
-`connectWithGrants`) still self-issues the seed credential app-side via
-`issueSeedCredential`.
+browser-direct CHAPI channel. Dev mode bypasses the credential entirely rather
+than faking one -- `provisionDevGrants` (Node only) derives a throwaway
+provisioner identity standing in for the wallet, creates the Space and the
+requested collections the way a wallet provisions them (a private collection
+declared `edv` with its epoch zero installed to the app's identity key-agreement
+key; a public one left plaintext), and delegates per-collection zcaps to the
+app's controller DID, which `connectWithGrants({ seed, grants })` then adopts
+directly. `issueSeedCredential` stays exported for app-side or test
+self-issuance of the same credential shape.
 
 ## The three kinds of collection
 
 Three kinds, and the distinctions are load-bearing:
 
-- **App-owned private** (`collections`, `visibility: 'private'`, the default).
-  The app provisions, writes, and replicates it. Encrypted with the app's
-  identity X25519 key-agreement key -- the same key a shared collection's roster
-  entry names. Requested with the `https://w3id.org/byoe#private-collection`
+- App-owned private (`collections`, `visibility: 'private'`, the default). The
+  app provisions, writes, and replicates it. Encrypted with the app's identity
+  X25519 key-agreement key -- the same key a shared collection's roster entry
+  names. Requested with the `https://w3id.org/byoe#private-collection`
   descriptor.
-- **App-owned public** (`collections`, `visibility: 'public'`). Plaintext and
+- App-owned public (`collections`, `visibility: 'public'`). Plaintext and
   world-readable; no key derivation, and the stored resource id IS the payload
-  uuid, so a public document has a stable share URL. Requested with
-  `https://w3id.org/byoe#public-collection`.
-- **Shared, wallet-owned** (`sharedCollections`). One of the WALLET's own
-  encrypted collections that the user chooses to let this app read and decrypt.
-  Requested with `https://w3id.org/byoe#shared-wallet-collection` and the
-  read-only `SHARED_ACTIONS` set. It is read-only by construction: no RxDB
-  collection, no local replica, no replication, no writes, and the sync
-  bootstrap's collection-description PUTs skip it. Reads go straight to the
-  server through a `SharedCollectionReader`, which fetches the stored EDV
-  envelope raw (the `encryption: 'plaintext'` handle override) and decrypts it
-  locally.
+  uuid, so a public document has a stable share URL (`publicUrlFor`). Requested
+  with `https://w3id.org/byoe#public-collection`. The LWW bookkeeping fields
+  (`updatedAt`, `writerId`) are world-readable alongside the content.
+- Shared, wallet-owned (`sharedCollections`). One of the WALLET's own encrypted
+  collections that the user chooses to let this app read and decrypt. Requested
+  with `https://w3id.org/byoe#shared-wallet-collection` and the read-only
+  `SHARED_ACTIONS` set. It is read-only by construction: no RxDB collection, no
+  local replica, no replication, no writes, and the sync bootstrap's
+  collection-description PUTs skip it. Reads go straight to the server through a
+  `SharedCollectionReader`, which fetches the stored EDV envelope raw (the
+  `encryption: 'plaintext'` handle override) and decrypts it locally.
 
 `SharedCollectionReader.list()` has two paths. The fast one pages the `changes`
 feed -- whole pages of documents with their bodies, undecrypted by the server,
@@ -126,10 +353,10 @@ collection cannot be app-owned and shared read-only at once.
 ### One key identity
 
 A share hands the app an entry in the collection's key-epoch roster, and the key
-in that entry is the app's **identity KAK** -- the X25519 (Montgomery) twin of
-its `did:key` controller, on `IdentityAgents.keyAgreementKey`. The wallet
-derives the same key from the controller DID alone, so the key never travels on
-the wire and no request can pair controller DID A with recipient key B.
+in that entry is the app's identity KAK -- the X25519 (Montgomery) twin of its
+`did:key` controller, on `IdentityAgents.keyAgreementKey`. The wallet derives
+the same key from the controller DID alone, so the key never travels on the wire
+and no request can pair controller DID A with recipient key B.
 
 That is the SAME key the app's own collections are encrypted with. One rule
 holds everywhere: an epoch-roster recipient is the X25519 twin of a controller
@@ -158,10 +385,124 @@ the read zcap with the roster entry, and half a share is ciphertext the app
 cannot decrypt, which reads as corrupt data rather than as a wallet needing an
 update.
 
-Two limits the reader states plainly, matching the wallet's consent copy:
-removing access stops future reads but cannot take back what was already read;
-and resources written before the collection's FIRST share are sealed under a
-pre-share epoch whose roster names the owner alone, never re-encrypted, so they
-do not decrypt here. Those are skipped with a distinguishable warning rather
-than treated as corruption. Every other failure -- no covering grant, no roster,
-not a recipient -- degrades one reader with a warning and never the session.
+What a share actually covers: every encrypted collection carries a key epoch
+from provisioning (epoch zero, wrapped to the wallet owner as recipient zero),
+so a share is always an `addRecipient` that escrows this app into every existing
+epoch -- no rotation, no lazily created first roster. A new reader therefore
+decrypts the collection's contents as they already stand, not only what is
+written after the share, which is what the wallet's consent surface states. A
+descriptor with no epoch roster at all is refused fail-closed at open
+(`SharedCollectionUnavailableError`) rather than seeded here: it can only mean
+an unprovisioned or torn collection, and the same error covers a roster this app
+is not in (never shared, or access removed -- removal rotates the epoch off this
+app's key).
+
+The residue is pre-epoch legacy envelopes: resources sealed as single-recipient
+envelopes back when the collection had no epoch roster at all. Nothing
+re-encrypts them, so they genuinely do not decrypt for a later reader. They are
+skipped with a warning rather than treated as corruption, alongside the other
+expected non-results (a body that is not an EDV envelope; an envelope left
+unreadable after the reader has spent its one descriptor refresh, which is what
+a mid-session revoke looks like). Every other failure -- no covering grant, no
+identity key supplied, not a recipient -- degrades one reader with a warning and
+never the session.
+
+The other standing limit is the one the wallet states too: removing access stops
+future reads but cannot take back what has already been read.
+
+## Storage and sync
+
+`startWasSync` (`src/storage/wasSync.ts`) is the replication bootstrap: given
+the parsed grant set and the invoking `ZcapClient` it builds the delegated
+`WasRemoteStore`, and then, per registered collection the grants actually cover,
+reads the collection description once and uses it twice -- to rebuild that
+collection's cipher when its epoch roster differs from what the local store
+opened with, and as the read-before-write guard on the best-effort encryption
+descriptor PUT. Public collections skip the encryption half and instead declare
+their equality `indexes`; both PUTs are non-fatal and warn on refusal. A private
+collection whose descriptor carries no key epochs stays fail-closed, warned
+about plainly rather than surfacing later as per-row decrypt failures. The
+fetched descriptors are handed to `onDescriptorsFetched` (the offline descriptor
+cache) and a live descriptor source is installed on the local store, so a
+decrypt that meets an unseen epoch (a rotation elsewhere) re-reads and rebuilds
+once per collection per session. Shared collections are handled apart from all
+of that: they never enter replication and never receive a description PUT, and
+instead one `SharedCollectionReader` is opened per configured shared collection
+the grants cover, concurrently, each failure a warn-and-skip.
+
+`readRemoteDescriptors` is the login-time counterpart: one descriptor read per
+granted private collection BEFORE any replication exists, because the connected
+replica must open epoch-aware -- epoch-from-birth leaves no single-key fallback,
+and the adoption merge writes into it before sync starts.
+
+`createDescriptorCache` (`src/identity/seedStore.ts`) presents the seed store's
+single persisted descriptor record as the `EncryptionDescriptorCache` seam
+`@interop/wallet-core/descriptors` acquires through. The blob is stamped with
+the controller DID whose descriptors it holds, and a cache bound to a different
+controller reads it as empty and overwrites the stamp on its first write: a
+descriptor names an epoch roster a specific identity is a recipient of, so a
+login under another controller must never build ciphers from it. Puts are
+read-modify-writes over the one record, serialized through a promise chain so
+two of them cannot lose one another's entry.
+
+`publicUrlFor({ collectionKey, id })` (`src/storage/publicUrl.ts`) composes the
+stable, world-readable resource URL of a document in a public (plaintext)
+collection -- the publish-copy share pattern. It routes the logical key to its
+WAS collection id through the same process-wide holders `EntityStore.query`
+uses, so it needs an open `LocalStore` and a wallet-connected session, and it
+fails closed on a non-public or unprovisioned collection or an empty id. The URL
+resolves publicly only once the document has replicated.
+
+`createDocumentLoader` (`src/identity/documentLoader.ts`) is the app's one
+JSON-LD document loader: `@interop/security-document-loader`'s static security
+contexts and its default did:key + did:web resolver, plus the
+`@interop/did-method-webvh` driver, so a wallet may present its presentation
+holder as a did:webvh and verification still resolves it -- as VERIFIED
+resolution, with the driver's history-log verifier (hash chain plus entry
+proofs) active, so a tampered `did.jsonl` fails closed. The BYOE App Connect
+contexts are registered as static documents from `byoe-context`, which is what
+keeps verification fetch-free and lets vocabulary additions ship with a
+`byoe-context` bump alone. DIDs on loopback hosts resolve over plain http
+natively, so no dev shim is needed.
+
+## The one-document facade
+
+`defineDocumentApp` (`src/react/documentApp.ts`) builds the whole wiring --
+config, store registry, entity store -- for an app whose entire model is a
+single key-value document (an Excalidraw-style editor, a game save file), and
+returns a typed `useAppDocument` hook over it. The app never sees
+`createEntityStore`, grant parsing, or sync internals: it renders `doc`, calls
+`update`, and optionally offers file export/import (`was-document/v1` tagged
+blobs) and a "Save to Web Spaces" `connect()`.
+
+It is a degenerate entity store: one collection holding one logical document
+under a fixed id, with the app's data wrapped as
+`{ id, updatedAt, writerId, data }` so app fields can never collide with the LWW
+fields the sync layer requires. Hydration goes through
+`LocalStore.hydrateSingleton`, which LWW-reconciles the duplicate envelope rows
+two clients can mint for the same logical document, keeping the winner and
+tombstoning the losers. The generated config registers exactly one collection
+and sets `onboarding: 'local-first'`, so `connect()` is plain `login()`: one
+legible line on the wallet consent screen, and the default merge adoption
+carries the local document into the granted collection. Multi-document ("slot")
+variants are not supported yet (they would need a grouped per-id reconciler --
+`hydrateSingleton` reconciles all rows down to one winner), and an app that has
+outgrown one document should move to `createEntityStore`.
+
+## The MUI dialogs
+
+Three presentational confirmations over the store's actions, all built on
+`ConfirmDialog` and all cancel-safe (backdrop, escape, or Cancel runs nothing):
+
+- `LogoutDialog` makes the keep-versus-wipe choice explicit -- log out but leave
+  the local replica on this machine, or log out and erase it -- since a shared
+  machine and a personal one want opposite defaults. It states that erasing
+  removes the local copy only and that data already synced returns on the next
+  login.
+- `ClearDataDialog` confirms the destructive reset behind `clearLocalData`. Its
+  warning is mode-aware: in `local` the local replica is the only copy, so it
+  nudges the user to export first; once connected, the synced copy survives, so
+  it says so instead of threatening total loss.
+- `AdoptDialog` is the pre-login adoption choice an app shows when
+  `useHasLocalData` reports data in the anonymous replica: "Bring my data" runs
+  `login({ adopt: 'merge' })`, "Set it aside" runs `login({ adopt: 'leave' })`.

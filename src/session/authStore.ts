@@ -18,8 +18,9 @@
  *
  * Login (or `connectWithGrants`) tears the anonymous replica down and opens the
  * connected replica under the wallet-derived seed. By default it ADOPTS the
- * anonymous replica's data first (`adopt: 'merge'`): the decrypted payloads are
- * collected before teardown, LWW-merged into the connected replica before its
+ * anonymous replica's data first (`adopt: 'merge'`): the replica is detached,
+ * its decrypted payloads are collected through a fresh handle re-derived from
+ * the persisted seed, LWW-merged into the connected replica before its
  * first hydrate/sync (so they reach the server as ordinary creates), and the
  * anonymous seed + database are deleted once the activation lands. `adopt:
  * 'leave'` sets the anonymous replica aside untouched instead (it returns after

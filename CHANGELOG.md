@@ -1,5 +1,20 @@
 # @interop/was-react Changelog
 
+## 0.13.1 - TBD
+
+### Changed
+
+- Rewrote ARCHITECTURE.md and AGENTS.md to describe the shipped `appUrl`
+  profile and the subsystems the previous docs omitted (the session state
+  machine, the anonymous local-first replica, adoption, `writerId`, the
+  storage/sync layers, `defineDocumentApp`, the MUI dialogs, the document
+  loader and descriptor cache), checked against the App Connect spec.
+- Corrected stale code comments: the shared-collection reader's
+  undecryptable-envelope wording now names pre-epoch legacy envelopes (a
+  share escrows the reader into every existing epoch), and
+  `checkGrantsForCollections`'s JSDoc no longer claims public collections
+  get an add-only action set.
+
 ## 0.13.0 - 2026-08-12
 
 ### Breaking
