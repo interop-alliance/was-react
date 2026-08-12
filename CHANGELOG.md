@@ -1,6 +1,6 @@
 # @interop/was-react Changelog
 
-## 0.13.0 - TBD
+## 0.13.0 - 2026-08-12
 
 ### Breaking
 
