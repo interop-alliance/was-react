@@ -29,11 +29,13 @@ import {
   removeRxDatabase,
   type RxCollection,
   type RxDatabase,
+  type RxDocument,
   type RxStorage
 } from 'rxdb/plugins/core'
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie'
 import {
   DEFAULT_DB_NAME,
+  isPublicCollection,
   validateCollections,
   validateSharedCollections,
   type SharedCollectionConfig,
@@ -235,10 +237,11 @@ export class LocalStore {
     // asymmetric crypto (an ECDH unwrap of the epoch secret) on the boot
     // critical path, and no collection's cipher depends on another's.
     await Promise.all(
-      collections.map(async ({ key, id, visibility }) => {
+      collections.map(async collection => {
+        const { key, id } = collection
         // A public collection is stored plaintext: no key derivation, no EDV
         // cipher -- just the pass-through codec behind the same seam.
-        if (visibility === 'public') {
+        if (isPublicCollection(collection)) {
           ciphers[key] = createPlaintextDocCodec({ collectionId: id })
           return
         }
@@ -439,7 +442,7 @@ export class LocalStore {
     encryption: CollectionEncryption
   }): Promise<void> {
     const config = this.collectionConfig(key)
-    if (config.visibility === 'public') {
+    if (isPublicCollection(config)) {
       return
     }
     this.#ciphers[key] = await createDocCipher({
@@ -483,7 +486,7 @@ export class LocalStore {
       return false
     }
     const config = this.collectionConfig(key)
-    if (config.visibility === 'public' || !hasKeyEpochs(encryption)) {
+    if (isPublicCollection(config) || !hasKeyEpochs(encryption)) {
       return false
     }
     if (descriptorsEqual(this.#descriptors[key], encryption)) {
@@ -557,24 +560,19 @@ export class LocalStore {
   ): Promise<void> {
     const index = await this.#ensureIndex(key)
     const envelopeId = index.get(payload.id)
-    // The entity's envelope may be gone -- another device deleted it and the
-    // tombstone was pulled (which forgets the index entry), or its row was
-    // otherwise removed. Rather than throwing (which loses the edit), resurrect
-    // the entity as a fresh create. This matches the mutable-head LWW rule the
-    // conflict handler already applies: a live local edit beats a remote
-    // tombstone, so re-asserting the payload under a new envelope is correct.
-    if (!envelopeId) {
-      await this.insertEntity(key, payload)
-      return
-    }
-    const doc = await this.#collection(key).findOne(envelopeId).exec()
-    if (!doc) {
-      index.delete(payload.id)
-      await this.insertEntity(key, payload)
-      return
-    }
-    const current = doc.toMutableJSON().data
-    if (current === undefined) {
+    const doc = envelopeId
+      ? await this.#collection(key).findOne(envelopeId).exec()
+      : null
+    const current = doc ? doc.toMutableJSON().data : undefined
+    // The entity's envelope may be gone -- unknown to the index (another device
+    // deleted it and the tombstone was pulled, which forgets the index entry),
+    // its row otherwise removed, or the row left without ciphertext. Rather than
+    // throwing (which loses the edit), forget any stale index entry (deleting a
+    // missing key is a no-op) and resurrect the entity as a fresh create. This
+    // matches the mutable-head LWW rule the conflict handler already applies: a
+    // live local edit beats a remote tombstone, so re-asserting the payload
+    // under a new envelope is correct.
+    if (!envelopeId || !doc || current === undefined) {
       index.delete(payload.id)
       await this.insertEntity(key, payload)
       return
@@ -663,30 +661,45 @@ export class LocalStore {
    */
   async listEntities<T extends EntityPayload>(key: string): Promise<T[]> {
     const index = new Map<string, string>()
-    const docs = await this.#collection(key).find().exec()
-    // Decrypt every row concurrently (the unlock hot path): the store is keyed
-    // by logical uuid, so payload order does not matter and serializing the
-    // per-row WebCrypto work would only add latency.
-    const decoded = await Promise.all(
-      docs.map(async doc => {
-        const { id: envelopeId, data } = doc.toMutableJSON()
-        if (data === undefined) {
-          return null
-        }
-        const payload = (await this.#decryptWithRefresh(key, data)) as T
-        return { envelopeId, payload }
-      })
-    )
+    const decoded = await this.#decodeAll<T>(key)
     const payloads: T[] = []
     for (const entry of decoded) {
-      if (entry === null) {
-        continue
-      }
       index.set(entry.payload.id, entry.envelopeId)
       payloads.push(entry.payload)
     }
     this.#index[key] = index
     return payloads
+  }
+
+  /**
+   * Decrypts every live row of a collection, dropping rows that carry no
+   * ciphertext. Each result keeps its RxDocument alongside the plaintext, so a
+   * caller that goes on to remove a row (e.g. the singleton reconciler) needs no
+   * second lookup.
+   *
+   * @param key {string}
+   * @returns {Promise<Array<{envelopeId: string, payload: T, row: RxDocument<SyncedDoc>}>>}
+   */
+  async #decodeAll<T extends EntityPayload>(
+    key: string
+  ): Promise<
+    Array<{ envelopeId: string; payload: T; row: RxDocument<SyncedDoc> }>
+  > {
+    const rows = await this.#collection(key).find().exec()
+    // Decrypt every row concurrently (the unlock hot path): the store is keyed
+    // by logical uuid, so payload order does not matter and serializing the
+    // per-row WebCrypto work would only add latency.
+    const decoded = await Promise.all(
+      rows.map(async row => {
+        const { id: envelopeId, data } = row.toMutableJSON()
+        if (data === undefined) {
+          return null
+        }
+        const payload = (await this.#decryptWithRefresh(key, data)) as T
+        return { envelopeId, payload, row }
+      })
+    )
+    return decoded.filter(entry => entry !== null)
   }
 
   /**
@@ -705,23 +718,9 @@ export class LocalStore {
   async hydrateSingleton<
     T extends { id: string; updatedAt: string; writerId: string }
   >(key: string): Promise<T | null> {
-    const collection = this.#collection(key)
-    const rows = await collection.find().exec()
-    // Decrypt every row concurrently (same rationale as `listEntities`): the
-    // winner is picked from the whole decoded set afterwards, so payload order
-    // does not matter and serializing the per-row WebCrypto work would only add
-    // latency. The loser tombstoning below stays serial.
-    const decrypted = await Promise.all(
-      rows.map(async row => {
-        const { id: envelopeId, data } = row.toMutableJSON()
-        if (data === undefined) {
-          return null
-        }
-        const payload = (await this.#decryptWithRefresh(key, data)) as T
-        return { envelopeId, payload }
-      })
-    )
-    const decoded = decrypted.filter(entry => entry !== null)
+    // The winner is picked from the whole decoded set afterwards, so payload
+    // order does not matter.
+    const decoded = await this.#decodeAll<T>(key)
     const index = new Map<string, string>()
     this.#index[key] = index
     if (decoded.length === 0) {
@@ -736,15 +735,13 @@ export class LocalStore {
         winner = entry
       }
     }
-    for (const entry of decoded) {
-      if (entry.envelopeId === winner.envelopeId) {
-        continue
-      }
-      const doc = await collection.findOne(entry.envelopeId).exec()
-      if (doc) {
-        await doc.remove()
-      }
-    }
+    // The losers are tombstoned through the RxDocuments already in hand,
+    // concurrently: no re-lookup, and the removals are independent.
+    await Promise.all(
+      decoded
+        .filter(entry => entry.envelopeId !== winner.envelopeId)
+        .map(async entry => await entry.row.remove())
+    )
     index.set(winner.payload.id, winner.envelopeId)
     return winner.payload
   }

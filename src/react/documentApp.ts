@@ -216,6 +216,16 @@ export function defineDocumentApp<T extends object>({
   }
 
   /**
+   * The current document data -- `initial` until the first write lands. The
+   * imperative twin of the hook's reactive selector.
+   *
+   * @returns {T}
+   */
+  function currentData(): T {
+    return docStore.getState().byId.get(DOCUMENT_ID)?.data ?? initial
+  }
+
+  /**
    * Merges the patch (or applies the updater) and persists the result under
    * the fixed document id with fresh LWW stamps.
    *
@@ -223,8 +233,7 @@ export function defineDocumentApp<T extends object>({
    * @returns {Promise<void>}
    */
   async function update(patch: Partial<T> | ((prev: T) => T)): Promise<void> {
-    const held = docStore.getState().byId.get(DOCUMENT_ID)
-    const prev = held?.data ?? initial
+    const prev = currentData()
     const data =
       typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
     await docStore.getState().upsert({
@@ -242,12 +251,11 @@ export function defineDocumentApp<T extends object>({
    * @returns {Promise<Blob>}
    */
   async function exportFile(): Promise<Blob> {
-    const held = docStore.getState().byId.get(DOCUMENT_ID)
     const body = {
       format: DOCUMENT_EXPORT_FORMAT,
       app: appName,
       exportedAt: new Date().toISOString(),
-      document: held?.data ?? initial
+      document: currentData()
     }
     return new Blob([JSON.stringify(body, null, 2)], {
       type: 'application/json'

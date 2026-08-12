@@ -54,7 +54,9 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
       ]
     })
     // Resolves without any network round trip: the PUT is never attempted.
-    const result = await store.markCollectionEncrypted('microblog-posts')
+    const result = await store.markCollectionEncrypted('microblog-posts', {
+      encryption: undefined
+    })
     expect(result).toEqual({
       collectionId: 'microblog-posts',
       ok: true,
@@ -64,7 +66,9 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
 
   it('reports a missing capability for an ungranted private collection', async () => {
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient })
-    const result = await store.markCollectionEncrypted('unknown-collection')
+    const result = await store.markCollectionEncrypted('unknown-collection', {
+      encryption: undefined
+    })
     expect(result).toEqual({
       collectionId: 'unknown-collection',
       ok: false,
@@ -73,39 +77,33 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
   })
 
   it('skips the PUT when the collection already carries an epoch roster', async () => {
-    // The read (GET) returns a descriptor with epochs; the bare-descriptor PUT that
-    // would clobber it must never be attempted.
-    const { calls, zcapClient: stub } = stubZcapClient([
-      {
-        status: 200,
-        data: {
-          id: 'notes',
-          encryption: {
-            scheme: 'edv',
-            currentEpoch: 'did:key:zEpoch1',
-            epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
-          }
-        }
-      }
-    ])
+    // The caller's read returned a descriptor with epochs; the bare-descriptor
+    // PUT that would clobber it must never be attempted.
+    const { calls, zcapClient: stub } = stubZcapClient([{ status: 200 }])
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
-    const result = await store.markCollectionEncrypted('notes')
+    const result = await store.markCollectionEncrypted('notes', {
+      encryption: {
+        scheme: 'edv',
+        currentEpoch: 'did:key:zEpoch1',
+        epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
+      }
+    })
     expect(result).toEqual({ collectionId: 'notes', ok: true, skipped: true })
-    // Exactly one round trip -- the read -- and no PUT.
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatchObject({ method: 'GET' })
+    // No round trips at all: the guard turns on the descriptor handed in.
+    expect(calls).toHaveLength(0)
   })
 
   it('PUTs the bare descriptor when no encryption block is present', async () => {
     const { calls, zcapClient: stub } = stubZcapClient([
-      { status: 200, data: { id: 'notes' } }, // GET: unmarked
       { status: 200 } // PUT
     ])
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
-    const result = await store.markCollectionEncrypted('notes')
+    const result = await store.markCollectionEncrypted('notes', {
+      encryption: undefined
+    })
     expect(result).toEqual({ collectionId: 'notes', ok: true, status: 200 })
-    expect(calls).toHaveLength(2)
-    expect(calls[1]).toMatchObject({
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
       method: 'PUT',
       json: { id: 'notes', encryption: { scheme: 'edv' } }
     })

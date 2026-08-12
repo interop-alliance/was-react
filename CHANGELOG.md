@@ -1,5 +1,39 @@
 # @interop/was-react Changelog
 
+## 0.14.0 - TBD
+
+### Breaking
+
+- Removed the unused `collectionKeyForId` export; `isPublicCollection` (the
+  shared visibility predicate resolving the `'private'` default) is exported
+  from the config module in its place.
+- `WasRemoteStore.markCollectionEncrypted` now requires the already-read
+  `encryption` descriptor (its read-before-write guard no longer issues its own
+  GET); the sync bootstrap reads each description once and feeds both the cipher
+  rebuild and the guard.
+
+### Changed
+
+- The VPR / App Connect wire types (`IVPRDetails`, `IDIDAuthenticationQuery`,
+  `ICapabilityQueryDetail`, `IAppConnectQuery`, `IAppConnectCapabilityQuery`)
+  and the app-key credential constants (`APP_KEY_CREDENTIAL_TYPE`,
+  `APP_KEY_TYPE_ARRAY`) now re-export from `@interop/data-integrity-core/vpr`
+  and `@interop/wallet-core/request` instead of re-declaring them; exported
+  names are unchanged.
+- The sync bootstrap reuses the encryption descriptors the login flow read
+  moments earlier (`startWasSync`'s `knownDescriptors` input) instead of
+  re-issuing one GET per private collection on a fresh login; a hot restore
+  still reads live as its freshness refresh.
+- The adoption merge writes payloads concurrently per collection (and
+  collections concurrently), the shared-collection resource-listing fallback
+  fetches and decrypts concurrently, and `hydrateSingleton` tombstones duplicate
+  losers from the rows it already holds instead of re-querying each.
+- `clearSeedStore` wipes the session store in a single transaction.
+- Internal dedup: the login / `connectWithGrants` connect epilogue, the
+  `LocalStore` decrypt-all-rows loop, `updateEntity`'s resurrect branches, and
+  `defineDocumentApp`'s current-data reads each live in one place now;
+  `beginSync` resolves `void`.
+
 ## 0.13.1 - 2026-08-12
 
 ### Changed

@@ -18,7 +18,6 @@ export {
   DEFAULT_SYNC_POLL_MS,
   DEFAULT_EXPIRY_WARNING_MS,
   DEFAULT_EXPIRY_WATCH_MS,
-  collectionKeyForId,
   validateCollections,
   validateSharedCollections,
   type WasCollectionConfig,

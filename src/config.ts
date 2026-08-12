@@ -394,19 +394,18 @@ export function validateSharedCollections({
 }
 
 /**
- * Resolves a localStore/RxDB collection `key` from its WAS collection `id`.
+ * Whether a collection entry is public (world-readable plaintext), resolving
+ * the registry default (an omitted `visibility` means `'private'`). The one
+ * shared reading of the `visibility` field: branch sites dispatch through this
+ * predicate rather than comparing the raw, possibly-undefined field, so a
+ * future visibility mode extends here instead of at every site.
  *
- * @param options {object}
- * @param options.collections {WasCollectionConfig[]}   the collection registry
- * @param options.id {string}   the WAS collection id
- * @returns {string | undefined}
+ * @param collection {object}
+ * @param [collection.visibility] {string}
+ * @returns {boolean}
  */
-export function collectionKeyForId({
-  collections,
-  id
-}: {
-  collections: WasCollectionConfig[]
-  id: string
-}): string | undefined {
-  return collections.find(entry => entry.id === id)?.key
+export function isPublicCollection({
+  visibility
+}: Pick<WasCollectionConfig, 'visibility'>): boolean {
+  return (visibility ?? 'private') === 'public'
 }

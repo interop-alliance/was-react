@@ -47,27 +47,34 @@ export async function mergeAdopted({
   writerId: string
 }): Promise<void> {
   let stamp: { updatedAt: string; writerId: string } | null = null
-  for (const [key, payloads] of Object.entries(entities)) {
-    const existing = new Map(
-      (await store.listEntities(key)).map(doc => [doc.id, doc])
-    )
-    for (const payload of payloads) {
-      let adopted = payload
-      let adoptedLww = lwwFields(payload)
-      if (!adoptedLww) {
-        stamp ??= { updatedAt: new Date().toISOString(), writerId }
-        adopted = { ...payload, ...stamp }
-        adoptedLww = stamp
-      }
-      const current = existing.get(payload.id)
-      if (!current) {
-        await store.insertEntity(key, adopted)
-        continue
-      }
-      const currentLww = lwwFields(current)
-      if (!currentLww || remotePayloadWins(adoptedLww, currentLww)) {
-        await store.updateEntity(key, adopted)
-      }
-    }
-  }
+  // Collections are separate RxDB collections and each logical uuid appears at
+  // most once per collection, so every write below is independent of every
+  // other: they run concurrently rather than one round trip at a time.
+  await Promise.all(
+    Object.entries(entities).map(async ([key, payloads]) => {
+      const existing = new Map(
+        (await store.listEntities(key)).map(doc => [doc.id, doc])
+      )
+      await Promise.all(
+        payloads.map(async payload => {
+          let adopted = payload
+          let adoptedLww = lwwFields(payload)
+          if (!adoptedLww) {
+            stamp ??= { updatedAt: new Date().toISOString(), writerId }
+            adopted = { ...payload, ...stamp }
+            adoptedLww = stamp
+          }
+          const current = existing.get(payload.id)
+          if (!current) {
+            await store.insertEntity(key, adopted)
+            return
+          }
+          const currentLww = lwwFields(current)
+          if (!currentLww || remotePayloadWins(adoptedLww, currentLww)) {
+            await store.updateEntity(key, adopted)
+          }
+        })
+      )
+    })
+  )
 }

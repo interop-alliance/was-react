@@ -203,26 +203,22 @@ export class WasRemoteStore {
    * no-op fallback for servers/wallets that did not provision the roster.
    *
    * @param collectionId {string}   the WAS collection id
-   * @param [options] {object}   supply this when the caller has ALREADY read the
-   *   collection description, to spend one authenticated GET rather than two:
-   *   the read-before-PUT guard then turns on the descriptor handed in here
-   *   instead of re-reading it. `undefined` means "read, and the collection
-   *   carries no descriptor" -- not "unknown"
+   * @param options {object}
    * @param options.encryption {CollectionEncryption | undefined}   the
-   *   already-read descriptor
+   *   already-read descriptor the caller fetched from the collection
+   *   description (the bootstrap reads it once and feeds both the cipher
+   *   rebuild and this guard). `undefined` means "read, and the collection
+   *   carries no descriptor" -- not "unknown"
    * @returns {Promise<DeclarationResult>}
    */
   async markCollectionEncrypted(
     collectionId: string,
-    options?: { encryption: CollectionEncryption | undefined }
+    { encryption }: { encryption: CollectionEncryption | undefined }
   ): Promise<DeclarationResult> {
     if (this.#configById.get(collectionId)?.visibility === 'public') {
       return { collectionId, ok: true, skipped: true }
     }
-    const existing = options
-      ? options.encryption
-      : await this.readCollectionEncryption(collectionId)
-    if (existing) {
+    if (encryption) {
       return { collectionId, ok: true, skipped: true }
     }
     return this.#putDescription({

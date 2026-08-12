@@ -19,48 +19,26 @@ import type {
   IVerifiablePresentation,
   IZcap
 } from '@interop/data-integrity-core'
-
-/**
- * The body of a Verifiable Presentation Request: one or more queries, plus the
- * `challenge` / `domain` used when a DID Authentication proof is requested.
- */
-export type IVPRDetails = {
-  query: IVPRQuery | IVPRQuery[]
-  challenge?: string
-  domain?: string
-}
-
-export type IVPRQuery = IDIDAuthenticationQuery | IAppConnectQuery
+import type {
+  ICapabilityQueryDetail,
+  IDIDAuthenticationQuery,
+  IVPRDetails as IUpstreamVPRDetails
+} from '@interop/data-integrity-core/vpr'
+import type {
+  IAppConnectCapabilityQuery,
+  IAppConnectQuery as IUpstreamAppConnectQuery
+} from '@interop/wallet-core/request'
 
 /**
  * A request for a proof of DID Authentication (a signed VerifiablePresentation
- * over the request's `challenge` / `domain`).
+ * over the request's `challenge` / `domain`), and a single requested capability
+ * (which actions the RP wants on which storage target, with an optional
+ * human-readable `reason` and RP-chosen `referenceId`). Both are owned by
+ * `@interop/data-integrity-core`'s VPR vocabulary.
  *
  * @see https://w3c-ccg.github.io/vp-request-spec/#the-did-authentication-query-format
  */
-export type IDIDAuthenticationQuery = {
-  type: 'DIDAuthentication'
-  acceptedMethods?: Array<{ method: string }>
-  acceptedCryptosuites?: Array<{ cryptosuite: string }>
-}
-
-/**
- * A single requested capability: which actions (`allowedAction`) the RP
- * (`controller`) wants on which storage target (`invocationTarget`), with an
- * optional human-readable `reason` and RP-chosen `referenceId`. The
- * `invocationTarget` is either a plain URL (satisfied only under the user's own
- * Space) or a wallet-defined descriptor object
- * (`https://w3id.org/byoe#private-collection`), resolved by
- * `resolveInvocationTarget`. Login requests only ever ask for
- * collection-scoped capabilities.
- */
-export type ICapabilityQueryDetail = {
-  referenceId?: string
-  reason?: string
-  allowedAction?: string | string[]
-  controller: string
-  invocationTarget: string | { type: string; name?: string }
-}
+export type { ICapabilityQueryDetail, IDIDAuthenticationQuery }
 
 /**
  * A single App Connect capability request: the existing
@@ -68,10 +46,26 @@ export type ICapabilityQueryDetail = {
  * with the app-key subject DID it matched or minted) and MINUS `reason` (the
  * wallet's App Connect consent screen supersedes per-grant reason lines).
  */
-export type IAppConnectCapabilityQuery = Omit<
-  ICapabilityQueryDetail,
-  'controller' | 'reason'
->
+export type { IAppConnectCapabilityQuery }
+
+/**
+ * The body of a Verifiable Presentation Request: one or more queries, plus the
+ * `challenge` / `domain` used when a DID Authentication proof is requested.
+ * The upstream shape, narrowed to the queries this library emits: `query` is
+ * required (every request composed here carries one) and ranges over
+ * {@link IVPRQuery}, which adds the App Connect query the upstream union does
+ * not carry.
+ */
+export type IVPRDetails = Omit<IUpstreamVPRDetails, 'query'> & {
+  query: IVPRQuery | IVPRQuery[]
+}
+
+/**
+ * The queries this library composes into a request. The VPR vocabulary leaves
+ * the union open for wallet-specific extensions, so App Connect is added here
+ * rather than upstream.
+ */
+export type IVPRQuery = IDIDAuthenticationQuery | IAppConnectQuery
 
 /**
  * The one-popup App Connect query: it names the requesting app -- `name` for
@@ -84,14 +78,13 @@ export type IAppConnectCapabilityQuery = Omit<
  * UNSATISFIABLE (the intended fail-closed behavior -- see `verifyResponse` /
  * `loginFlow`), so an older wallet cannot silently degrade the login.
  *
+ * The upstream shape with `capabilityQuery` required: a wallet must tolerate a
+ * query that grants nothing, but every request this library composes names the
+ * collections it wants.
+ *
  * @see https://w3c.github.io/vcalm/ -- AuthorizationCapabilityQuery
  */
-export type IAppConnectQuery = {
-  type: 'AppConnectQuery'
-  app: {
-    name: string
-    appUrl: string
-  }
+export type IAppConnectQuery = IUpstreamAppConnectQuery & {
   capabilityQuery: IAppConnectCapabilityQuery | IAppConnectCapabilityQuery[]
 }
 

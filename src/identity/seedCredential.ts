@@ -28,6 +28,10 @@ import type {
   IVerifiableCredential,
   IVerifiablePresentation
 } from '@interop/data-integrity-core'
+import {
+  APP_KEY_CREDENTIAL_TYPE,
+  APP_KEY_TYPE_ARRAY
+} from '@interop/wallet-core/request'
 import { CONTEXT_URL_V1 } from 'byoe-context'
 import { asArray } from '../jsonLd.js'
 import { deriveIdentity, type IdentityAgents } from './agents.js'
@@ -36,25 +40,22 @@ import type { DocumentLoader } from './documentLoader.js'
 const VC_1_CONTEXT_URL = 'https://www.w3.org/2018/credentials/v1'
 
 /**
- * The marker type every app key carries, mapped to one stable IRI for every
- * app by the hosted App Connect context. It makes "presents as an app key" a
- * term check rather than a shape heuristic, which is what lets the wallet
- * refuse a foreign app key at store time.
+ * The pinned wire constants of the app-key credential, owned by
+ * `@interop/wallet-core/request` (the wallet mints against the same values) and
+ * re-exported here so an application reads them from one place:
  *
- * It is a self-declaration, not evidence: the `type` array of a planted
- * credential is attacker-controlled like the rest of it. The marker makes the
- * rule precise; the seed-to-DID binding `parseSeedCredential` enforces remains
- * the only thing that authenticates.
+ * - `APP_KEY_CREDENTIAL_TYPE` -- the marker type every app key carries, mapped
+ *   to one stable IRI for every app by the hosted App Connect context. It makes
+ *   "presents as an app key" a term check rather than a shape heuristic, which
+ *   is what lets the wallet refuse a foreign app key at store time. It is a
+ *   self-declaration, not evidence: the `type` array of a planted credential is
+ *   attacker-controlled like the rest of it. The marker makes the rule precise;
+ *   the seed-to-DID binding `parseSeedCredential` enforces remains the only
+ *   thing that authenticates.
+ * - `APP_KEY_TYPE_ARRAY` -- the credential's fixed two-entry `type` array, in
+ *   that order.
  */
-export const APP_KEY_CREDENTIAL_TYPE = 'AppKeyCredential'
-
-/**
- * The credential's fixed two-entry `type` array, in this order.
- */
-export const APP_KEY_TYPE_ARRAY: readonly string[] = Object.freeze([
-  'VerifiableCredential',
-  APP_KEY_CREDENTIAL_TYPE
-])
+export { APP_KEY_CREDENTIAL_TYPE, APP_KEY_TYPE_ARRAY }
 
 /**
  * A parsed and structurally validated seed credential.

@@ -266,15 +266,16 @@ export class SharedCollectionReader {
   async #listViaResources(collection: Collection): Promise<SharedResource[]> {
     const listing = await collection.list()
     const items = listing?.items ?? []
-    const resources: SharedResource[] = []
-    for (const item of items) {
-      const body = (await collection.get(item.id)) as Json | null
-      const decrypted = await this.#decryptBody({ id: item.id, body })
-      if (decrypted !== undefined) {
-        resources.push({ id: item.id, data: decrypted })
-      }
-    }
-    return resources
+    // Fetch and decrypt the resources concurrently: each is an independent
+    // request plus unwrap, and `Promise.all` keeps the listing order.
+    const resources = await Promise.all(
+      items.map(async item => {
+        const body = (await collection.get(item.id)) as Json | null
+        const decrypted = await this.#decryptBody({ id: item.id, body })
+        return decrypted === undefined ? null : { id: item.id, data: decrypted }
+      })
+    )
+    return resources.filter(resource => resource !== null)
   }
 
   /**

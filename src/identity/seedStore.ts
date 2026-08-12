@@ -142,11 +142,10 @@ export function createSeedStore({
       return stored ?? null
     },
     async clearSeedStore(): Promise<void> {
-      await withSessionStore('readwrite', store => store.delete(SEED_RECORD))
-      await withSessionStore('readwrite', store => store.delete(SESSION_RECORD))
-      await withSessionStore('readwrite', store =>
-        store.delete(DESCRIPTORS_RECORD)
-      )
+      // The object store holds exactly the seed, the session record, and the
+      // descriptor cache, so one `clear()` is the whole wipe in one
+      // transaction.
+      await withSessionStore('readwrite', store => store.clear())
     }
   }
 }

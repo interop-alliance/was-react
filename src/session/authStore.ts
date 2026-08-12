@@ -44,6 +44,7 @@ import {
   DEFAULT_EXPIRY_WARNING_MS,
   DEFAULT_EXPIRY_WATCH_MS,
   DEFAULT_ONBOARDING,
+  isPublicCollection,
   type StoreRegistry,
   type WasAppConfig
 } from '../config.js'
@@ -341,7 +342,7 @@ export function createAuthStore({
   // The in-flight `beginSync` promise (controller.start() awaits network round
   // trips first). Awaited before teardown so a logout racing the bootstrap
   // cannot stop the controller before it has finished starting.
-  let pendingSync: Promise<unknown> | null = null
+  let pendingSync: Promise<void> | null = null
 
   // Serializes the boot/destroy lifecycle so their multi-await bring-up and
   // teardown never overlap. A fast unmount/remount of the session provider
@@ -418,11 +419,13 @@ export function createAuthStore({
    */
   async function beginSync({
     parsed,
-    identity
+    identity,
+    knownDescriptors
   }: {
     parsed: ParsedGrants
     identity: IdentityAgents
-  }): Promise<unknown> {
+    knownDescriptors?: Record<string, CollectionEncryption>
+  }): Promise<void> {
     const { controllerDid, zcapClient, keyAgreementKey, keyResolver } = identity
     controller = new SyncController({
       collections: config.collections,
@@ -444,11 +447,11 @@ export function createAuthStore({
       onDescriptorsFetched: descriptors =>
         void cacheDescriptors({ descriptors, controllerDid }).catch(err =>
           console.warn('Failed to cache encryption descriptors:', err)
-        )
+        ),
+      ...(knownDescriptors && { knownDescriptors })
     })
     setRemoteStore(remoteStore)
     store.setState({ sharedCollections })
-    return remoteStore
   }
 
   /**
@@ -462,6 +465,9 @@ export function createAuthStore({
    * @param options.parsed {ParsedGrants}
    * @param options.grants {IZcap[]}
    * @param options.expires {string}
+   * @param [options.knownDescriptors] {Record<string, CollectionEncryption>}
+   *   encryption descriptors already read live during this bring-up, for the
+   *   sync bootstrap to reuse instead of re-reading
    * @returns {Promise<void>}
    */
   async function persistAndStartSync({
@@ -469,13 +475,15 @@ export function createAuthStore({
     identity,
     parsed,
     grants,
-    expires
+    expires,
+    knownDescriptors
   }: {
     seed: Uint8Array
     identity: IdentityAgents
     parsed: ParsedGrants
     grants: IZcap[]
     expires: string
+    knownDescriptors?: Record<string, CollectionEncryption>
   }): Promise<void> {
     await persistAppSession({
       session: {
@@ -489,7 +497,11 @@ export function createAuthStore({
       store: sessionStore
     })
     // Replication starts in the background; a down server never blocks entry.
-    pendingSync = beginSync({ parsed, identity })
+    pendingSync = beginSync({
+      parsed,
+      identity,
+      ...(knownDescriptors && { knownDescriptors })
+    })
     // A failed bootstrap must not resolve silently: surface it on the session
     // `error` (the sync rollup shows the per-collection error statuses the
     // controller leaves behind). The session stays usable -- local-first --
@@ -627,10 +639,11 @@ export function createAuthStore({
       controller: identity.controllerDid
     })
     const descriptors: Record<string, CollectionEncryption> = {}
-    for (const { id, visibility } of config.collections) {
-      if (visibility === 'public') {
+    for (const collection of config.collections) {
+      if (isPublicCollection(collection)) {
         continue
       }
+      const { id } = collection
       let descriptor = await cache.readDescriptor({ collectionId: id })
       if (!descriptor) {
         descriptor = await mintRecordEncryption({
@@ -739,13 +752,17 @@ export function createAuthStore({
    * leaves no single-key fallback to write under. Best-effort: a failed read
    * leaves those collections fail-closed until the sync bootstrap's own
    * descriptor read lands. Freshly fetched descriptors enter the offline cache
-   * immediately.
+   * immediately, and come back separately as `fresh` so the sync bootstrap can
+   * reuse them instead of re-issuing the same reads seconds later (cached
+   * descriptors are NOT passed on -- the bootstrap read is their freshness
+   * refresh).
    *
    * @param options {object}
    * @param [options.cached] {Record<string, CollectionEncryption>}
    * @param options.identity {IdentityAgents}
    * @param options.parsed {ParsedGrants}
-   * @returns {Promise<Record<string, CollectionEncryption> | undefined>}
+   * @returns {Promise<object>}   `descriptors` (the completed set, or
+   *   undefined when there are none) and `fresh` (the live-read subset)
    */
   async function completeDescriptors({
     cached,
@@ -755,15 +772,18 @@ export function createAuthStore({
     cached?: Record<string, CollectionEncryption>
     identity: IdentityAgents
     parsed: ParsedGrants
-  }): Promise<Record<string, CollectionEncryption> | undefined> {
+  }): Promise<{
+    descriptors?: Record<string, CollectionEncryption>
+    fresh: Record<string, CollectionEncryption>
+  }> {
     const missing = config.collections.filter(
-      ({ id, visibility }) =>
-        visibility !== 'public' &&
-        parsed.byCollectionId[id] !== undefined &&
-        !cached?.[id]
+      collection =>
+        !isPublicCollection(collection) &&
+        parsed.byCollectionId[collection.id] !== undefined &&
+        !cached?.[collection.id]
     )
     if (missing.length === 0) {
-      return cached
+      return { descriptors: cached, fresh: {} }
     }
     try {
       const fetched = await readRemoteDescriptors({
@@ -776,12 +796,12 @@ export function createAuthStore({
           descriptors: fetched,
           controllerDid: identity.controllerDid
         })
-        return { ...fetched, ...cached }
+        return { descriptors: { ...fetched, ...cached }, fresh: fetched }
       }
     } catch (err) {
       console.warn('Failed to read encryption descriptors at login:', err)
     }
-    return cached
+    return { descriptors: cached, fresh: {} }
   }
 
   async function activateConnected(session: {
@@ -797,7 +817,7 @@ export function createAuthStore({
       // epoch-aware: an offline hot restore then decrypts multi-recipient
       // envelopes with no live description read, while a first login (no cache
       // yet) completes the set with live reads before the replica opens.
-      const descriptors = await completeDescriptors({
+      const { descriptors, fresh } = await completeDescriptors({
         cached: await loadCachedDescriptors({
           controllerDid: session.identity.controllerDid
         }),
@@ -814,7 +834,8 @@ export function createAuthStore({
         identity: session.identity,
         parsed: session.parsed,
         grants: session.grants,
-        expires: session.expires
+        expires: session.expires,
+        knownDescriptors: fresh
       })
     } catch (err) {
       await deactivateStore()
@@ -1019,6 +1040,67 @@ export function createAuthStore({
     }
   }
 
+  /**
+   * The connect epilogue shared by `login` and `connectWithGrants`, sequenced
+   * once so the load-bearing ordering lives in one place: tear the anonymous
+   * holder down and collect its payloads ({@link detachAndCollect}, merge
+   * only), activate the connected replica, write the connected status, and
+   * only THEN discard the adopted anonymous replica. The anonymous seed and
+   * database are deleted only after the activation lands, so a failure at any
+   * earlier step still falls back to an intact `local`; the cleanup itself is
+   * best-effort ({@link discardAnonReplica}) and runs after the status write
+   * so its failure can never leave the session reporting `local` over a live,
+   * syncing connected session.
+   *
+   * @param options {object}
+   * @param options.seed {Uint8Array}
+   * @param options.identity {IdentityAgents}
+   * @param options.parsed {ParsedGrants}
+   * @param options.grants {IZcap[]}
+   * @param options.expires {string}
+   * @param options.adopt {'merge' | 'leave'}
+   * @param options.snapshot {object}   the caller's pre-flow
+   *   `{ status, controllerDid }` snapshot (see {@link collectAdoptable})
+   * @returns {Promise<void>}
+   */
+  async function completeConnect({
+    seed,
+    identity,
+    parsed,
+    grants,
+    expires,
+    adopt,
+    snapshot
+  }: {
+    seed: Uint8Array
+    identity: IdentityAgents
+    parsed: ParsedGrants
+    grants: IZcap[]
+    expires: string
+    adopt: 'merge' | 'leave'
+    snapshot: { status: SessionStatus; controllerDid: string | null }
+  }): Promise<void> {
+    const source = await detachAndCollect(adopt, snapshot)
+    await activateConnected({
+      seed,
+      identity,
+      parsed,
+      grants,
+      expires,
+      ...(source && { adopt: source })
+    })
+    store.setState({
+      status: 'connected',
+      controllerDid: identity.controllerDid,
+      expires,
+      phase: null,
+      error: null
+    })
+    if (source) {
+      await discardAnonReplica(source.controllerDid)
+    }
+  }
+
   // Declared last so `prefer-const` is satisfied; the lifecycle closures above
   // only dereference `store` at call time, by which point it is assigned.
   const store: WasAuthStore = createStore<AuthState>()((set, get) => {
@@ -1128,33 +1210,18 @@ export function createAuthStore({
             config: loginConfig,
             onPhase: phase => set({ phase })
           })
-          // The wallet succeeded: tear the anonymous holder down and collect
-          // its payloads (merge only) -- a cancel above leaves `local` intact.
-          // The anonymous seed and database are deleted only after the
-          // activation lands, so a failure below still falls back to an intact
-          // `local`.
-          const source = await detachAndCollect(adopt, preLogin)
-          await activateConnected({
+          // The wallet succeeded: run the shared connect epilogue (a cancel
+          // above leaves `local` intact, and a failure inside it still falls
+          // back to an intact `local` -- see `completeConnect`).
+          await completeConnect({
             seed: outcome.seed,
             identity: outcome.identity,
             parsed: outcome.parsed,
             grants: outcome.grants,
             expires: outcome.expires,
-            ...(source && { adopt: source })
+            adopt,
+            snapshot: preLogin
           })
-          set({
-            status: 'connected',
-            controllerDid: outcome.identity.controllerDid,
-            expires: outcome.expires,
-            phase: null,
-            error: null
-          })
-          // Adopted-replica cleanup runs AFTER the connected status lands (and
-          // is best-effort): a cleanup failure must not leave the session
-          // reporting `local` over a live, syncing connected session.
-          if (source) {
-            await discardAnonReplica(source.controllerDid)
-          }
           return { firstRun: outcome.firstRun }
         } catch (err) {
           // A cancel is not a failure: clear the in-flight flags without leaving a
@@ -1199,25 +1266,15 @@ export function createAuthStore({
           const expires =
             earliestExpiry(grants) ??
             new Date(Date.now() + NO_EXPIRY_MS).toISOString()
-          const source = await detachAndCollect(adopt, preConnect)
-          await activateConnected({
+          await completeConnect({
             seed,
             identity,
             parsed,
             grants,
             expires,
-            ...(source && { adopt: source })
+            adopt,
+            snapshot: preConnect
           })
-          set({
-            status: 'connected',
-            controllerDid: identity.controllerDid,
-            expires,
-            error: null
-          })
-          // After the status lands, and best-effort (see `discardAnonReplica`).
-          if (source) {
-            await discardAnonReplica(source.controllerDid)
-          }
         })
       },
 

@@ -27,7 +27,11 @@ import type {
   IKeyResolver
 } from '@interop/data-integrity-core'
 import { hasKeyEpochs, type SyncedDoc } from '../sync/index.js'
-import type { SharedCollectionConfig, WasCollectionConfig } from '../config.js'
+import {
+  isPublicCollection,
+  type SharedCollectionConfig,
+  type WasCollectionConfig
+} from '../config.js'
 import type { ParsedGrants } from '../grants.js'
 import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
 import { SharedCollectionReader } from './sharedCollectionReader.js'
@@ -51,7 +55,8 @@ export interface WasSyncBootstrap {
  * cipher). Used at login time, BEFORE any replication exists: the connected
  * replica must open epoch-aware -- epoch-from-birth leaves no single-key
  * fallback, and the adoption merge writes into it before sync starts. The
- * sync bootstrap later re-reads through its own remote store.
+ * sync bootstrap reuses these reads (its `knownDescriptors` input) rather
+ * than re-issuing them.
  *
  * @param options {object}
  * @param options.parsed {ParsedGrants}
@@ -76,8 +81,9 @@ export async function readRemoteDescriptors({
   })
   const descriptors: Record<string, CollectionEncryption> = {}
   await Promise.all(
-    collections.map(async ({ id, visibility }) => {
-      if (visibility === 'public' || !parsed.byCollectionId[id]) {
+    collections.map(async collection => {
+      const { id } = collection
+      if (isPublicCollection(collection) || !parsed.byCollectionId[id]) {
         return
       }
       const encryption = await remoteStore.readCollectionEncryption(id)
@@ -114,6 +120,12 @@ export async function readRemoteDescriptors({
  * @param [options.onDescriptorsFetched] {(descriptors) => void | Promise<void>}   given
  *   the freshly fetched per-collection encryption descriptors (by WAS collection
  *   id), to refresh the offline descriptor cache
+ * @param [options.knownDescriptors] {Record<string, CollectionEncryption>}
+ *   descriptors the caller ALREADY read live in this same bring-up (the
+ *   login-time {@link readRemoteDescriptors} pass); the bootstrap reuses them
+ *   instead of re-issuing the same GET seconds later. A hot restore passes
+ *   none -- there the bootstrap read IS the freshness refresh over the
+ *   offline cache
  * @returns {Promise<WasSyncBootstrap>}
  */
 export async function startWasSync({
@@ -126,7 +138,8 @@ export async function startWasSync({
   sharedCollections = [],
   identityKeys,
   onAuthError,
-  onDescriptorsFetched
+  onDescriptorsFetched,
+  knownDescriptors = {}
 }: {
   parsed: ParsedGrants
   zcapClient: ZcapClient
@@ -146,6 +159,7 @@ export async function startWasSync({
   onDescriptorsFetched?: (
     descriptors: Record<string, CollectionEncryption>
   ) => void | Promise<void>
+  knownDescriptors?: Record<string, CollectionEncryption>
 }): Promise<WasSyncBootstrap> {
   const remoteStore = WasRemoteStore.fromGrants({
     parsed,
@@ -181,10 +195,15 @@ export async function startWasSync({
   )
   const descriptors: Record<string, CollectionEncryption> = {}
   await Promise.all(
-    granted.map(async ({ id: collectionId, visibility }) => {
-      if (visibility !== 'public') {
+    granted.map(async collection => {
+      const { id: collectionId } = collection
+      if (!isPublicCollection(collection)) {
+        // A descriptor the login flow read seconds ago is reused as-is; only
+        // ids it did not cover (or a hot restore, which passes none) are read
+        // live here.
         const encryption =
-          await remoteStore.readCollectionEncryption(collectionId)
+          knownDescriptors[collectionId] ??
+          (await remoteStore.readCollectionEncryption(collectionId))
         // Only an epoch-bearing descriptor enters the offline cache or
         // rebuilds a cipher; a collection without a key-epoch roster stays
         // fail-closed, stated plainly here rather than surfacing later as
