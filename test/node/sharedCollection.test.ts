@@ -18,11 +18,11 @@
  * @vitest-environment node
  */
 import { describe, expect, it, vi } from 'vitest'
-import { X25519KeyAgreementKey2020 } from '@interop/x25519-key-agreement-key'
 import {
   initRecipients,
   ownerRecipient,
-  removeRecipient
+  removeRecipient,
+  x25519RecipientFromDidKey
 } from '@interop/was-client/edv'
 import { NotImplementedError } from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
@@ -38,29 +38,20 @@ const APP_SEED = new Uint8Array(32).map((_, index) => (index * 7 + 3) & 0xff)
 const OWNER_SEED = new Uint8Array(32).map((_, index) => (index * 5 + 11) & 0xff)
 const EXTRA_SEED = new Uint8Array(32).map((_, index) => (index * 3 + 19) & 0xff)
 const COLLECTION_ID = 'private-credentials'
-const DID_KEY_PREFIX = 'did:key:'
 
 /**
  * The WALLET-side derivation of a grantee's recipient key: everything it has is
- * the grantee's Ed25519 `did:key`, whose suffix IS the `publicKeyMultibase`.
- * Freewallet builds an `Ed25519VerificationKey` from exactly those two fields
- * before converting; the conversion reads only `controller` and
- * `publicKeyMultibase`, so the plain object below is the same input.
+ * the grantee's Ed25519 `did:key`. This is the REAL shared derivation both
+ * wallets apply to a grantee (`x25519RecipientFromDidKey`), not a test mirror
+ * of it -- so a change to the derivation rule fails this suite the day it is
+ * installed.
  */
 function walletSideRecipient({ did }: { did: string }): {
   id: string
   publicKeyMultibase: string
 } {
-  const converted = X25519KeyAgreementKey2020.fromEd25519VerificationKey2020({
-    keyPair: {
-      controller: did,
-      publicKeyMultibase: did.slice(DID_KEY_PREFIX.length)
-    }
-  }) as unknown as { id: string; publicKeyMultibase: string }
-  return {
-    id: converted.id,
-    publicKeyMultibase: converted.publicKeyMultibase
-  }
+  const { id, publicKeyMultibase } = x25519RecipientFromDidKey({ did })
+  return { id, publicKeyMultibase }
 }
 
 /**

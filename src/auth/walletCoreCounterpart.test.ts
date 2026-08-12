@@ -18,6 +18,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   appConnectRequestOf,
+  composeVp,
   findLegacyAppKeyCredential,
   mintAppKeyCredential,
   reissueAppKeyCredential,
@@ -28,12 +29,14 @@ import type {
   IVerifiablePresentation
 } from '@interop/data-integrity-core'
 import { deriveIdentity } from '../identity/agents.js'
+import { createDocumentLoader } from '../identity/documentLoader.js'
 import {
   bytesToBase64url,
   findSeedCredential,
   parseSeedCredential
 } from '../identity/seedCredential.js'
 import { buildAppConnectVpr } from './loginRequest.js'
+import { verifyLoginPresentation } from './verifyResponse.js'
 import type { IAppConnectQuery } from './walletRequestTypes.js'
 
 const ORIGIN = 'https://app.example'
@@ -145,6 +148,53 @@ describe('the credential half, against wallet-core', () => {
     })
     expect(parsed.controllerDid).toBe(subjectDid)
     expect(parsed.seed).toHaveLength(32)
+  })
+
+  it('is located inside a wallet-core-composed, signed response VP', async () => {
+    const { credential, subjectDid } = await mintAppKeyCredential({
+      app: { name: APP_NAME, appUrl: APP_URL },
+      origin: ORIGIN
+    })
+    // The wallet's holder identity: an ordinary client did:key, distinct from
+    // the app key (the response VP's holder is the wallet, never the app).
+    const walletSeed = crypto.getRandomValues(new Uint8Array(32))
+    const wallet = await deriveIdentity({ seed: walletSeed })
+    const challenge = crypto.randomUUID()
+
+    // The REAL response composition: DIDAuth-signed, grants and the App
+    // Connect marker embedded before signing.
+    const presentation = await composeVp({
+      presentationSigner: {
+        signer: wallet.keyAgent.getSigner(),
+        holder: wallet.controllerDid
+      },
+      selectedVcs: [credential],
+      challenge,
+      domain: ORIGIN,
+      didAuthRequested: true,
+      appConnect: { firstRun: true }
+    })
+
+    // This library's own verification accepts wallet-core's signature ...
+    await verifyLoginPresentation({
+      presentation,
+      challenge,
+      domain: ORIGIN,
+      documentLoader: createDocumentLoader()
+    })
+
+    // ... and its locate + parse recover the identity from inside the VP.
+    const located = findSeedCredential({
+      presentation,
+      appUrl: APP_URL
+    })
+    expect(located).toBeDefined()
+    const parsed = await parseSeedCredential({
+      credential: located as IVerifiableCredential,
+      origin: ORIGIN,
+      appUrl: APP_URL
+    })
+    expect(parsed.controllerDid).toBe(subjectDid)
   })
 
   it('preserves the identity across wallet-core legacy re-issuance', async () => {

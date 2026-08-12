@@ -14,6 +14,11 @@
   share escrows the reader into every existing epoch), and
   `checkGrantsForCollections`'s JSDoc no longer claims public collections
   get an add-only action set.
+- Strengthened the wallet-core counterpart suite: the app-key credential is
+  now also located and parsed inside a wallet-core-composed, DIDAuth-signed
+  response VP that `verifyLoginPresentation` accepts, and the shared-collection
+  tests derive the wallet-side recipient with was-client's real
+  `x25519RecipientFromDidKey` instead of a local mirror of it.
 
 ## 0.13.0 - 2026-08-12
 
