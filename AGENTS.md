@@ -150,6 +150,48 @@ extension even though source files are `.ts` -- e.g.
 `import { Example } from '../../src/index.js'`. TypeScript's
 `moduleResolution: Bundler` resolves these to the `.ts` source at compile time.
 
+## Roadmap & Task Conventions
+
+All roadmap tracking lives in `_spec/ROADMAP.md` (local-only, gitignored):
+narrative context plus structured work items. Never create a parallel task list
+elsewhere (no `TODO.md`, no task lists in other docs).
+
+Each work item follows this schema:
+
+- A heading `### WR-N: Title`, then a field block, then free prose context.
+- Fields: `status` (`todo` / `in-progress` / `draft` / `done`), `priority`
+  (`high` / `medium` / `low`), `labels` (comma-separated), optional `blocked-by`
+  (other `WR-N` ids), a `touches:` list where it applies, and an `acceptance:`
+  checklist.
+- `draft` marks items with no actionable done-state yet (blocked externally or
+  parking records); a draft states _why_ instead of acceptance criteria and must
+  gain acceptance criteria when promoted to `todo`.
+- `touches:` is the field defined in the canonical schema in
+  isomorphic-lib-template's AGENTS.md ("Roadmap & Task Conventions"): required
+  for any item changing a spec, a wire contract, or a shared `@interop/*` API,
+  it lists the affected repos and their ARCHITECTURE/AGENTS files, and each
+  entry must be resolved (shipped or explicitly waived) before the item may go
+  `done`. See that file for the full definition.
+
+Rules:
+
+- Item ids are permanent and never reused. A new item takes the next unused
+  number, regardless of which section it lands in.
+- Every non-draft item needs acceptance criteria before it may be moved to
+  `in-progress`.
+- Statuses are edited in place (change the `status:` field); acceptance
+  checkboxes are ticked as they are met.
+- Completed items move **verbatim** (number, title, field block, prose, with
+  their `done` date) from `_spec/ROADMAP.md` to
+  `_spec/archive/archived-roadmap.md` once shipped, append-only -- this keeps
+  WR-N references resolvable. CHANGELOG.md remains the permanent record of what
+  landed. Do not rewrite or summarize items on the way in, and do not fix old
+  references.
+- Work discovered mid-implementation gets its own item immediately, noting
+  `discovered-from: WR-N` in its prose, plus a `blocked-by` link if it blocks
+  anything.
+- Reference item ids in commit messages and PR descriptions where relevant.
+
 ## Conventions
 
 Code style, refactoring, JSDoc, comment, and error-handling conventions live in
