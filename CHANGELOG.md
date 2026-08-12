@@ -1,5 +1,44 @@
 # @interop/was-react Changelog
 
+## 0.15.0 - TBD
+
+### Added
+
+- Equality queries now work on private (encrypted) collections, through the same
+  `entityStore.query({ equals, limit, cursor })` verb. Attribute names and
+  values are blinded client-side with the collection's blinding key before the
+  request is sent, the server matches opaque tokens, and the returned envelopes
+  are decrypted locally. A public collection keeps its plaintext
+  `filter[attr]=value` GET; `WasRemoteStore.queryCollectionByEquality` routes on
+  visibility.
+- `indexes` is now valid on a private collection. The requirement is that the
+  collection was provisioned with a blinded-index key, which installs with its
+  first key epoch or never.
+- The sync bootstrap declares a private collection's configured `indexes` as
+  blinded-index attributes in the collection's own encrypted metadata
+  (`WasRemoteStore.declareBlindedIndexes`), so every recipient discovers what is
+  queryable and the server never sees the attribute names. Only missing
+  attributes are declared. Non-fatal: a collection provisioned without the key
+  is warned about and still replicates in full.
+- `WasRemoteStore.fromGrants` accepts the app's identity keys
+  (`keys: { keyAgreementKey, keyResolver }`) and feeds them to the client's EDV
+  keystore, which is what the blinded-index verbs build their codec from.
+  Replication still moves envelopes verbatim and bypasses the codec. The
+  blinding key is never passed in; the codec unwraps it from the collection's
+  encryption descriptor.
+- `provisionDevGrants` collection entries accept `blindedIndex?: boolean`
+  (private collections only; ignored with a warning on a public one).
+
+### Known limitations
+
+- Documents written through the local-first sync path do not yet carry blinded
+  index entries, because `@interop/was-client`'s sync doc cipher does not carry
+  the index schema yet. A blinded query therefore finds only documents written
+  through an index-aware codec path; existing documents become findable once
+  rewritten that way.
+- Index declarations are prospective: a document written before its attribute
+  was declared carries no blinded entry for it.
+
 ## 0.14.0 - 2026-08-12
 
 ### Breaking

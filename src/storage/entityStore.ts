@@ -95,9 +95,18 @@ export interface EntityStore<T extends { id: string }> {
    * path; the replica already holds this device's rows). Multiple `equals`
    * attributes AND together; values are string equality only, and every
    * attribute must appear in the collection config's declared `indexes`.
-   * Requires a wallet-connected session and, for now, a `visibility: 'public'`
-   * (plaintext) collection -- the encrypted blinded-index path is not yet
-   * supported. Pass the returned `cursor` back in to fetch the next page while
+   * Requires a wallet-connected session.
+   *
+   * Works on either visibility. A public (plaintext) collection is queried
+   * with the server-side `filter[attr]=value` form; a private (encrypted) one
+   * with the blinded-index profile, which needs the collection to have been
+   * provisioned with a blinded-index key. On a private collection the standing
+   * limitation is that documents written through the local-first sync path do
+   * not yet carry blinded index entries, so a query finds only documents
+   * written through an index-aware cipher; they become findable once
+   * rewritten that way.
+   *
+   * Pass the returned `cursor` back in to fetch the next page while
    * `hasMore` is true.
    */
   query: (query: {
@@ -250,8 +259,9 @@ export function createEntityStore<T extends { id: string }>(
           ...(cursor !== undefined && { cursor })
         })
         // `data` is the stored JSON content -- for a public (plaintext)
-        // collection that IS the payload; a blob resource carries none and is
-        // omitted.
+        // collection that IS the payload, and for a private one it is the
+        // decrypted envelope content, which is the payload too; a blob
+        // resource carries none and is omitted.
         const docs = page.documents
           .filter(document => document.data !== undefined)
           .map(document => document.data as T)

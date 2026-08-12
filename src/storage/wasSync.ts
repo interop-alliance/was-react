@@ -4,8 +4,10 @@
 /**
  * Shared WAS replication bootstrap: given a parsed grant set and the invoking
  * ZcapClient, builds the delegated {@link WasRemoteStore}, best-effort marks
- * each private collection encrypted and declares each public collection's
- * equality `indexes`, and starts the supplied {@link SyncController} with
+ * each private collection encrypted and declares each collection's equality
+ * indexes -- in the collection description for a public one, in the
+ * collection's encrypted metadata (as blinded-index attributes) for a private
+ * one -- and starts the supplied {@link SyncController} with
  * reactive store patching. The caller injects the opened localStore, the
  * controller, and the per-doc `onRemoteChange` patcher (typically wired to the
  * rehydrate mechanism over the app's store registry) rather than this module
@@ -112,7 +114,8 @@ export async function readRemoteDescriptors({
  *   (read-only, wallet-owned) registry; never replicated, never written to
  * @param [options.identityKeys] {object}   this app's IDENTITY key-agreement key
  *   and its resolver, the recipient identity a wallet writes into a shared
- *   collection's epoch roster. Required to open any shared-collection reader
+ *   collection's epoch roster. Required to open any shared-collection reader,
+ *   and to run the codec-driven blinded-index verbs on a private collection
  * @param [options.identityKeys.keyAgreementKey] {IKeyAgreementKey}
  * @param [options.identityKeys.keyResolver] {IKeyResolver}
  * @param [options.onAuthError] {() => void}   fired when replication hits a
@@ -164,7 +167,10 @@ export async function startWasSync({
   const remoteStore = WasRemoteStore.fromGrants({
     parsed,
     zcapClient,
-    collections
+    collections,
+    // The same identity keys that open a shared-collection reader also let the
+    // client's EDV keystore build a codec, which the blinded-index verbs need.
+    ...(identityKeys && { keys: identityKeys })
   })
 
   // One pass per REGISTERED collection the grant set covers -- the registry is
@@ -225,6 +231,20 @@ export async function startWasSync({
         if (!declared.ok) {
           console.warn(
             `Encryption descriptor PUT not authorized for "${collectionId}" (status ${declared.status ?? 'n/a'}).`
+          )
+        }
+        // The private-collection counterpart of the public `indexes` PUT: the
+        // blinded-index schema lives in the collection's own encrypted
+        // metadata, so it is written through the collection handle rather than
+        // the description. Non-fatal: an unqueryable collection is still a
+        // fully replicating one.
+        const blinded = await remoteStore.declareBlindedIndexes(collectionId, {
+          encryption
+        })
+        if (!blinded.ok) {
+          console.warn(
+            `Blinded-index declaration failed for "${collectionId}": ` +
+              `${blinded.error ?? 'unknown error'} (status ${blinded.status ?? 'n/a'}).`
           )
         }
       }

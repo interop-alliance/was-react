@@ -55,10 +55,19 @@ export interface WasCollectionConfig {
   /**
    * The content attributes the server indexes for equality queries
    * (`store.query({ equals })`), e.g. `['author', 'inReplyTo']`. Declared here
-   * so the sync bootstrap can announce them in the collection description
-   * (undeclared attributes are rejected fail-closed by the server). Only valid
-   * on `visibility: 'public'` (plaintext) collections for now: the encrypted
-   * `blinded-index` query path is not yet supported.
+   * so the sync bootstrap can announce them; an undeclared attribute is
+   * rejected fail-closed before any request. How they are announced depends on
+   * the collection's visibility:
+   *
+   * - on a PUBLIC (plaintext) collection they are written into the collection
+   *   description and served by the plaintext `filter[attr]=value` GET;
+   * - on a PRIVATE (encrypted) collection they are declared as blinded-index
+   *   attributes in the collection's own encrypted metadata and served by the
+   *   `blinded-index` query profile. That requires the collection to have been
+   *   provisioned with a blinded-index (blinding) key -- the key is installed
+   *   with the collection's first key epoch or never -- and the declarations
+   *   are prospective: a document written before its attribute was declared
+   *   carries no blinded entry for it and is not findable until rewritten.
    */
   indexes?: string[]
 }
@@ -269,11 +278,12 @@ export const DEFAULT_EXPIRY_WATCH_MS = 60 * 1000
  * fall back to either mode), the encrypted-but-public combination: the same
  * WAS collection id registered under conflicting visibilities, which would
  * treat one server-side collection as both encrypted (private) and plaintext
- * (public), and malformed `indexes` declarations (indexes on a private
- * collection -- the encrypted query path is not yet supported -- plus empty or
- * duplicate attribute names, and the same WAS collection id declared with
- * diverging index sets). Called by the storage layer before any replica is
- * opened.
+ * (public), and malformed `indexes` declarations (empty or duplicate attribute
+ * names, and the same WAS collection id declared with diverging index sets).
+ * Indexes are valid on either visibility -- a public collection serves them
+ * over the plaintext filter GET, a private one over the blinded-index query
+ * profile -- so only their shape is checked here. Called by the storage layer
+ * before any replica is opened.
  *
  * @param collections {WasCollectionConfig[]}   the collection registry
  * @returns {void}
@@ -299,13 +309,6 @@ export function validateCollections(collections: WasCollectionConfig[]): void {
     visibilityById.set(id, effective)
 
     if (indexes !== undefined) {
-      if (effective !== 'public') {
-        throw new Error(
-          `Collection "${key}" declares indexes but is private: equality ` +
-            `indexes require a public (plaintext) collection (the encrypted ` +
-            `blinded-index query path is not yet supported).`
-        )
-      }
       const seen = new Set<string>()
       for (const name of indexes) {
         if (typeof name !== 'string' || name.length === 0) {

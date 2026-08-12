@@ -56,10 +56,10 @@ describe('validateCollections', () => {
     ).not.toThrow()
   })
 
-  it('rejects indexes on a private collection (fail-closed)', () => {
+  it('accepts blinded-index attributes on a private collection', () => {
     expect(() =>
       validateCollections([{ key: 'notes', id: 'notes', indexes: ['author'] }])
-    ).toThrow(/require a public/)
+    ).not.toThrow()
   })
 
   it('rejects empty and duplicate index attribute names', () => {
@@ -78,6 +78,24 @@ describe('validateCollections', () => {
         }
       ])
     ).toThrow(/twice/)
+    // The same shape rules apply on a private (blinded-index) collection.
+    expect(() =>
+      validateCollections([{ key: 'notes', id: 'notes', indexes: [''] }])
+    ).toThrow(/empty index attribute/)
+    expect(() =>
+      validateCollections([
+        { key: 'notes', id: 'notes', indexes: ['author', 'author'] }
+      ])
+    ).toThrow(/twice/)
+  })
+
+  it('rejects diverging index declarations for the same private WAS id', () => {
+    expect(() =>
+      validateCollections([
+        { key: 'a', id: 'notes', indexes: ['author'] },
+        { key: 'b', id: 'notes', indexes: ['tag'] }
+      ])
+    ).toThrow(/diverging index/)
   })
 
   it('rejects diverging index declarations for the same WAS id', () => {

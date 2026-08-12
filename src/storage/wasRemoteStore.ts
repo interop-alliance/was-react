@@ -17,14 +17,21 @@
  *   either way -- envelopes replicate into an unmarked (plaintext) collection
  *   just the same. A PUBLIC collection is never marked: public implies
  *   plaintext, so the descriptor PUT is skipped outright;
- * - the sibling best-effort `indexes` declaration PUT for public collections
- *   that declare equality-indexed attributes, plus the equality query verb
- *   itself ({@link WasRemoteStore.queryCollectionByEquality}): the canonical
- *   sorted `filter[attr]=value` GET on the collection list endpoint, parsed
- *   into the `{ documents, hasMore, cursor? }` page shape.
+ * - the sibling best-effort index declarations -- the `indexes` description PUT
+ *   for public collections and the blinded-index schema write for private ones
+ *   ({@link WasRemoteStore.declareBlindedIndexes}) -- plus the equality query
+ *   verb itself ({@link WasRemoteStore.queryCollectionByEquality}), which
+ *   routes on the collection's visibility: the canonical sorted
+ *   `filter[attr]=value` GET for a public collection, the client-blinded
+ *   `blinded-index` query for a private one, both parsed into the same
+ *   `{ documents, hasMore, cursor? }` page shape.
  */
 import type { ZcapClient } from '@interop/ezcap'
-import type { IZcap } from '@interop/data-integrity-core'
+import type {
+  IKeyAgreementKey,
+  IKeyResolver,
+  IZcap
+} from '@interop/data-integrity-core'
 import { WasClient } from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
@@ -40,7 +47,8 @@ import type { WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
 
 /**
- * The outcome of a best-effort encryption-descriptor PUT, for diagnostics.
+ * The outcome of a best-effort declaration write (an encryption-descriptor PUT,
+ * an `indexes` PUT, or a blinded-index schema write), for diagnostics.
  */
 export interface DeclarationResult {
   collectionId: string
@@ -48,8 +56,9 @@ export interface DeclarationResult {
   status?: number
   error?: string
   /**
-   * True when no PUT was attempted -- the collection is public (plaintext), or
-   * it already carries an `encryption` block (e.g. an epoch roster the wallet
+   * True when no write was attempted -- the declaration does not apply to this
+   * collection at all (e.g. the encryption descriptor on a public collection),
+   * or it already carries an `encryption` block (e.g. an epoch roster the wallet
    * provisioned at consent time, which a bare-descriptor PUT must never clobber).
    * Reported as `ok` since the goal state holds either way.
    */
@@ -78,6 +87,19 @@ type CollectionRouting = {
   indexes?: string[]
 }
 
+/**
+ * Maps one configured index attribute name to the blinded-index attribute path
+ * the EDV codec addresses it by. The codec walks the path from the stored
+ * document's root, and a JSON payload is written as that document's `content`
+ * verbatim, so an app-level `author` is `content.author`.
+ *
+ * @param name {string}   the attribute name as declared in the collection config
+ * @returns {string}
+ */
+function blindedAttribute(name: string): string {
+  return `content.${name}`
+}
+
 export class WasRemoteStore {
   public readonly was: WasClient
   public readonly serverUrl: string
@@ -86,49 +108,74 @@ export class WasRemoteStore {
   // Per WAS collection id: the effective visibility + declared equality
   // indexes (the registry guarantees one declaration per id).
   readonly #configById: Map<string, CollectionRouting>
+  // Whether `fromGrants` was given this app's identity keys, i.e. whether the
+  // client's EDV keystore can build a codec (the blinded-index verbs need one).
+  readonly #hasIdentityKeys: boolean
 
   private constructor({
     was,
     parsed,
-    configById
+    configById,
+    hasIdentityKeys
   }: {
     was: WasClient
     parsed: ParsedGrants
     configById: Map<string, CollectionRouting>
+    hasIdentityKeys: boolean
   }) {
     this.was = was
     this.serverUrl = parsed.serverUrl
     this.spaceId = parsed.spaceId
     this.#byCollectionId = parsed.byCollectionId
     this.#configById = configById
+    this.#hasIdentityKeys = hasIdentityKeys
   }
 
   /**
    * Builds a delegated remote store from a parsed grant set and the app's
    * ZcapClient (whose invocation signer is the controller the grants target).
-   * The EDV encryption provider is a no-op keystore: replication moves opaque
-   * envelopes verbatim, and encrypt/decrypt is a local read/write concern.
+   *
+   * Replication itself needs no keystore at all: it moves opaque envelopes
+   * verbatim through `was.request()`, which bypasses the codec, and
+   * encrypt/decrypt is a local read/write concern. The keystore matters only
+   * for the codec-driven verbs -- the blinded-index query and schema
+   * declaration -- so it answers with the app's identity keys when they are
+   * supplied and with `null` (fail-closed: "this client holds no keys for that
+   * collection") when they are not. The blinding key itself is never passed
+   * here: the codec unwraps it from the collection's own encryption descriptor,
+   * so a collection provisioned without one simply has no blinded index.
    *
    * @param options {object}
    * @param options.parsed {ParsedGrants}
    * @param options.zcapClient {ZcapClient}
    * @param [options.collections] {WasCollectionConfig[]}   the collection
    *   registry; entries with `visibility: 'public'` are never marked encrypted
+   * @param [options.keys] {object}   this app's identity key-agreement key and
+   *   its resolver (the same pair `IdentityAgents` carries)
+   * @param options.keys.keyAgreementKey {IKeyAgreementKey}
+   * @param options.keys.keyResolver {IKeyResolver}
    * @returns {WasRemoteStore}
    */
   static fromGrants({
     parsed,
     zcapClient,
-    collections = []
+    collections = [],
+    keys
   }: {
     parsed: ParsedGrants
     zcapClient: ZcapClient
     collections?: WasCollectionConfig[]
+    keys?: {
+      keyAgreementKey: IKeyAgreementKey
+      keyResolver: IKeyResolver
+    }
   }): WasRemoteStore {
     const was = new WasClient({
       serverUrl: parsed.serverUrl,
       zcapClient,
-      encryption: createEdvEncryption({ resolveKeys: async () => null })
+      encryption: createEdvEncryption({
+        resolveKeys: async () => keys ?? null
+      })
     })
     const configById = new Map<string, CollectionRouting>(
       collections.map(entry => [
@@ -139,7 +186,12 @@ export class WasRemoteStore {
         }
       ])
     )
-    return new WasRemoteStore({ was, parsed, configById })
+    return new WasRemoteStore({
+      was,
+      parsed,
+      configById,
+      hasIdentityKeys: keys !== undefined
+    })
   }
 
   /**
@@ -258,15 +310,122 @@ export class WasRemoteStore {
   }
 
   /**
-   * Runs one equality query against a public collection: the canonical GET
-   * `filter[attr]=value` form of the server's `equality` profile, invoked with
-   * the collection's delegated zcap (an anonymous reader would issue the same
-   * URL unsigned against a `PublicCanRead` collection). Filter attributes are
-   * emitted in sorted order so identical queries produce identical URLs
-   * (cache-friendly); values are string equality only. Fails closed before any
-   * network round trip on a non-public collection (the encrypted
-   * `blinded-index` path is not yet supported), an empty term set, or an
-   * attribute missing from the collection's declared `indexes`.
+   * Best-effort declaration of a PRIVATE collection's blinded-index attributes.
+   * Unlike the public `indexes` PUT, the schema is collection state stored in
+   * the collection's own ENCRYPTED metadata (a compare-and-swap write through
+   * `Collection.declareIndex`), so every recipient discovers what is queryable
+   * without out-of-band coordination and the server never sees the attribute
+   * names. Only the attributes not already in the persisted schema are
+   * declared, so a returning session issues no writes at all. Non-fatal like
+   * the descriptor PUTs: returns the outcome rather than throwing. Skipped
+   * (reported `ok` + `skipped`) for a public collection or one that declares no
+   * indexes.
+   *
+   * A collection whose descriptor carries no `hmac` member is reported NOT ok
+   * (rather than skipped): the blinding key is installed with the collection's
+   * first key epoch or never, so this is a provisioning gap the caller should
+   * warn about -- the declarations cannot be made and queries on the collection
+   * will keep failing.
+   *
+   * Declarations are prospective: a document written before its attribute was
+   * declared carries no blinded entry for it and is not findable until it is
+   * rewritten.
+   *
+   * @param collectionId {string}   the WAS collection id
+   * @param options {object}
+   * @param options.encryption {CollectionEncryption | undefined}   the
+   *   already-read descriptor the caller fetched from the collection
+   *   description; `undefined` means the collection carries none
+   * @returns {Promise<DeclarationResult>}
+   */
+  async declareBlindedIndexes(
+    collectionId: string,
+    { encryption }: { encryption: CollectionEncryption | undefined }
+  ): Promise<DeclarationResult> {
+    const config = this.#configById.get(collectionId)
+    if (
+      config?.visibility !== 'private' ||
+      !config.indexes ||
+      config.indexes.length === 0
+    ) {
+      return { collectionId, ok: true, skipped: true }
+    }
+    if (!encryption?.hmac) {
+      return {
+        collectionId,
+        ok: false,
+        error:
+          'the collection was provisioned without a blinded-index key (the ' +
+          'key is installed with the first key epoch or never)'
+      }
+    }
+    const capability = this.collectionCapability(collectionId)
+    if (!capability) {
+      return { collectionId, ok: false, error: 'no capability' }
+    }
+    if (!this.#hasIdentityKeys) {
+      return { collectionId, ok: false, error: 'no identity keys' }
+    }
+    try {
+      const collection = this.was
+        .space(this.spaceId)
+        .collection(collectionId, { capability })
+      const persisted = await collection.indexes()
+      const already = new Set(
+        persisted.map(declaration =>
+          Array.isArray(declaration.attribute)
+            ? declaration.attribute.join(',')
+            : declaration.attribute
+        )
+      )
+      for (const name of config.indexes) {
+        const attribute = blindedAttribute(name)
+        if (!already.has(attribute)) {
+          await collection.declareIndex({ attribute })
+        }
+      }
+      return { collectionId, ok: true }
+    } catch (err) {
+      const status = errorStatus(err)
+      const message = errorMessage(err)
+      return {
+        collectionId,
+        ok: false,
+        ...(status !== undefined && { status }),
+        error: message
+      }
+    }
+  }
+
+  /**
+   * Runs one equality query against a registered collection, routing on its
+   * visibility and answering the same `{ documents, hasMore, cursor? }` page
+   * either way. Values are string equality only, and multiple `equals`
+   * attributes AND together.
+   *
+   * - A PUBLIC (plaintext) collection uses the canonical GET
+   *   `filter[attr]=value` form of the server's `equality` profile, invoked
+   *   with the collection's delegated zcap (an anonymous reader would issue the
+   *   same URL unsigned against a `PublicCanRead` collection). Filter
+   *   attributes are emitted in sorted order so identical queries produce
+   *   identical URLs (cache-friendly).
+   * - A PRIVATE (encrypted) collection uses the `blinded-index` query profile:
+   *   each attribute name and value is blinded client-side with the
+   *   collection's blinding key before it leaves the browser, the server
+   *   matches opaque tokens, and the returned envelopes are decrypted here.
+   *   Attribute names are rooted at the EDV document's `content`, which for a
+   *   JSON payload IS the stored payload verbatim, so the configured `author`
+   *   is queried as `content.author`.
+   *
+   * Fails closed before any network round trip on a collection the registry
+   * does not know, an empty term set, an attribute missing from the
+   * collection's declared `indexes`, an uncovered collection, and -- on the
+   * private path -- a store built without this app's identity keys.
+   *
+   * Standing limitation of the private path: documents written through the
+   * local-first sync path do not yet carry blinded index entries, so a blinded
+   * query finds only documents written through an index-aware cipher. They
+   * become findable once they are rewritten that way.
    *
    * @param options {object}
    * @param options.collectionId {string}   the WAS collection id
@@ -289,11 +448,10 @@ export class WasRemoteStore {
     cursor?: string
   }): Promise<EqualityQueryPage> {
     const config = this.#configById.get(collectionId)
-    if (config?.visibility !== 'public') {
+    if (!config) {
       throw new Error(
-        `Equality queries require a public (plaintext) collection; ` +
-          `"${collectionId}" is not registered as public (the encrypted ` +
-          `blinded-index query path is not yet supported).`
+        `Equality queries require a registered collection; "${collectionId}" ` +
+          `is not in the collection registry.`
       )
     }
     const attributes = Object.keys(equals)
@@ -314,6 +472,15 @@ export class WasRemoteStore {
       throw new Error(
         `No delegated capability covers collection "${collectionId}".`
       )
+    }
+    if (config.visibility === 'private') {
+      return await this.#queryBlinded({
+        collectionId,
+        capability,
+        equals,
+        ...(limit !== undefined && { limit }),
+        ...(cursor !== undefined && { cursor })
+      })
     }
     // Canonical query string: sorted filter attributes first, then the
     // reserved pagination params. Literal brackets around a percent-encoded
@@ -399,6 +566,64 @@ export class WasRemoteStore {
       serverUrl: this.serverUrl,
       path: resourcePath(this.spaceId, collectionId, id)
     })
+  }
+
+  /**
+   * The private-collection half of {@link queryCollectionByEquality}: the
+   * `blinded-index` query profile through the collection handle, whose codec
+   * blinds the terms before the request and decrypts the returned envelopes.
+   * The caller has already run every guard.
+   */
+  async #queryBlinded({
+    collectionId,
+    capability,
+    equals,
+    limit,
+    cursor
+  }: {
+    collectionId: string
+    capability: IZcap
+    equals: Record<string, string>
+    limit?: number
+    cursor?: string
+  }): Promise<EqualityQueryPage> {
+    if (!this.#hasIdentityKeys) {
+      throw new Error(
+        `Equality queries on the encrypted collection "${collectionId}" ` +
+          `require a wallet-connected session with this app's identity keys ` +
+          `(the terms are blinded, and the results decrypted, with the ` +
+          `collection's own keys).`
+      )
+    }
+    const page = await this.was
+      .space(this.spaceId)
+      .collection(collectionId, { capability })
+      .find({
+        equals: Object.fromEntries(
+          Object.entries(equals).map(([name, value]) => [
+            blindedAttribute(name),
+            value
+          ])
+        ),
+        ...(limit !== undefined && { limit }),
+        ...(cursor !== undefined && { cursor })
+      })
+    if (!('items' in page)) {
+      throw new Error(
+        `Malformed equality query response for "${collectionId}": expected a ` +
+          `page of items.`
+      )
+    }
+    return {
+      // A blob resource decrypts to a `Blob`, which is not a payload the entity
+      // layer can use; its id still reports the match, with `data` omitted.
+      documents: page.items.map(({ id, data }) => ({
+        id,
+        ...(!(data instanceof Blob) && { data })
+      })),
+      hasMore: page.hasMore,
+      ...(typeof page.cursor === 'string' && { cursor: page.cursor })
+    }
   }
 
   /**

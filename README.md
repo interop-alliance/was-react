@@ -310,17 +310,17 @@ stored rows carry them), and simply omit them at the call site.
 outside React, `getWriterId({ storageKeyPrefix })` resolves it under the same
 prefix your config declares. Neither is needed to write.
 
-A public collection can additionally answer server-side equality queries.
-Declare the queryable content attributes in the collection config:
+A collection can additionally answer server-side equality queries, on either
+visibility. Declare the queryable content attributes in the collection config:
 
 ```ts
 { key: 'posts', id: 'microblog-posts', visibility: 'public',
   indexes: ['author', 'inReplyTo'] }
 ```
 
-The sync bootstrap announces the declaration in the collection description (the
-server rejects filters on undeclared attributes fail-closed), and the entity
-store's `query` verb runs the query:
+The sync bootstrap announces the declaration (the server rejects filters on
+undeclared attributes fail-closed), and the entity store's `query` verb runs the
+query:
 
 ```ts
 const page = await usePosts.getState().query({
@@ -333,12 +333,52 @@ const page = await usePosts.getState().query({
 `query` is a read verb against the server (signed with the granted collection
 capability, so it needs a wallet-connected session), not a sync path: it never
 touches the in-memory Map. Multiple `equals` attributes AND together; values are
-string equality only. On the wire it is the collection list endpoint's cacheable
-`filter[attr]=value` GET form, with filter attributes emitted in sorted order so
-identical queries produce identical URLs; on a public collection the same URL
-also answers anonymously for non-app consumers. Declaring `indexes` on a private
-collection is rejected at config validation -- the encrypted (blinded-index)
-query path is not yet supported.
+string equality only.
+
+On a public collection the declaration goes into the collection description, and
+on the wire the query is the collection list endpoint's cacheable
+`filter[attr]=value` GET form. Filter attributes are emitted in sorted order, so
+identical queries produce identical URLs. The same URL also answers anonymously
+for non-app consumers.
+
+#### Queries on a private collection
+
+A private collection answers the same `query` call through the blinded-index
+query profile. Two things have to be true. Declare `indexes` on the collection
+as above, and provision the collection with a blinded-index key. That key
+installs with the collection's first key epoch or never, so the choice belongs
+to whoever provisions the collection -- the wallet in production. In dev, ask
+the provisioner for it:
+
+```ts
+await provisionDevGrants({
+  serverUrl: 'http://localhost:3002',
+  seed: mySeedBytes,
+  collections: [{ id: 'notes', visibility: 'private', blindedIndex: true }]
+})
+```
+
+The sync bootstrap then declares the attributes in the collection's own
+encrypted metadata, so every recipient of the collection discovers what is
+queryable without out-of-band coordination. Only attributes not already declared
+are written, so a returning session declares nothing. A collection provisioned
+without the key is warned about and keeps replicating in full; only its queries
+are unavailable.
+
+On the wire, attribute names and values are blinded in the browser with the
+collection's blinding key before the request is sent. The server matches opaque
+tokens and never sees the names or the values, and the returned envelopes are
+decrypted locally.
+
+Two limitations to plan around. Declarations are prospective: a document written
+before its attribute was declared carries no blinded entry for it, and stays
+unfindable until it is rewritten. And documents written through this library's
+own replication path do not yet carry blinded index entries at all, because the
+sync doc cipher underneath does not carry the index schema yet. Today a blinded
+query therefore finds only documents written through an index-aware path, such
+as the wallet's own writes or `@interop/was-client`'s `Collection.add`. Those
+writes light up in a future `@interop/was-client` release, and existing
+documents become findable once rewritten.
 
 ### Share links (publish-copy)
 

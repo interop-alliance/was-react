@@ -11,8 +11,10 @@
  *      mirroring what a wallet does when it provisions RP-requested collections:
  *      a PRIVATE collection is declared `edv` and gets its epoch[0] roster
  *      installed (`ensureFirstEpoch`) with the app's identity key-agreement key
- *      as the sole recipient -- epoch-from-birth, no plaintext interlude; a
- *      PUBLIC collection stays plaintext with no descriptor;
+ *      as the sole recipient -- epoch-from-birth, no plaintext interlude, and
+ *      optionally a blinded-index key alongside it (`blindedIndex: true`, which
+ *      installs with the first epoch or never); a PUBLIC collection stays
+ *      plaintext with no descriptor;
  *   3. delegates a per-collection read/write zcap to the app's controller DID;
  *   4. returns the signed grants and (optionally) writes them to a JSON file the
  *      app loads in dev-sync mode;
@@ -121,9 +123,12 @@ async function provisionerClient({
  *   app DID the grants are delegated to is derived from it
  * @param options.collections {Array<string | object>}   the WAS collections to
  *   create and grant: a bare id string (private by default) or
- *   `{ id, visibility }`. A private collection is declared `edv` and gets its
- *   epoch[0] roster (sole recipient: the app's identity key-agreement key); a
- *   public one stays plaintext
+ *   `{ id, visibility, blindedIndex }`. A private collection is declared `edv`
+ *   and gets its epoch[0] roster (sole recipient: the app's identity
+ *   key-agreement key); a public one stays plaintext. `blindedIndex: true`
+ *   additionally installs the collection's blinded-index key with that first
+ *   epoch, which is the only moment it can be installed; it is ignored with a
+ *   warning on a public collection, which is plaintext and needs no blinding
  * @param [options.spaceName] {string}   human-readable Space name (defaults to
  *   `'Dev Space'`)
  * @param [options.outFile] {string}   when given, the `{ grants }` JSON is
@@ -157,7 +162,14 @@ export async function provisionDevGrants({
 }: {
   serverUrl: string
   seed: Uint8Array
-  collections: Array<string | { id: string; visibility?: 'private' | 'public' }>
+  collections: Array<
+    | string
+    | {
+        id: string
+        visibility?: 'private' | 'public'
+        blindedIndex?: boolean
+      }
+  >
   spaceName?: string
   outFile?: string
   provisionerSeed?: Uint8Array
@@ -201,8 +213,11 @@ export async function provisionDevGrants({
   // `collections[i]` (the probe below relies on that for `[0]`).
   const grants: IDelegatedZcap[] = await Promise.all(
     collections.map(async entry => {
-      const { id, visibility = 'private' } =
-        typeof entry === 'string' ? { id: entry } : entry
+      const {
+        id,
+        visibility = 'private',
+        blindedIndex = false
+      } = typeof entry === 'string' ? { id: entry } : entry
       // A private collection mirrors wallet provisioning: declared `edv` at
       // creation, epoch[0] installed with the app's identity key-agreement
       // key as the sole recipient (the roster entry a wallet would write for
@@ -215,10 +230,18 @@ export async function provisionDevGrants({
         })
       })
       if (visibility === 'private') {
+        // The blinding key rides along with the first epoch or is never
+        // installed at all, so the choice is made here and nowhere later.
         await ensureFirstEpoch({
           collection,
-          recipients: [ownerRecipient({ keyAgreementKey })]
+          recipients: [ownerRecipient({ keyAgreementKey })],
+          ...(blindedIndex && { blindedIndex: true })
         })
+      } else if (blindedIndex) {
+        log(
+          `  collection "${id}": ignoring blindedIndex on a public ` +
+            `(plaintext) collection -- there is nothing to blind`
+        )
       }
       const zcap = await provisioner.grant({
         to: appDid,

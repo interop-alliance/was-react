@@ -339,7 +339,8 @@ Three kinds, and the distinctions are load-bearing:
   app provisions, writes, and replicates it. Encrypted with the app's identity
   X25519 key-agreement key -- the same key a shared collection's roster entry
   names. Requested with the `https://w3id.org/byoe#private-collection`
-  descriptor.
+  descriptor. It can answer equality queries too, over the blinded-index
+  profile, when it was provisioned with a blinded-index key.
 - App-owned public (`collections`, `visibility: 'public'`). Plaintext and
   world-readable; no key derivation, and the stored resource id IS the payload
   uuid, so a public document has a stable share URL (`publicUrlFor`). Requested
@@ -411,17 +412,19 @@ descriptor with no epoch roster at all is refused fail-closed at open
 (`SharedCollectionUnavailableError`) rather than seeded here: it can only mean
 an unprovisioned or torn collection, and the same error covers a roster this app
 is not in (never shared, or access removed -- removal rotates the epoch off this
-app's key).
+app's key). Once a session is already open, that same removal surfaces per
+envelope as `KeyUnwrapError`: the descriptor lists the epoch, this app just
+holds no key for it, so no descriptor refresh is spent on it.
 
 The residue is pre-epoch legacy envelopes: resources sealed as single-recipient
 envelopes back when the collection had no epoch roster at all. Nothing
 re-encrypts them, so they genuinely do not decrypt for a later reader. They are
 skipped with a warning rather than treated as corruption, alongside the other
 expected non-results (a body that is not an EDV envelope; an envelope left
-unreadable after the reader has spent its one descriptor refresh, which is what
-a mid-session revoke looks like). Every other failure -- no covering grant, no
-identity key supplied, not a recipient -- degrades one reader with a warning and
-never the session.
+unreadable after the reader has spent its one descriptor refresh; an envelope
+whose listed epoch this app has no key for, which is what a mid-session revoke
+looks like). Every other failure -- no covering grant, no identity key supplied,
+not a recipient -- degrades one reader with a warning and never the session.
 
 The other standing limit is the one the wallet states too: removing access stops
 future reads but cannot take back what has already been read.
@@ -434,17 +437,33 @@ the parsed grant set and the invoking `ZcapClient` it builds the delegated
 reads the collection description once and uses it twice -- to rebuild that
 collection's cipher when its epoch roster differs from what the local store
 opened with, and as the read-before-write guard on the best-effort encryption
-descriptor PUT. Public collections skip the encryption half and instead declare
-their equality `indexes`; both PUTs are non-fatal and warn on refusal. A private
-collection whose descriptor carries no key epochs stays fail-closed, warned
-about plainly rather than surfacing later as per-row decrypt failures. The
-fetched descriptors are handed to `onDescriptorsFetched` (the offline descriptor
-cache) and a live descriptor source is installed on the local store, so a
-decrypt that meets an unseen epoch (a rotation elsewhere) re-reads and rebuilds
-once per collection per session. Shared collections are handled apart from all
-of that: they never enter replication and never receive a description PUT, and
-instead one `SharedCollectionReader` is opened per configured shared collection
-the grants cover, concurrently, each failure a warn-and-skip.
+descriptor PUT. Public collections skip the encryption half. Every collection
+that configures equality `indexes` then declares them, and where the declaration
+lives depends on the visibility: a public collection announces them in its
+plaintext collection description, while a private one declares them as
+blinded-index attributes in its own encrypted metadata, through a
+compare-and-swap write (`declareBlindedIndexes`, over was-client's
+`Collection.declareIndex`). The encrypted form is what lets every recipient
+discover what is queryable while the server never learns the attribute names.
+Only attributes missing from the persisted schema are written, so a returning
+session writes nothing. All of it is non-fatal and warns on refusal, including a
+private collection provisioned without a blinded-index key (no `hmac` member on
+its descriptor): an unqueryable collection still replicates in full. The remote
+store is built with this app's identity keys when they are available, which is
+what lets the client's EDV keystore construct the codec the blinded-index verbs
+need; replication itself still moves envelopes verbatim and never goes through
+that codec. A private collection whose descriptor carries no key epochs stays
+fail-closed, warned about plainly rather than surfacing later as per-row decrypt
+failures. The fetched descriptors are handed to `onDescriptorsFetched` (the
+offline descriptor cache) and a live descriptor source is installed on the local
+store, so a decrypt that meets an unseen epoch (a rotation elsewhere) re-reads
+and rebuilds once per collection per session. An unseen epoch is the only signal
+that spends that refresh; a decrypt that fails because this app holds no key for
+an epoch the descriptor already lists surfaces as `KeyUnwrapError` and leaves
+the refresh untouched. Shared collections are handled apart from all of that:
+they never enter replication and never receive a description PUT, and instead
+one `SharedCollectionReader` is opened per configured shared collection the
+grants cover, concurrently, each failure a warn-and-skip.
 
 `readRemoteDescriptors` is the login-time counterpart: one descriptor read per
 granted private collection BEFORE any replication exists, because the connected

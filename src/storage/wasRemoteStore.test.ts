@@ -3,7 +3,11 @@
  */
 import { describe, expect, it } from 'vitest'
 import type { ZcapClient } from '@interop/ezcap'
-import type { IZcap } from '@interop/data-integrity-core'
+import type {
+  IKeyAgreementKey,
+  IKeyResolver,
+  IZcap
+} from '@interop/data-integrity-core'
 import { WasRemoteStore } from './wasRemoteStore.js'
 import type { ParsedGrants } from '../grants.js'
 
@@ -41,6 +45,72 @@ function stubZcapClient(responses: Array<{ status: number; data?: unknown }>) {
     }
   }
   return { calls, zcapClient: client as unknown as ZcapClient }
+}
+
+/**
+ * Fake identity keys: `fromGrants` only records whether they were supplied (the
+ * real ones are only ever consumed by the EDV codec, which these tests fake
+ * out below).
+ */
+const identityKeys = {
+  keyAgreementKey: { id: 'did:key:zKak#zKak' },
+  keyResolver: async () => ({})
+} as unknown as {
+  keyAgreementKey: IKeyAgreementKey
+  keyResolver: IKeyResolver
+}
+
+/**
+ * Replaces the store's `WasClient` with a stand-in whose
+ * `space().collection()` chain answers from `handlers`, capturing the handle
+ * arguments and every `find` / `declareIndex` call. The codec is what would
+ * blind the terms and decrypt the results; faking at the handle boundary keeps
+ * the assertions on this library's own routing.
+ */
+function fakeCollectionHandle(
+  store: WasRemoteStore,
+  handlers: {
+    find?: (options: Record<string, unknown>) => Promise<unknown>
+    indexes?: () => Promise<Array<{ attribute: string | string[] }>>
+    declareIndex?: (options: { attribute: string }) => Promise<unknown>
+  }
+) {
+  const calls: {
+    spaceId?: string
+    collectionId?: string
+    capability?: unknown
+    find: Array<Record<string, unknown>>
+    declared: string[]
+  } = { find: [], declared: [] }
+  const collection = {
+    find: async (options: Record<string, unknown>) => {
+      calls.find.push(options)
+      return await (handlers.find?.(options) ?? Promise.resolve({}))
+    },
+    indexes: async () => await (handlers.indexes?.() ?? Promise.resolve([])),
+    declareIndex: async ({ attribute }: { attribute: string }) => {
+      calls.declared.push(attribute)
+      return await (handlers.declareIndex?.({ attribute }) ??
+        Promise.resolve({ revision: 1, indexes: [] }))
+    }
+  }
+  const was = {
+    space: (spaceId: string) => {
+      calls.spaceId = spaceId
+      return {
+        collection: (
+          collectionId: string,
+          options?: { capability?: unknown }
+        ) => {
+          calls.collectionId = collectionId
+          calls.capability = options?.capability
+          return collection
+        }
+      }
+    }
+  }
+  ;(store as unknown as { was: unknown }).was = was
+  return calls
 }
 
 describe('WasRemoteStore.markCollectionEncrypted', () => {
@@ -268,10 +338,10 @@ describe('WasRemoteStore.queryCollectionByEquality', () => {
     })
     await expect(
       store.queryCollectionByEquality({
-        collectionId: 'notes',
+        collectionId: 'unregistered',
         equals: { author: 'x' }
       })
-    ).rejects.toThrow(/not registered as public/)
+    ).rejects.toThrow(/not in the collection registry/)
     await expect(
       store.queryCollectionByEquality({
         collectionId: 'microblog-posts',
@@ -302,6 +372,247 @@ describe('WasRemoteStore.queryCollectionByEquality', () => {
         equals: { author: 'x' }
       })
     ).rejects.toThrow(/Malformed equality query response/)
+  })
+})
+
+describe('WasRemoteStore.queryCollectionByEquality (blinded)', () => {
+  const collections = [
+    { key: 'notes', id: 'notes', indexes: ['author', 'inReplyTo'] }
+  ]
+
+  it('runs the blinded find and maps the page', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections,
+      keys: identityKeys
+    })
+    const blob = new Blob(['attachment'])
+    const calls = fakeCollectionHandle(store, {
+      find: async () => ({
+        items: [
+          { id: 'env-1', data: { id: 'note-1', author: 'did:key:z6Mk' } },
+          { id: 'env-2', data: blob }
+        ],
+        hasMore: true,
+        cursor: 'next-page'
+      })
+    })
+    const page = await store.queryCollectionByEquality({
+      collectionId: 'notes',
+      equals: { author: 'did:key:z6Mk', inReplyTo: 'urn:uuid:1' },
+      limit: 2,
+      cursor: 'prior-page'
+    })
+    expect(page).toEqual({
+      documents: [
+        { id: 'env-1', data: { id: 'note-1', author: 'did:key:z6Mk' } },
+        // A blob decrypts to a `Blob`, so only the id is reported.
+        { id: 'env-2' }
+      ],
+      hasMore: true,
+      cursor: 'next-page'
+    })
+    expect(calls.spaceId).toBe('space-1')
+    expect(calls.collectionId).toBe('notes')
+    expect(calls.capability).toEqual({ id: 'urn:zcap:priv' })
+    // Attribute names are rooted at the EDV document's `content`.
+    expect(calls.find).toEqual([
+      {
+        equals: {
+          'content.author': 'did:key:z6Mk',
+          'content.inReplyTo': 'urn:uuid:1'
+        },
+        limit: 2,
+        cursor: 'prior-page'
+      }
+    ])
+  })
+
+  it('omits limit and cursor when they were not given', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections,
+      keys: identityKeys
+    })
+    const calls = fakeCollectionHandle(store, {
+      find: async () => ({ items: [], hasMore: false })
+    })
+    const page = await store.queryCollectionByEquality({
+      collectionId: 'notes',
+      equals: { author: 'x' }
+    })
+    expect(page).toEqual({ documents: [], hasMore: false })
+    expect(calls.find[0]).toEqual({ equals: { 'content.author': 'x' } })
+  })
+
+  it('fails closed on an empty term set and an undeclared attribute', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections,
+      keys: identityKeys
+    })
+    const calls = fakeCollectionHandle(store, {})
+    await expect(
+      store.queryCollectionByEquality({ collectionId: 'notes', equals: {} })
+    ).rejects.toThrow(/at least one term/)
+    await expect(
+      store.queryCollectionByEquality({
+        collectionId: 'notes',
+        equals: { undeclared: 'x' }
+      })
+    ).rejects.toThrow(/not declared/)
+    expect(calls.find).toHaveLength(0)
+  })
+
+  it('fails closed when no identity keys were supplied', async () => {
+    // No `keys`: the client's keystore cannot build a codec, so nothing could
+    // blind the terms or decrypt the results.
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections
+    })
+    const calls = fakeCollectionHandle(store, {})
+    await expect(
+      store.queryCollectionByEquality({
+        collectionId: 'notes',
+        equals: { author: 'x' }
+      })
+    ).rejects.toThrow(/identity keys/)
+    expect(calls.find).toHaveLength(0)
+  })
+
+  it('fails closed when no grant covers the collection', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [{ key: 'other', id: 'ungranted', indexes: ['author'] }],
+      keys: identityKeys
+    })
+    await expect(
+      store.queryCollectionByEquality({
+        collectionId: 'ungranted',
+        equals: { author: 'x' }
+      })
+    ).rejects.toThrow(/No delegated capability covers/)
+  })
+})
+
+describe('WasRemoteStore.declareBlindedIndexes', () => {
+  const epochs = [{ id: 'did:key:zEpoch1', recipients: [] }]
+  const withHmac = {
+    scheme: 'edv' as const,
+    currentEpoch: 'did:key:zEpoch1',
+    epochs,
+    hmac: { id: 'urn:hmac:1', type: 'Sha256HmacKey2019', recipients: [] }
+  }
+
+  it('skips a public collection and a private one without indexes', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [
+        {
+          key: 'posts',
+          id: 'microblog-posts',
+          visibility: 'public',
+          indexes: ['author']
+        },
+        { key: 'notes', id: 'notes' }
+      ],
+      keys: identityKeys
+    })
+    expect(
+      await store.declareBlindedIndexes('microblog-posts', {
+        encryption: undefined
+      })
+    ).toEqual({ collectionId: 'microblog-posts', ok: true, skipped: true })
+    expect(
+      await store.declareBlindedIndexes('notes', { encryption: withHmac })
+    ).toEqual({ collectionId: 'notes', ok: true, skipped: true })
+  })
+
+  it('reports a descriptor with no blinded-index key as not ok', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [{ key: 'notes', id: 'notes', indexes: ['author'] }],
+      keys: identityKeys
+    })
+    const calls = fakeCollectionHandle(store, {})
+    const result = await store.declareBlindedIndexes('notes', {
+      encryption: { scheme: 'edv', currentEpoch: 'did:key:zEpoch1', epochs }
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/without a blinded-index key/)
+    expect(calls.declared).toHaveLength(0)
+  })
+
+  it('declares only the attributes not already persisted', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [
+        { key: 'notes', id: 'notes', indexes: ['author', 'inReplyTo'] }
+      ],
+      keys: identityKeys
+    })
+    const calls = fakeCollectionHandle(store, {
+      indexes: async () => [{ attribute: 'content.author' }]
+    })
+    expect(
+      await store.declareBlindedIndexes('notes', { encryption: withHmac })
+    ).toEqual({ collectionId: 'notes', ok: true })
+    expect(calls.declared).toEqual(['content.inReplyTo'])
+    expect(calls.capability).toEqual({ id: 'urn:zcap:priv' })
+  })
+
+  it('reports a failed declaration rather than throwing', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [{ key: 'notes', id: 'notes', indexes: ['author'] }],
+      keys: identityKeys
+    })
+    fakeCollectionHandle(store, {
+      indexes: async () => {
+        throw new Error('meta read refused')
+      }
+    })
+    const result = await store.declareBlindedIndexes('notes', {
+      encryption: withHmac
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/meta read refused/)
+  })
+
+  it('reports a missing capability and missing identity keys', async () => {
+    const ungranted = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [{ key: 'other', id: 'ungranted', indexes: ['author'] }],
+      keys: identityKeys
+    })
+    expect(
+      await ungranted.declareBlindedIndexes('ungranted', {
+        encryption: withHmac
+      })
+    ).toEqual({
+      collectionId: 'ungranted',
+      ok: false,
+      error: 'no capability'
+    })
+    const keyless = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [{ key: 'notes', id: 'notes', indexes: ['author'] }]
+    })
+    expect(
+      await keyless.declareBlindedIndexes('notes', { encryption: withHmac })
+    ).toEqual({ collectionId: 'notes', ok: false, error: 'no identity keys' })
   })
 })
 

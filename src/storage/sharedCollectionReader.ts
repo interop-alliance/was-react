@@ -317,13 +317,15 @@ export class SharedCollectionReader {
    * app is not a recipient of.
    *
    * The unknown-epoch recovery lives INSIDE the cipher (it re-reads the
-   * descriptor, swaps itself, and retries once per reader), so what reaches
-   * this catch is a decrypt that stayed unreadable after the reader spent its
-   * one refresh -- or one that raised an unknown epoch when the refresh was
-   * already spent. Either way it is a body this app cannot read, and the
-   * reader's contract is to warn and skip it, never to fail the listing: a
-   * mid-session revoke (the refreshed roster no longer lists this app) degrades
-   * to the subset that still decrypts.
+   * descriptor, swaps itself, and retries once per reader), so three kinds of
+   * failure reach this catch. A decrypt that stayed unreadable after the reader
+   * spent its one refresh. One that raised an unknown epoch when the refresh was
+   * already spent. And a `KeyUnwrapError` for an epoch the current descriptor
+   * does list but this app holds no key for, which arrives without any refresh
+   * being spent, because re-reading the descriptor could not help. That last one
+   * is what a mid-session revoke looks like. All three are bodies this app
+   * cannot read, and the reader's contract is to warn and skip them, never to
+   * fail the listing: the listing degrades to the subset that still decrypts.
    */
   async #decryptBody({
     id,
