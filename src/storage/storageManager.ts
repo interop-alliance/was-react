@@ -8,9 +8,15 @@
  * {@link requireRemoteStore} inside their verbs rather than importing them
  * directly, which keeps this module free of store imports (no cycle) and lets
  * the app own the init/hydrate ordering.
+ *
+ * It also owns the writer-id concern end to end: {@link getWriterId} resolves
+ * the per-install id, {@link setWriterId} installs the session's resolved value,
+ * and {@link stampLww} is the one place a payload's last-write-wins fields are
+ * minted, so no caller has to remember to stamp.
  */
 import { uuidv7 } from 'uuidv7'
 import { DEFAULT_STORAGE_KEY_PREFIX } from '../config.js'
+import type { LwwFields } from '../sync/lww.js'
 import type { LocalStore } from './localStore.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'
 
@@ -140,5 +146,52 @@ export function getWriterId({
   } catch {
     fallbackWriterId ??= uuidv7()
     return fallbackWriterId
+  }
+}
+
+let resolvedWriterId: string | null = null
+
+/**
+ * Installs the session's resolved writer id (called once by the session store,
+ * under the app's configured `storageKeyPrefix`, before any replica opens).
+ *
+ * @param id {string}
+ * @returns {void}
+ */
+export function setWriterId(id: string): void {
+  resolvedWriterId = id
+}
+
+/**
+ * The session's resolved writer id, or throws if it has not been installed
+ * yet. Deliberately never falls back to {@link getWriterId}: that would resolve
+ * under the DEFAULT key prefix, so an app with a custom `storageKeyPrefix`
+ * would silently stamp a second writer id.
+ *
+ * @returns {string}
+ */
+export function requireWriterId(): string {
+  if (!resolvedWriterId) {
+    throw new Error(
+      'Writer id is not resolved; create the session store first.'
+    )
+  }
+  return resolvedWriterId
+}
+
+/**
+ * Stamps a payload with fresh last-write-wins fields: the current instant as
+ * `updatedAt` and the session's resolved writer id. Any values the caller
+ * supplied are overwritten -- a stamp must describe THIS write, or a hydrated
+ * doc's older `updatedAt` would ride a later edit and lose the conflict.
+ *
+ * @param payload {object}
+ * @returns {object}   the payload with the LWW fields set
+ */
+export function stampLww<T extends { id: string }>(payload: T): T & LwwFields {
+  return {
+    ...payload,
+    updatedAt: new Date().toISOString(),
+    writerId: requireWriterId()
   }
 }

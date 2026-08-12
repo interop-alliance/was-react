@@ -32,13 +32,18 @@ The spec's term for the wire artifact is "app-key credential"; use it in prose.
 `ParsedSeedCredential`, and the file `src/identity/seedCredential.ts`) -- keep
 those names, do not spread the phrase into new prose or new APIs.
 
-`writerId` (`getWriterId`, `useSession().writerId`, the LWW payload field, and
-the `<prefix>writerId` localStorage key) is an unkeyed, clearable, unrecoverable
-attribution label whose only jobs are history attribution and breaking
-last-write-wins ties. It is never an identity. The keyed client identity of an
-(app, user) pair is the app-key credential's subject DID. Do not call either one
-a "device": one machine hosts many clients, and neither concept is tied to
-hardware.
+`writerId` (`getWriterId`, `setWriterId` / `requireWriterId`,
+`useSession().writerId`, the LWW payload field, and the `<prefix>writerId`
+localStorage key) is an unkeyed, clearable, unrecoverable attribution label
+whose only jobs are history attribution and breaking last-write-wins ties. It is
+never an identity. The keyed client identity of an (app, user) pair is the
+app-key credential's subject DID. Do not call either one a "device": one machine
+hosts many clients, and neither concept is tied to hardware.
+
+Apps never stamp it: `stampLww` in `src/storage/storageManager.ts` is the one
+place `updatedAt` / `writerId` are minted, and the entity store's persisted
+write verbs call it on every write. `useSession().writerId` is exposed for
+display and debugging, not as a value a caller has to thread into payloads.
 
 `actionCeiling` is local shorthand for the spec's normative "Allowed actions"
 table row of a target class. When writing prose, prefer the spec's wording

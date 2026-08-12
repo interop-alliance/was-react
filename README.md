@@ -116,9 +116,9 @@ data-migration event, not a config tweak: rows written in the other mode stop
 being readable. A registry that maps one WAS collection id to both visibilities
 is rejected at store open. Two payload constraints on public collections: a
 top-level object-valued `jwe` field is reserved (the read path uses it to
-recognize a stray encrypted envelope and refuses the row), and payloads should
-carry the `updatedAt` / `writerId` LWW fields like any other collection --
-without them a concurrent multi-device edit falls back to server-wins.
+recognize a stray encrypted envelope and refuses the row), and rows carry the
+`updatedAt` / `writerId` LWW fields like any other collection -- world-readable
+along with the rest of the payload.
 
 At login, a public collection is requested from the wallet with the distinct
 `https://w3id.org/byoe#public-collection` descriptor type (private collections
@@ -223,9 +223,11 @@ export const registry: StoreRegistry = {
 ```
 
 `createEntityStore` returns a zustand hook holding the decrypted payloads as a
-`Map<uuid, Note>`; its `insert` / `update` / `remove` verbs persist through the
-encrypted local store, while `hydrate` / `patch` / `drop` / `replaceAll` are the
-handlers the rehydrate mechanism drives on login, remote sync, and logout.
+`Map<uuid, Note>`; its `insert` / `update` / `upsert` / `remove` verbs persist
+through the encrypted local store (the write verbs stamping the LWW fields
+`updatedAt` / `writerId` themselves), while `hydrate` / `patch` / `drop` /
+`replaceAll` are the handlers the rehydrate mechanism drives on login, remote
+sync, and logout.
 
 ### 3. Provider
 
@@ -269,23 +271,18 @@ export function LoginPage() {
 
 ```tsx
 import { uuidv7 } from 'uuidv7'
-import { useSession } from '@interop/was-react'
 import { useNotes } from './stores.js'
 
 export function Notes() {
   const notes = useNotes(state => [...state.byId.values()])
   const insert = useNotes(state => state.insert)
-  const { writerId } = useSession()
 
   async function addNote() {
-    const now = new Date().toISOString()
     await insert({
       id: uuidv7(),
       title: 'Untitled',
       body: '',
-      createdAt: now,
-      updatedAt: now,
-      writerId
+      createdAt: new Date().toISOString()
     })
   }
 
@@ -302,12 +299,16 @@ export function Notes() {
 }
 ```
 
-Entity payloads MUST carry `updatedAt` and `writerId`, stamped on EVERY insert
-and update: they are the last-write-wins pair that settles concurrent
-multi-device edits of the same entity. A payload without them loses every sync
-conflict. Read the id from `useSession().writerId` (resolved once per session,
-honoring `storageKeyPrefix`); outside React, call
-`getWriterId({ storageKeyPrefix })` with the same prefix your config declares.
+Entity payloads carry `updatedAt` and `writerId`, the last-write-wins pair that
+settles concurrent multi-client edits of the same entity -- but stamping them is
+the library's job, not yours: `insert`, `update`, and `upsert` stamp a fresh
+pair on every write, overwriting anything the caller supplied, so a payload can
+never reach the replica unstamped. Keep the two fields in your payload type (the
+stored rows carry them), and simply omit them at the call site.
+
+`useSession().writerId` exposes the resolved id for display or debugging;
+outside React, `getWriterId({ storageKeyPrefix })` resolves it under the same
+prefix your config declares. Neither is needed to write.
 
 A public collection can additionally answer server-side equality queries.
 Declare the queryable content attributes in the collection config:

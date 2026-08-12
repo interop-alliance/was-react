@@ -6,14 +6,17 @@
  * under the configured `storageKeyPrefix`, and `createAuthStore` resolves the
  * id once from `WasAppConfig.storageKeyPrefix` and exposes it on the session
  * state -- the migration affordance the config documents (a prior install's
- * prefixed id is preserved, and the adoption repair stamps with the same
- * identity as the app's own writes).
+ * prefixed id is preserved) -- and installs it in the process-wide holder the
+ * write verbs and the adoption repair stamp from.
  *
  * @vitest-environment jsdom
  */
 import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
-import { getWriterId } from '../../src/storage/storageManager.js'
+import {
+  getWriterId,
+  requireWriterId
+} from '../../src/storage/storageManager.js'
 import { createAuthStore } from '../../src/session/authStore.js'
 import { DEFAULT_STORAGE_KEY_PREFIX } from '../../src/config.js'
 import type { WasAppConfig } from '../../src/config.js'
@@ -64,6 +67,9 @@ describe('createAuthStore writerId resolution', () => {
       registry: {}
     })
     expect(store.getState().writerId).toBe('existing-install-id')
+    // The same value is installed in the process-wide holder the write verbs
+    // stamp from, before any replica opens.
+    expect(requireWriterId()).toBe('existing-install-id')
   })
 
   it('resolves under the default prefix when none is configured', () => {

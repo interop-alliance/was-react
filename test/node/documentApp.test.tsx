@@ -198,10 +198,11 @@ describe('useAppDocument', () => {
     const row = fake.rows.get('main')
     expect(row).toBeDefined()
     expect(row?.data).toEqual({ score: 7, playerName: 'anonymous' })
-    // LWW stamps are the facade's job: an ISO timestamp and the persisted
-    // per-install device id, wrapped BESIDE the app data, never inside it.
+    // The facade stamps nothing itself: the entity store's write verb lands an
+    // ISO timestamp and the session's resolved writer id, wrapped BESIDE the
+    // app data, never inside it.
     expect(Date.parse(row?.updatedAt ?? '')).not.toBeNaN()
-    expect(row?.writerId).toBeTruthy()
+    expect(row?.writerId).toBe(store.getState().writerId)
     expect(fake.rows.size).toBe(1)
 
     await result.current.update({ score: 8 })

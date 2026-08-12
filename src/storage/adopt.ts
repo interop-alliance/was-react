@@ -18,9 +18,13 @@
  * with the session's resolved writer id (the sync layer's conflict resolution
  * requires them); payloads that already carry them keep their original values,
  * so a doc edited long ago does not suddenly outrank fresher remote edits.
+ * That preserve-if-present rule is deliberately unlike the entity-store write
+ * verbs, which always stamp fresh: this is a repair of an existing edit, not a
+ * new one.
  */
 import { lwwFields, remotePayloadWins } from '../sync/lww.js'
 import type { LocalStore } from './localStore.js'
+import { requireWriterId } from './storageManager.js'
 
 /**
  * Merges the collected anonymous-replica payloads into `store` (the already
@@ -28,23 +32,23 @@ import type { LocalStore } from './localStore.js'
  * first `hydrateAll`/sync start, so adopted rows enter the entity stores via
  * normal hydration and reach the server as ordinary creates on first push.
  *
+ * The rows are written through `LocalStore` directly, which does not stamp;
+ * the preserve-if-present / fill-if-missing repair below is deliberate and
+ * differs from the entity-store write verbs' fresh-stamp-always rule, because
+ * an adopted edit must keep the instant it was actually made.
+ *
  * @param options {object}
  * @param options.store {LocalStore}   the open connected replica
  * @param options.entities {Record<string, Array<{ id: string }>>}   decrypted
  *   payloads per collection key, as collected from the anonymous replica
- * @param options.writerId {string}   the session's resolved LWW writer id
- *   (stamped onto payloads missing their LWW fields, so the repair carries the
- *   same attribution identity as the app's own writes)
  * @returns {Promise<void>}
  */
 export async function mergeAdopted({
   store,
-  entities,
-  writerId
+  entities
 }: {
   store: LocalStore
   entities: Record<string, Array<{ id: string }>>
-  writerId: string
 }): Promise<void> {
   let stamp: { updatedAt: string; writerId: string } | null = null
   // Collections are separate RxDB collections and each logical uuid appears at
@@ -60,7 +64,10 @@ export async function mergeAdopted({
           let adopted = payload
           let adoptedLww = lwwFields(payload)
           if (!adoptedLww) {
-            stamp ??= { updatedAt: new Date().toISOString(), writerId }
+            stamp ??= {
+              updatedAt: new Date().toISOString(),
+              writerId: requireWriterId()
+            }
             adopted = { ...payload, ...stamp }
             adoptedLww = stamp
           }

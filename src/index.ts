@@ -126,7 +126,10 @@ export {
   requireRemoteStore,
   hasRemoteStore,
   clearRemoteStore,
-  getWriterId
+  getWriterId,
+  setWriterId,
+  requireWriterId,
+  stampLww
 } from './storage/storageManager.js'
 export { createEntityStore, type EntityStore } from './storage/entityStore.js'
 export {

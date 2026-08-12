@@ -1,14 +1,15 @@
 /*!
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import type { LocalStore } from './localStore.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'
 import {
   setLocalStore,
   clearLocalStore,
   setRemoteStore,
-  clearRemoteStore
+  clearRemoteStore,
+  setWriterId
 } from './storageManager.js'
 import { createEntityStore } from './entityStore.js'
 
@@ -17,12 +18,24 @@ interface Note {
   text: string
 }
 
+interface LwwNote extends Note {
+  updatedAt: string
+  writerId: string
+}
+
+const WRITER_ID = 'writer-under-test'
+
 /**
  * Yields one microtask turn so the store's coalesced flush runs.
  */
 function flushMicrotasks(): Promise<void> {
   return Promise.resolve()
 }
+
+beforeEach(() => {
+  // The persisted write verbs stamp from the session's resolved writer id.
+  setWriterId(WRITER_ID)
+})
 
 afterEach(() => {
   clearLocalStore()
@@ -96,10 +109,6 @@ describe('createEntityStore', () => {
   })
 
   it('discards a stale patch that loses LWW to the held doc', async () => {
-    interface LwwNote extends Note {
-      updatedAt: string
-      writerId: string
-    }
     const store = createEntityStore<LwwNote>('notes')
     const newer = {
       id: 'a',
@@ -165,10 +174,10 @@ describe('createEntityStore', () => {
   })
 
   it('applies interactive local writes immediately (unbatched)', async () => {
-    const inserted: Array<[string, Note]> = []
-    const store = createEntityStore<Note>('notes')
+    const inserted: Array<[string, LwwNote]> = []
+    const store = createEntityStore<LwwNote>('notes')
     setLocalStore({
-      insertEntity: async (key: string, doc: Note) => {
+      insertEntity: async (key: string, doc: LwwNote) => {
         inserted.push([key, doc])
       }
     } as unknown as LocalStore)
@@ -176,19 +185,17 @@ describe('createEntityStore', () => {
     await store.getState().insert({ id: 'local-1', text: 'hi' })
 
     // The insert's `set` fired as soon as the persist resolved -- no microtask
-    // flush needed.
-    expect(store.getState().byId.get('local-1')).toEqual({
-      id: 'local-1',
-      text: 'hi'
-    })
-    expect(inserted).toEqual([['notes', { id: 'local-1', text: 'hi' }]])
+    // flush needed, and the Map holds exactly what was persisted.
+    const held = store.getState().byId.get('local-1')
+    expect(held).toMatchObject({ id: 'local-1', text: 'hi' })
+    expect(inserted).toEqual([['notes', held]])
   })
 
   it('upsert persists through upsertEntity and sets the doc immediately', async () => {
-    const upserted: Array<[string, Note]> = []
-    const store = createEntityStore<Note>('notes')
+    const upserted: Array<[string, LwwNote]> = []
+    const store = createEntityStore<LwwNote>('notes')
     setLocalStore({
-      upsertEntity: async (key: string, doc: Note) => {
+      upsertEntity: async (key: string, doc: LwwNote) => {
         upserted.push([key, doc])
       }
     } as unknown as LocalStore)
@@ -196,15 +203,64 @@ describe('createEntityStore', () => {
     await store.getState().upsert({ id: 'solo', text: 'v1' })
     await store.getState().upsert({ id: 'solo', text: 'v2' })
 
-    expect(store.getState().byId.get('solo')).toEqual({
+    expect(store.getState().byId.get('solo')).toMatchObject({
       id: 'solo',
       text: 'v2'
     })
     expect(store.getState().byId.size).toBe(1)
-    expect(upserted).toEqual([
-      ['notes', { id: 'solo', text: 'v1' }],
-      ['notes', { id: 'solo', text: 'v2' }]
+    expect(upserted.map(([key, doc]) => [key, doc.text])).toEqual([
+      ['notes', 'v1'],
+      ['notes', 'v2']
     ])
+  })
+
+  it('stamps fresh LWW fields on insert, update and upsert', async () => {
+    const persisted: LwwNote[] = []
+    const store = createEntityStore<LwwNote>('notes')
+    const persist = async (_key: string, doc: LwwNote) => {
+      persisted.push(doc)
+    }
+    setLocalStore({
+      insertEntity: persist,
+      updateEntity: persist,
+      upsertEntity: persist
+    } as unknown as LocalStore)
+
+    const before = Date.now()
+    await store.getState().insert({ id: 'a', text: 'inserted' })
+    await store.getState().update({ id: 'a', text: 'updated' })
+    await store.getState().upsert({ id: 'a', text: 'upserted' })
+
+    expect(persisted).toHaveLength(3)
+    for (const doc of persisted) {
+      expect(doc.writerId).toBe(WRITER_ID)
+      const stampedAt = Date.parse(doc.updatedAt)
+      expect(Number.isNaN(stampedAt)).toBe(false)
+      expect(stampedAt).toBeGreaterThanOrEqual(before)
+      expect(doc.updatedAt).toBe(new Date(stampedAt).toISOString())
+    }
+    // The optimistic Map entry is the persisted object, stamps included.
+    expect(store.getState().byId.get('a')).toEqual(persisted[2])
+  })
+
+  it('overwrites caller-supplied LWW fields with a fresh stamp', async () => {
+    const persisted: LwwNote[] = []
+    const store = createEntityStore<LwwNote>('notes')
+    setLocalStore({
+      insertEntity: async (_key: string, doc: LwwNote) => {
+        persisted.push(doc)
+      }
+    } as unknown as LocalStore)
+
+    await store.getState().insert({
+      id: 'a',
+      text: 'stale stamps',
+      updatedAt: '1999-01-01T00:00:00.000Z',
+      writerId: 'someone-else'
+    })
+
+    expect(persisted[0]!.writerId).toBe(WRITER_ID)
+    expect(persisted[0]!.updatedAt).not.toBe('1999-01-01T00:00:00.000Z')
   })
 
   it('query routes key to WAS id and maps the page to payloads', async () => {

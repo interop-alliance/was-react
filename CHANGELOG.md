@@ -4,6 +4,12 @@
 
 ### Breaking
 
+- Entity-store `insert` / `update` / `upsert` now stamp the last-write-wins
+  fields `updatedAt` and `writerId` themselves, overwriting any the caller
+  supplied, and their parameter type no longer requires those fields. Callers
+  that still stamp keep compiling; their values are ignored.
+- `mergeAdopted` no longer takes a `writerId` option; it sources the fill stamp
+  from the session's resolved writer id.
 - Removed the unused `collectionKeyForId` export; `isPublicCollection` (the
   shared visibility predicate resolving the `'private'` default) is exported
   from the config module in its place.
@@ -12,8 +18,17 @@
   GET); the sync bootstrap reads each description once and feeds both the cipher
   rebuild and the guard.
 
+### Added
+
+- `setWriterId` / `requireWriterId` install and read the session's resolved
+  writer id in the storage manager, and `stampLww` is the single place a
+  payload's LWW fields are minted. `createAuthStore` installs the id before any
+  replica opens.
+
 ### Changed
 
+- `defineDocumentApp` no longer stamps LWW fields itself; its `update` upserts
+  `{ id, data }` and the write verb stamps.
 - The VPR / App Connect wire types (`IVPRDetails`, `IDIDAuthenticationQuery`,
   `ICapabilityQueryDetail`, `IAppConnectQuery`, `IAppConnectCapabilityQuery`)
   and the app-key credential constants (`APP_KEY_CREDENTIAL_TYPE`,

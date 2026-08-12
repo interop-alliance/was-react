@@ -81,7 +81,8 @@ import {
   hasStore,
   requireStore,
   setLocalStore,
-  setRemoteStore
+  setRemoteStore,
+  setWriterId
 } from '../storage/storageManager.js'
 import {
   cancelScheduledRehydrates,
@@ -127,9 +128,10 @@ export interface AuthState {
   onboarding: 'local-first' | 'login-gated'
   /**
    * The per-install LWW attribution id, resolved once at store creation from
-   * `WasAppConfig.storageKeyPrefix`. Stamp it (with a fresh `updatedAt`) onto
-   * every entity insert and update; the adoption repair uses the same value,
-   * so one install writes under one identity.
+   * `WasAppConfig.storageKeyPrefix` and exposed for display and debugging. The
+   * entity-store write verbs and the adoption repair stamp it automatically, so
+   * an app never has to: one install writes under one identity either way. It
+   * is an attribution label, never an identity.
    */
   writerId: string
   /**
@@ -275,12 +277,14 @@ export function createAuthStore({
   const onboarding = config.onboarding ?? DEFAULT_ONBOARDING
   // Resolve the per-install LWW writer id ONCE, honoring the configured
   // localStorage prefix, so every stamp -- the app's own writes and the
-  // adoption repair -- carries the same attribution identity.
+  // adoption repair -- carries the same attribution identity. Installing it
+  // here, before any replica opens, is what lets the write verbs stamp.
   const writerId = getWriterId({
     ...(config.storageKeyPrefix !== undefined && {
       storageKeyPrefix: config.storageKeyPrefix
     })
   })
+  setWriterId(writerId)
   const sessionStore =
     seedStore ?? createSeedStore({ dbName: `${dbName}-session` })
   // The offline encryption-descriptor cache, presented as the seam
@@ -589,7 +593,7 @@ export function createAuthStore({
     })
     setLocalStore(local)
     if (adopt) {
-      await mergeAdopted({ store: local, entities: adopt.entities, writerId })
+      await mergeAdopted({ store: local, entities: adopt.entities })
     }
     await hydrateAll(registry)
   }

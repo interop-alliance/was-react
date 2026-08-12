@@ -8,6 +8,10 @@
  * reads through selectors and applies the app's own comparators/filters; this
  * layer stays domain-agnostic so every entity shares it.
  *
+ * The persisted write verbs (`insert` / `update` / `upsert`) stamp the
+ * last-write-wins fields themselves through {@link stampLww}, so an app can
+ * never degrade conflict resolution by forgetting to.
+ *
  * Reactivity note: local writes patch the Map optimistically after the localStore
  * write resolves. Pulled remote changes are applied per-doc by the sync layer
  * through `patch` / `drop` (no whole-collection re-hydrate), keeping multi-device
@@ -18,8 +22,19 @@
  * local writes stay immediate so a single edit is snappy.
  */
 import { create, type UseBoundStore, type StoreApi } from 'zustand'
-import { requireStore, requireRemoteStore } from './storageManager.js'
+import { requireStore, requireRemoteStore, stampLww } from './storageManager.js'
 import { lwwFields, remotePayloadWins } from '../sync/lww.js'
+
+/**
+ * What the persisted write verbs accept: the payload WITHOUT its last-write-wins
+ * fields, which the verb stamps itself. The fields stay optional rather than
+ * forbidden so a caller that still supplies them keeps compiling -- their values
+ * are overwritten.
+ */
+type WritablePayload<T> = Omit<T, 'updatedAt' | 'writerId'> & {
+  updatedAt?: string
+  writerId?: string
+}
 
 export interface EntityStore<T extends { id: string }> {
   /**
@@ -31,20 +46,24 @@ export interface EntityStore<T extends { id: string }> {
    */
   hydrate: () => Promise<void>
   /**
-   * Encrypt+insert a new doc, then add it to the Map.
+   * Encrypt+insert a new doc, then add it to the Map. Fresh `updatedAt` /
+   * `writerId` LWW fields are stamped by this verb, overwriting any the caller
+   * supplied; the Map holds exactly what was persisted.
    */
-  insert: (doc: T) => Promise<void>
+  insert: (doc: WritablePayload<T>) => Promise<void>
   /**
-   * Re-encrypt a doc in place (sequence+1), then replace it in the Map.
+   * Re-encrypt a doc in place (sequence+1), then replace it in the Map. Fresh
+   * LWW fields are stamped by this verb, as for {@link EntityStore.insert}.
    */
-  update: (doc: T) => Promise<void>
+  update: (doc: WritablePayload<T>) => Promise<void>
   /**
    * Encrypt+insert the doc when its uuid is new, otherwise re-encrypt it in
    * place (insert-or-update routed by the hydration index), then set it in the
    * Map. The verb for callers that do not track an insert-vs-update flag of
-   * their own (e.g. a singleton document).
+   * their own (e.g. a singleton document). Fresh LWW fields are stamped by this
+   * verb, as for {@link EntityStore.insert}.
    */
-  upsert: (doc: T) => Promise<void>
+  upsert: (doc: WritablePayload<T>) => Promise<void>
   /**
    * Tombstone a doc, then drop it from the Map.
    */
@@ -187,16 +206,21 @@ export function createEntityStore<T extends { id: string }>(
         set({ byId: new Map(docs.map(d => [d.id, d])) })
       },
       insert: async doc => {
-        await requireStore().insertEntity(collectionKey, doc)
-        commitDoc(doc)
+        // Stamp once, then persist and commit the SAME object, so the
+        // optimistic Map entry is byte-for-byte what the replica holds.
+        const stamped = stampLww(doc) as unknown as T
+        await requireStore().insertEntity(collectionKey, stamped)
+        commitDoc(stamped)
       },
       update: async doc => {
-        await requireStore().updateEntity(collectionKey, doc)
-        commitDoc(doc)
+        const stamped = stampLww(doc) as unknown as T
+        await requireStore().updateEntity(collectionKey, stamped)
+        commitDoc(stamped)
       },
       upsert: async doc => {
-        await requireStore().upsertEntity(collectionKey, doc)
-        commitDoc(doc)
+        const stamped = stampLww(doc) as unknown as T
+        await requireStore().upsertEntity(collectionKey, stamped)
+        commitDoc(stamped)
       },
       remove: async uuid => {
         await requireStore().deleteEntity(collectionKey, uuid)

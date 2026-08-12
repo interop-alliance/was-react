@@ -11,11 +11,12 @@
  * @vitest-environment node
  */
 import 'fake-indexeddb/auto'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mintRecordEncryption } from '@interop/wallet-core/keyring'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import { mergeAdopted } from '../../src/storage/adopt.js'
+import { setWriterId } from '../../src/storage/storageManager.js'
 import type { WasCollectionConfig } from '../../src/config.js'
 
 const COLLECTIONS: WasCollectionConfig[] = [{ key: 'notes', id: 'notes' }]
@@ -59,6 +60,12 @@ async function collect(store: LocalStore): Promise<Record<string, Note[]>> {
   return { [COLLECTION]: await store.listEntities<Note>(COLLECTION) }
 }
 
+beforeEach(() => {
+  // The merge sources its fill stamp from the one resolved writer id the
+  // session store installs.
+  setWriterId(MERGE_CLIENT_ID)
+})
+
 afterEach(async () => {
   while (openStores.length > 0) {
     await openStores.pop()!.remove()
@@ -79,8 +86,7 @@ describe('mergeAdopted', () => {
 
     await mergeAdopted({
       store: connected,
-      entities: await collect(source),
-      writerId: MERGE_CLIENT_ID
+      entities: await collect(source)
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -98,8 +104,7 @@ describe('mergeAdopted', () => {
 
     await mergeAdopted({
       store: connected,
-      entities: await collect(source),
-      writerId: MERGE_CLIENT_ID
+      entities: await collect(source)
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -107,7 +112,7 @@ describe('mergeAdopted', () => {
     expect(listed[0]!.title).toBe('unstamped')
     expect(typeof listed[0]!.updatedAt).toBe('string')
     expect(listed[0]!.updatedAt!.length).toBeGreaterThan(0)
-    // The stamp carries the caller-resolved session id, never an ambient one.
+    // The stamp carries the session's one resolved writer id.
     expect(listed[0]!.writerId).toBe(MERGE_CLIENT_ID)
   })
 
@@ -124,8 +129,7 @@ describe('mergeAdopted', () => {
 
     await mergeAdopted({
       store: connected,
-      entities: await collect(source),
-      writerId: MERGE_CLIENT_ID
+      entities: await collect(source)
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -152,8 +156,7 @@ describe('mergeAdopted', () => {
 
     await mergeAdopted({
       store: connected,
-      entities: await collect(source),
-      writerId: MERGE_CLIENT_ID
+      entities: await collect(source)
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -181,8 +184,7 @@ describe('mergeAdopted', () => {
 
     await mergeAdopted({
       store: connected,
-      entities: await collect(source),
-      writerId: MERGE_CLIENT_ID
+      entities: await collect(source)
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -209,8 +211,7 @@ describe('mergeAdopted', () => {
 
     await mergeAdopted({
       store: connected,
-      entities: await collect(source),
-      writerId: MERGE_CLIENT_ID
+      entities: await collect(source)
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -227,8 +228,7 @@ describe('mergeAdopted', () => {
 
     await mergeAdopted({
       store: connected,
-      entities: await collect(source),
-      writerId: MERGE_CLIENT_ID
+      entities: await collect(source)
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)

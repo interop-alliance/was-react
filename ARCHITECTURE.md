@@ -108,8 +108,11 @@ otherwise replace only when the adopted payload wins the same
 `remotePayloadWins` last-write-wins rule replication runs, with a connected doc
 carrying no LWW fields always losing to a stamped adopted one. Adopted payloads
 missing `updatedAt` / `writerId` are stamped at adoption time with the session's
-resolved `writerId`, so the repair carries the same attribution identity as the
-app's own writes; payloads that already carry them keep their original values.
+resolved `writerId` (read from the same holder the write verbs stamp from), so
+the repair carries the same attribution identity as the app's own writes;
+payloads that already carry them keep their original values. That
+preserve-if-present rule is deliberately unlike the write verbs' fresh-always
+one: adoption repairs an edit already made, rather than recording a new one.
 
 `adopt: 'leave'` sets the anonymous replica aside untouched instead; it returns
 after a logout. A cancelled or failed login leaves `local` intact either way.
@@ -133,6 +136,19 @@ breaking last-write-wins ties -- never an identity. (The keyed client identity
 of an (app, user) pair is the app-key credential's subject DID.) `getWriterId`
 adopts a value left under the older `<prefix>clientId` key once and removes it,
 so an existing install keeps its id.
+
+Stamping is the library's job, not the app's. The resolved id is installed in
+the storage manager (`setWriterId`, at store creation and before any replica
+opens), and `stampLww` -- the one place a payload's `updatedAt` / `writerId` are
+minted -- reads it back through `requireWriterId`, which throws rather than
+falling back to a default-prefix resolution that would stamp a second id. The
+entity store's persisted write verbs (`insert`, `update`, `upsert`) call it on
+every write, always fresh and always overwriting whatever the caller passed: a
+fill-if-missing rule would let a hydrated doc's stale `updatedAt` ride a later
+edit and lose the conflict. `useSession().writerId` is therefore a display and
+debugging affordance; nothing an app writes depends on reading it.
+`LocalStore`'s own verbs do NOT stamp -- they are the raw layer the adoption
+merge and the sync path write through, both of which own their stamping rules.
 
 ## Login With Wallet: the App Connect protocol
 
@@ -478,7 +494,8 @@ blobs) and a "Save to Web Spaces" `connect()`.
 It is a degenerate entity store: one collection holding one logical document
 under a fixed id, with the app's data wrapped as
 `{ id, updatedAt, writerId, data }` so app fields can never collide with the LWW
-fields the sync layer requires. Hydration goes through
+fields the sync layer requires -- and stamped by the entity store's `upsert`,
+not by the facade, which passes `{ id, data }` alone. Hydration goes through
 `LocalStore.hydrateSingleton`, which LWW-reconciles the duplicate envelope rows
 two clients can mint for the same logical document, keeping the winner and
 tombstoning the losers. The generated config registers exactly one collection

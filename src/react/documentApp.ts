@@ -13,8 +13,8 @@
  * The facade is a degenerate entity store: one collection (the app-named
  * sandbox collection) holding one logical document under a fixed id. The
  * stored row wraps the app's data (`{ id, updatedAt, writerId, data }`) so app
- * fields can never collide with the LWW fields the sync layer requires, and
- * the facade stamps `updatedAt`/`writerId` on every write itself. Hydration
+ * fields can never collide with the LWW fields the sync layer requires; the
+ * entity store's write verbs stamp those fields on every write. Hydration
  * goes through `LocalStore.hydrateSingleton`, which LWW-reconciles the
  * duplicate envelope rows two devices can mint for the same logical document.
  *
@@ -35,7 +35,7 @@ import type {
 } from '../config.js'
 import type { SessionStatus } from '../session/authStore.js'
 import { createEntityStore } from '../storage/entityStore.js'
-import { getWriterId, requireStore } from '../storage/storageManager.js'
+import { requireStore } from '../storage/storageManager.js'
 import type { SyncRollup } from '../storage/syncStatusStore.js'
 import { useLogin, useLogout, useSyncStatus } from './hooks.js'
 
@@ -90,9 +90,9 @@ export interface DocumentApp<T extends object> {
     doc: T | undefined
     /**
      * Merge a partial patch (or apply an updater function) onto the current
-     * document and persist it, stamping the LWW fields. The write lands in the
-     * encrypted local replica first and replicates in the background when
-     * connected.
+     * document and persist it (the write verb stamps the LWW fields). The write
+     * lands in the encrypted local replica first and replicates in the
+     * background when connected.
      */
     update: (patch: Partial<T> | ((prev: T) => T)) => Promise<void>
     /**
@@ -180,11 +180,6 @@ export function defineDocumentApp<T extends object>({
 }): DocumentApp<T> {
   const { collectionId, initial } = document
   const docStore = createEntityStore<StoredDocument<T>>(DOCUMENT_COLLECTION_KEY)
-  // Resolved once, under the same prefix the config hands the session layer,
-  // so the facade's stamps and the adoption repair share one identity.
-  const writerId = getWriterId({
-    ...(storageKeyPrefix !== undefined && { storageKeyPrefix })
-  })
 
   const config: WasAppConfig = {
     appName,
@@ -227,7 +222,7 @@ export function defineDocumentApp<T extends object>({
 
   /**
    * Merges the patch (or applies the updater) and persists the result under
-   * the fixed document id with fresh LWW stamps.
+   * the fixed document id; the entity store's `upsert` stamps the LWW fields.
    *
    * @param patch {Partial<T> | ((prev: T) => T)}
    * @returns {Promise<void>}
@@ -236,12 +231,7 @@ export function defineDocumentApp<T extends object>({
     const prev = currentData()
     const data =
       typeof patch === 'function' ? patch(prev) : { ...prev, ...patch }
-    await docStore.getState().upsert({
-      id: DOCUMENT_ID,
-      updatedAt: new Date().toISOString(),
-      writerId,
-      data
-    })
+    await docStore.getState().upsert({ id: DOCUMENT_ID, data })
   }
 
   /**
