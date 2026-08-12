@@ -4,21 +4,29 @@
 
 ### Changed
 
-- Rewrote ARCHITECTURE.md and AGENTS.md to describe the shipped `appUrl`
-  profile and the subsystems the previous docs omitted (the session state
-  machine, the anonymous local-first replica, adoption, `writerId`, the
-  storage/sync layers, `defineDocumentApp`, the MUI dialogs, the document
-  loader and descriptor cache), checked against the App Connect spec.
+- Rewrote ARCHITECTURE.md and AGENTS.md to describe the shipped `appUrl` profile
+  and the subsystems the previous docs omitted (the session state machine, the
+  anonymous local-first replica, adoption, `writerId`, the storage/sync layers,
+  `defineDocumentApp`, the MUI dialogs, the document loader and descriptor
+  cache), checked against the App Connect spec.
 - Corrected stale code comments: the shared-collection reader's
-  undecryptable-envelope wording now names pre-epoch legacy envelopes (a
-  share escrows the reader into every existing epoch), and
-  `checkGrantsForCollections`'s JSDoc no longer claims public collections
-  get an add-only action set.
-- Strengthened the wallet-core counterpart suite: the app-key credential is
-  now also located and parsed inside a wallet-core-composed, DIDAuth-signed
-  response VP that `verifyLoginPresentation` accepts, and the shared-collection
-  tests derive the wallet-side recipient with was-client's real
+  undecryptable-envelope wording now names pre-epoch legacy envelopes (a share
+  escrows the reader into every existing epoch), and
+  `checkGrantsForCollections`'s JSDoc no longer claims public collections get an
+  add-only action set.
+- Strengthened the wallet-core counterpart suite: the app-key credential is now
+  also located and parsed inside a wallet-core-composed, DIDAuth-signed response
+  VP that `verifyLoginPresentation` accepts, and the shared-collection tests
+  derive the wallet-side recipient with was-client's real
   `x25519RecipientFromDidKey` instead of a local mirror of it.
+- Tightened both new suites further: the composed-VP test asserts the
+  `appConnect: { firstRun }` member and an embedded grant survive signing
+  (`grantsOf` recovers the grant), derives the wallet holder with wallet-core's
+  `agentsFromSeed`, and replaces a vacuous locate assertion; the
+  shared-collection rosters carry was-client's real recipient `type` instead of
+  a hardcoded literal, so a recipient-type migration fails the suite.
+- Removed the unused `@interop/x25519-key-agreement-key` devDependency (it still
+  arrives transitively).
 
 ## 0.13.0 - 2026-08-12
 

@@ -24,9 +24,11 @@ import {
   reissueAppKeyCredential,
   serializedAppUrl
 } from '@interop/wallet-core/request'
+import { agentsFromSeed } from '@interop/wallet-core/identity'
 import type {
   IVerifiableCredential,
-  IVerifiablePresentation
+  IVerifiablePresentation,
+  IZcap
 } from '@interop/data-integrity-core'
 import { deriveIdentity } from '../identity/agents.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
@@ -36,7 +38,7 @@ import {
   parseSeedCredential
 } from '../identity/seedCredential.js'
 import { buildAppConnectVpr } from './loginRequest.js'
-import { verifyLoginPresentation } from './verifyResponse.js'
+import { grantsOf, verifyLoginPresentation } from './verifyResponse.js'
 import type { IAppConnectQuery } from './walletRequestTypes.js'
 
 const ORIGIN = 'https://app.example'
@@ -155,11 +157,23 @@ describe('the credential half, against wallet-core', () => {
       app: { name: APP_NAME, appUrl: APP_URL },
       origin: ORIGIN
     })
-    // The wallet's holder identity: an ordinary client did:key, distinct from
-    // the app key (the response VP's holder is the wallet, never the app).
+    // The wallet's holder identity, derived the way the wallet derives it (the
+    // response VP's holder is the wallet, never the app).
     const walletSeed = crypto.getRandomValues(new Uint8Array(32))
-    const wallet = await deriveIdentity({ seed: walletSeed })
+    const wallet = await agentsFromSeed({ seed: walletSeed })
     const challenge = crypto.randomUUID()
+    // A structural grant, the shape a wallet delegates to the app's controller
+    // DID; the VP proof covers it, and the RP checks grant structure rather
+    // than the delegation proof, so no proof of its own is needed here.
+    const grant = {
+      '@context': 'https://w3id.org/zcap/v1',
+      id: `urn:zcap:${crypto.randomUUID()}`,
+      controller: subjectDid,
+      parentCapability: 'urn:zcap:root:https%3A%2F%2Fwas.example%2Fspace%2Fs1',
+      invocationTarget: 'https://was.example/space/s1/notes',
+      allowedAction: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE'],
+      expires: new Date(Date.now() + 86_400_000).toISOString()
+    } as unknown as IZcap
 
     // The REAL response composition: DIDAuth-signed, grants and the App
     // Connect marker embedded before signing.
@@ -172,6 +186,7 @@ describe('the credential half, against wallet-core', () => {
       challenge,
       domain: ORIGIN,
       didAuthRequested: true,
+      zcaps: [grant],
       appConnect: { firstRun: true }
     })
 
@@ -183,14 +198,20 @@ describe('the credential half, against wallet-core', () => {
       documentLoader: createDocumentLoader()
     })
 
+    // ... the members the login flow reads survive composition and signing ...
+    expect((presentation as { appConnect?: unknown }).appConnect).toEqual({
+      firstRun: true
+    })
+    expect(grantsOf(presentation)).toEqual([grant])
+
     // ... and its locate + parse recover the identity from inside the VP.
     const located = findSeedCredential({
       presentation,
       appUrl: APP_URL
     })
-    expect(located).toBeDefined()
+    expect(located).not.toBeNull()
     const parsed = await parseSeedCredential({
-      credential: located as IVerifiableCredential,
+      credential: located!,
       origin: ORIGIN,
       appUrl: APP_URL
     })

@@ -40,21 +40,6 @@ const EXTRA_SEED = new Uint8Array(32).map((_, index) => (index * 3 + 19) & 0xff)
 const COLLECTION_ID = 'private-credentials'
 
 /**
- * The WALLET-side derivation of a grantee's recipient key: everything it has is
- * the grantee's Ed25519 `did:key`. This is the REAL shared derivation both
- * wallets apply to a grantee (`x25519RecipientFromDidKey`), not a test mirror
- * of it -- so a change to the derivation rule fails this suite the day it is
- * installed.
- */
-function walletSideRecipient({ did }: { did: string }): {
-  id: string
-  publicKeyMultibase: string
-} {
-  const { id, publicKeyMultibase } = x25519RecipientFromDidKey({ did })
-  return { id, publicKeyMultibase }
-}
-
-/**
  * An in-memory Collection stand-in for the recipient operations: they only ever
  * read the description with its ETag and write the mutated one back.
  */
@@ -120,10 +105,20 @@ describe('the app-side recipient identity', () => {
       type: string
       publicKeyMultibase: string
     }
-    const walletSide = walletSideRecipient({ did: identity.controllerDid })
+    // The WALLET-side derivation of a grantee's recipient key: everything it
+    // has is the grantee's Ed25519 `did:key`. This is the REAL derivation a
+    // wallet applies to a grantee (`x25519RecipientFromDidKey`), not a test
+    // mirror of it -- so a divergence between the two packages' derivations
+    // fails this suite the day it lands.
+    const walletSide = x25519RecipientFromDidKey({
+      did: identity.controllerDid
+    })
 
     expect(appSide.id).toBe(walletSide.id)
     expect(appSide.publicKeyMultibase).toBe(walletSide.publicKeyMultibase)
+    // Including the key type, so a recipient-type change in either package
+    // (a Multikey migration, say) fails here rather than shipping uncaught.
+    expect(appSide.type).toBe(walletSide.type)
     // The shape the roster entry carries: `did:key:z6Mk...#z6LS...`.
     expect(appSide.id).toBe(
       `${identity.controllerDid}#${appSide.publicKeyMultibase}`
@@ -156,11 +151,11 @@ describe('SharedCollectionReader', () => {
   it('decrypts an owner-written envelope through the epoch roster', async () => {
     const app = await deriveIdentity({ seed: APP_SEED })
     const owner = await deriveIdentity({ seed: OWNER_SEED })
-    const recipient = walletSideRecipient({ did: app.controllerDid })
+    const recipient = x25519RecipientFromDidKey({ did: app.controllerDid })
     const encryption = await mintRoster({
       recipients: [
         ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
-        { ...recipient, type: 'X25519KeyAgreementKey2020' }
+        recipient
       ]
     })
 
@@ -221,11 +216,11 @@ describe('SharedCollectionReader', () => {
   it('skips a body that is not an EDV envelope', async () => {
     const app = await deriveIdentity({ seed: APP_SEED })
     const owner = await deriveIdentity({ seed: OWNER_SEED })
-    const recipient = walletSideRecipient({ did: app.controllerDid })
+    const recipient = x25519RecipientFromDidKey({ did: app.controllerDid })
     const encryption = await mintRoster({
       recipients: [
         ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
-        { ...recipient, type: 'X25519KeyAgreementKey2020' }
+        recipient
       ]
     })
     const reader = await SharedCollectionReader.open({
@@ -324,15 +319,17 @@ describe('SharedCollectionReader unknown-epoch refresh', () => {
     const app = await deriveIdentity({ seed: APP_SEED })
     const owner = await deriveIdentity({ seed: OWNER_SEED })
     const extra = await deriveIdentity({ seed: EXTRA_SEED })
-    const appRecipient = walletSideRecipient({ did: app.controllerDid })
-    const extraRecipient = walletSideRecipient({ did: extra.controllerDid })
+    const appRecipient = x25519RecipientFromDidKey({ did: app.controllerDid })
+    const extraRecipient = x25519RecipientFromDidKey({
+      did: extra.controllerDid
+    })
 
     // The roster the reader opens against, and the rotated one it has not seen.
     const stale = await mintRoster({
       recipients: [
         ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
-        { ...appRecipient, type: 'X25519KeyAgreementKey2020' },
-        { ...extraRecipient, type: 'X25519KeyAgreementKey2020' }
+        appRecipient,
+        extraRecipient
       ]
     })
     const fresh = await rotateRoster({
@@ -483,13 +480,13 @@ async function revokeFixture(): Promise<{
   const app = await deriveIdentity({ seed: APP_SEED })
   const owner = await deriveIdentity({ seed: OWNER_SEED })
   const extra = await deriveIdentity({ seed: EXTRA_SEED })
-  const appRecipient = walletSideRecipient({ did: app.controllerDid })
-  const extraRecipient = walletSideRecipient({ did: extra.controllerDid })
+  const appRecipient = x25519RecipientFromDidKey({ did: app.controllerDid })
+  const extraRecipient = x25519RecipientFromDidKey({ did: extra.controllerDid })
   const stale = await mintRoster({
     recipients: [
       ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
-      { ...appRecipient, type: 'X25519KeyAgreementKey2020' },
-      { ...extraRecipient, type: 'X25519KeyAgreementKey2020' }
+      appRecipient,
+      extraRecipient
     ]
   })
   const rotated = await rotateRoster({
@@ -538,11 +535,11 @@ async function sharedFixture(): Promise<{
 }> {
   const app = await deriveIdentity({ seed: APP_SEED })
   const owner = await deriveIdentity({ seed: OWNER_SEED })
-  const recipient = walletSideRecipient({ did: app.controllerDid })
+  const recipient = x25519RecipientFromDidKey({ did: app.controllerDid })
   const encryption = await mintRoster({
     recipients: [
       ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
-      { ...recipient, type: 'X25519KeyAgreementKey2020' }
+      recipient
     ]
   })
   const ownerCipher = await createDocCipher({
