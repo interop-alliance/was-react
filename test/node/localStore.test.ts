@@ -43,7 +43,7 @@ interface NoteDoc {
   category: string
   createdAt: string
   updatedAt: string
-  clientId: string
+  writerId: string
 }
 
 let dbCounter = 0
@@ -148,7 +148,7 @@ function makeNote(title: string): NoteDoc {
     category: 'someday',
     createdAt: now,
     updatedAt: now,
-    clientId: 'device-a'
+    writerId: 'device-a'
   }
 }
 
@@ -364,7 +364,7 @@ describe('LocalStore key-epoch stamping', () => {
  * A singleton payload: one fixed logical id for the whole collection.
  */
 function makeSingleton(
-  over: Partial<NoteDoc> & Pick<NoteDoc, 'updatedAt' | 'clientId'>
+  over: Partial<NoteDoc> & Pick<NoteDoc, 'updatedAt' | 'writerId'>
 ): NoteDoc {
   return {
     id: '_singleton',
@@ -389,12 +389,12 @@ describe('LocalStore singleton hydration', () => {
     const older = makeSingleton({
       title: 'older',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
     const newer = makeSingleton({
       title: 'newer',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      clientId: 'device-b'
+      writerId: 'device-b'
     })
     await store.insertEntity(COLLECTION, older)
     await store.insertEntity(COLLECTION, newer)
@@ -421,12 +421,12 @@ describe('LocalStore singleton hydration', () => {
     const older = makeSingleton({
       title: 'old',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
     const newer = makeSingleton({
       title: 'new',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      clientId: 'device-b'
+      writerId: 'device-b'
     })
     await store.insertEntity(COLLECTION, older)
     await store.insertEntity(COLLECTION, newer)
@@ -439,20 +439,20 @@ describe('LocalStore singleton hydration', () => {
     expect(store.envelopeIdFor(COLLECTION, newer.id)).toBe(rows[0]!.id)
   })
 
-  it('breaks an updatedAt tie by the greater clientId', async () => {
+  it('breaks an updatedAt tie by the greater writerId', async () => {
     const store = await openStore(`was-react-test-${++dbCounter}`)
     const at = '2026-03-03T00:00:00.000Z'
     await store.insertEntity(
       COLLECTION,
-      makeSingleton({ title: 'a', updatedAt: at, clientId: 'device-a' })
+      makeSingleton({ title: 'a', updatedAt: at, writerId: 'device-a' })
     )
     await store.insertEntity(
       COLLECTION,
-      makeSingleton({ title: 'z', updatedAt: at, clientId: 'device-z' })
+      makeSingleton({ title: 'z', updatedAt: at, writerId: 'device-z' })
     )
 
     const winner = await store.hydrateSingleton<NoteDoc>(COLLECTION)
-    expect(winner!.clientId).toBe('device-z')
+    expect(winner!.writerId).toBe('device-z')
     expect(await store.rxCollection(COLLECTION).find().exec()).toHaveLength(1)
   })
 })

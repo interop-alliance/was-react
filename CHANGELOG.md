@@ -1,5 +1,64 @@
 # @interop/was-react Changelog
 
+## 0.13.0 - TBD
+
+### Breaking
+
+- Ported to the App Connect `appUrl` profile
+  (`https://w3id.org/byoe/app-connect/v1`, the profile handle the credential's
+  hosted context URL names). `WasAppConfig.appUrl` -- the application's
+  canonical URL, absolute, fragment-less, and same-origin with the app's live
+  browser origin -- replaces `credential: { credentialType, vocabBase }`; the
+  `SeedCredentialConfig` type is gone. App identity is scoped to the triple
+  (user, origin, `appUrl`).
+- The app-key credential's `type` is the fixed two-entry array
+  `['VerifiableCredential', 'AppKeyCredential']`, its `@context` is
+  `['https://www.w3.org/2018/credentials/v1', 'https://w3id.org/byoe/app-connect/v1']`
+  (a hosted context, no inline term object and nothing interpolated from a
+  vocabulary base), and `credentialSubject` carries `appUrl` alongside `id`,
+  `seed`, and `origin`.
+- `findSeedCredential({ presentation, appUrl })` locates by the
+  `credentialSubject.appUrl` claim alone; the `AppKeyCredential` marker type is
+  deliberately NOT required there, so a wrong credential surfaces as a parse
+  error rather than as "the wallet returned nothing".
+- `parseSeedCredential({ credential, origin, appUrl })` enforces the spec's six
+  parse checks in order: marker type, exact `appUrl` match, self-issue, exact
+  `origin` match, a seed decoding as base64url-no-pad to exactly 32 bytes, and
+  the seed-to-subject DID binding.
+- `issueSeedCredential` takes
+  `{ seed, origin, appUrl, appName, documentLoader }`.
+- A public collection's allowed actions are the full vocabulary
+  `GET, HEAD, POST, PUT, DELETE`, the same as a private collection's: published
+  content is still the application's own data, and un-publishing and revision
+  are data management like any other write. `PUBLIC_ACTIONS` is removed;
+  `actionCeiling` returns the full vocabulary for both classes; requesting
+  `PUT`/`DELETE` on a public collection no longer throws. `RW_ACTIONS` is
+  ordered as in the spec table (`GET, HEAD, POST, PUT, DELETE`).
+- `getClientId` is renamed `getWriterId`, `useSession().clientId` is
+  `.writerId`, and the LWW payload field and localStorage key are `writerId`. A
+  writer id is an unkeyed, clearable attribution label, never an identity; the
+  keyed identity is the app key. `getWriterId` adopts a value left under the old
+  `<prefix>clientId` key once and removes it, so an existing install keeps its
+  id -- but payloads already stored with a `clientId` field lose their LWW
+  tiebreaker and fall back to the `updatedAt` comparison.
+
+### Changed
+
+- The login flow serializes `appUrl` once, against the app's live browser origin
+  (the same value it sends as the request `domain`), and uses that one string
+  for the request, the credential lookup, and the parse check. A configured
+  `appOrigin` that differs from the live origin is warned about and is not used
+  as the bind.
+
+### Added
+
+- Counterpart tests running both halves of the contract against
+  `@interop/wallet-core`'s real implementation: the built VPR is accepted by
+  `appConnectRequestOf`, a credential minted by `mintAppKeyCredential` is
+  located and parsed, and a legacy pre-`appUrl` credential run through
+  `findLegacyAppKeyCredential` + `reissueAppKeyCredential` still recovers the
+  same controller DID.
+
 ## 0.12.0 - 2026-08-11
 
 ### Changed

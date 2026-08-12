@@ -88,22 +88,19 @@ import type { WasAppConfig } from '@interop/was-react'
 export const config: WasAppConfig = {
   appName: 'Notes',
   appOrigin: 'https://notes.example',
-  collections: [{ key: 'notes', id: 'notes' }],
-  credential: {
-    credentialType: 'NotesAppKey',
-    vocabBase: 'urn:notes-app:vocab#'
-  }
+  appUrl: 'https://notes.example/app',
+  collections: [{ key: 'notes', id: 'notes' }]
 }
 ```
 
 `collections` maps each app-side `key` (the local RxDB collection handle) to a
 WAS collection `id` (a deliberately unprefixed, generic name shared across
-interoperable apps). `credential` names the self-issued seed credential the
-first-run flow mints; its `vocabBase` namespaces the app's own type term only,
-since every app key also carries the shared `AppKeyCredential` marker type and
-its `seed` / `origin` claims under `https://w3id.org/byoe#` IRIs. All other
-fields (`mediatorBase`, `dbName`, `storageKeyPrefix`, `sync`, `expiry`) are
-optional with documented defaults.
+interoperable apps). `appUrl` is this application's canonical URL -- absolute,
+fragment-less, and same-origin with the browser origin the app runs on -- and
+identifies it among the applications on that origin: the app-key identity is
+scoped to the triple (user, origin, `appUrl`). Everything downstream compares
+the parsed URL's serialization. All other fields (`mediatorBase`, `dbName`,
+`storageKeyPrefix`, `sync`, `expiry`) are optional with documented defaults.
 
 A collection may also declare `visibility: 'public'`
 (`{ key: 'posts', id: 'microblog-posts', visibility: 'public' }`); the default
@@ -112,7 +109,7 @@ no encryption key is involved at all, payloads are stored as-is locally and
 remotely, and the stored resource id is the payload's own logical `id`, so a
 public document keeps a stable, shareable resource URL across edits. Be aware
 that everything in a public payload is world-readable -- including the LWW
-bookkeeping fields `updatedAt` and `clientId` (`clientId` is a random
+bookkeeping fields `updatedAt` and `writerId` (`writerId` is a random
 per-install identifier, but still a linkability handle across a user's public
 documents). Changing a collection's visibility after first use is a
 data-migration event, not a config tweak: rows written in the other mode stop
@@ -120,7 +117,7 @@ being readable. A registry that maps one WAS collection id to both visibilities
 is rejected at store open. Two payload constraints on public collections: a
 top-level object-valued `jwe` field is reserved (the read path uses it to
 recognize a stray encrypted envelope and refuses the row), and payloads should
-carry the `updatedAt` / `clientId` LWW fields like any other collection --
+carry the `updatedAt` / `writerId` LWW fields like any other collection --
 without them a concurrent multi-device edit falls back to server-wins.
 
 At login, a public collection is requested from the wallet with the distinct
@@ -210,7 +207,7 @@ export interface Note {
   body: string
   createdAt: string
   updatedAt: string
-  clientId: string
+  writerId: string
 }
 
 export const useNotes = createEntityStore<Note>('notes')
@@ -278,7 +275,7 @@ import { useNotes } from './stores.js'
 export function Notes() {
   const notes = useNotes(state => [...state.byId.values()])
   const insert = useNotes(state => state.insert)
-  const { clientId } = useSession()
+  const { writerId } = useSession()
 
   async function addNote() {
     const now = new Date().toISOString()
@@ -288,7 +285,7 @@ export function Notes() {
       body: '',
       createdAt: now,
       updatedAt: now,
-      clientId
+      writerId
     })
   }
 
@@ -305,12 +302,12 @@ export function Notes() {
 }
 ```
 
-Entity payloads MUST carry `updatedAt` and `clientId`, stamped on EVERY insert
+Entity payloads MUST carry `updatedAt` and `writerId`, stamped on EVERY insert
 and update: they are the last-write-wins pair that settles concurrent
 multi-device edits of the same entity. A payload without them loses every sync
-conflict. Read the id from `useSession().clientId` (resolved once per session,
+conflict. Read the id from `useSession().writerId` (resolved once per session,
 honoring `storageKeyPrefix`); outside React, call
-`getClientId({ storageKeyPrefix })` with the same prefix your config declares.
+`getWriterId({ storageKeyPrefix })` with the same prefix your config declares.
 
 A public collection can additionally answer server-side equality queries.
 Declare the queryable content attributes in the collection config:
@@ -393,8 +390,8 @@ a progress line (`connecting` to `verifying`):
 1. **CHAPI polyfill loads lazily.** The `credential-handler-polyfill` is loaded
    on demand the first time a wallet request is made, not at import time.
 2. **One popup.** A VPR carrying a `DIDAuthentication` query plus one
-   `AppConnectQuery` -- the app's display name, `credentialType`, and
-   `vocabBase`, a `capabilityQuery` entry per configured collection, and a
+   `AppConnectQuery` -- the app's display name and canonical `appUrl`, a
+   `capabilityQuery` entry per configured collection, and a
    `https://w3id.org/byoe#shared-wallet-collection` entry per shared collection
    -- is sent via `navigator.credentials.get` (`buildAppConnectVpr`). A `null`
    response is a user cancel (`LoginCancelledError`), not an error.
@@ -402,8 +399,9 @@ a progress line (`connecting` to `verifying`):
    32-byte seed itself, self-issues the origin-bound app-key credential, and
    stores it in its own credential store under the same consent; on a returning
    visit it matches the stored credential by the shared `AppKeyCredential`
-   marker type, the app's `credentialType`, the requesting origin, and the
-   seed-to-subject binding. The app never mints, and there is no second popup.
+   marker type, the `credentialSubject.appUrl` claim, the requesting origin, and
+   the seed-to-subject binding. The app never mints, and there is no second
+   popup.
 4. **Verify the response.** `verifyLoginPresentation` checks the VP and embedded
    proofs (purpose `authentication`, matching domain and challenge). A
    presentation that verifies but carries no seed credential means the wallet
@@ -489,8 +487,8 @@ Hooks:
   zcaps). Pull is driven by the WAS `changes` feed; a low-frequency periodic
   re-sync (`sync.pollMs`, default 15s) keeps open sessions converging.
 - **Conflict resolution.** Last-writer-wins on the payload's own
-  `(updatedAt, clientId)` (ISO lexical compare, with a per-install random
-  `clientId` tiebreaker). Updates re-encrypt in place under the same envelope id
+  `(updatedAt, writerId)` (ISO lexical compare, with a per-install random
+  `writerId` tiebreaker). Updates re-encrypt in place under the same envelope id
   with `sequence`+1 (a mutable-head model); deletes are soft-delete tombstones.
 - **Status.** `useSyncStatus()` rolls the per-collection replication states up
   to an aggregate: `offline` (no replication running / local-only), or

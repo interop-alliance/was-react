@@ -26,7 +26,7 @@ interface Note {
   id: string
   title: string
   updatedAt?: string
-  clientId?: string
+  writerId?: string
 }
 
 let dbCounter = 0
@@ -73,14 +73,14 @@ describe('mergeAdopted', () => {
       id: crypto.randomUUID(),
       title: 'alpha',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     }
     await source.insertEntity(COLLECTION, note)
 
     await mergeAdopted({
       store: connected,
       entities: await collect(source),
-      clientId: MERGE_CLIENT_ID
+      writerId: MERGE_CLIENT_ID
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -99,7 +99,7 @@ describe('mergeAdopted', () => {
     await mergeAdopted({
       store: connected,
       entities: await collect(source),
-      clientId: MERGE_CLIENT_ID
+      writerId: MERGE_CLIENT_ID
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -108,7 +108,7 @@ describe('mergeAdopted', () => {
     expect(typeof listed[0]!.updatedAt).toBe('string')
     expect(listed[0]!.updatedAt!.length).toBeGreaterThan(0)
     // The stamp carries the caller-resolved session id, never an ambient one.
-    expect(listed[0]!.clientId).toBe(MERGE_CLIENT_ID)
+    expect(listed[0]!.writerId).toBe(MERGE_CLIENT_ID)
   })
 
   it('preserves the original LWW fields of a payload that already carries them', async () => {
@@ -118,19 +118,19 @@ describe('mergeAdopted', () => {
       id: crypto.randomUUID(),
       title: 'dated',
       updatedAt: '2025-05-05T00:00:00.000Z',
-      clientId: 'device-original'
+      writerId: 'device-original'
     }
     await source.insertEntity(COLLECTION, note)
 
     await mergeAdopted({
       store: connected,
       entities: await collect(source),
-      clientId: MERGE_CLIENT_ID
+      writerId: MERGE_CLIENT_ID
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
     expect(listed[0]!.updatedAt).toBe('2025-05-05T00:00:00.000Z')
-    expect(listed[0]!.clientId).toBe('device-original')
+    expect(listed[0]!.writerId).toBe('device-original')
   })
 
   it('updates the existing doc when the adopted payload wins LWW', async () => {
@@ -141,19 +141,19 @@ describe('mergeAdopted', () => {
       id: uuid,
       title: 'old',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
     await source.insertEntity(COLLECTION, {
       id: uuid,
       title: 'new',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
 
     await mergeAdopted({
       store: connected,
       entities: await collect(source),
-      clientId: MERGE_CLIENT_ID
+      writerId: MERGE_CLIENT_ID
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -161,7 +161,7 @@ describe('mergeAdopted', () => {
     expect(listed[0]!.title).toBe('new')
   })
 
-  it('breaks an updatedAt tie by the greater clientId', async () => {
+  it('breaks an updatedAt tie by the greater writerId', async () => {
     const source = await openStore(1)
     const connected = await openStore(2)
     const uuid = crypto.randomUUID()
@@ -170,19 +170,19 @@ describe('mergeAdopted', () => {
       id: uuid,
       title: 'a-loses',
       updatedAt: at,
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
     await source.insertEntity(COLLECTION, {
       id: uuid,
       title: 'z-wins',
       updatedAt: at,
-      clientId: 'device-z'
+      writerId: 'device-z'
     })
 
     await mergeAdopted({
       store: connected,
       entities: await collect(source),
-      clientId: MERGE_CLIENT_ID
+      writerId: MERGE_CLIENT_ID
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -198,19 +198,19 @@ describe('mergeAdopted', () => {
       id: uuid,
       title: 'keep',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
     await source.insertEntity(COLLECTION, {
       id: uuid,
       title: 'stale',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
 
     await mergeAdopted({
       store: connected,
       entities: await collect(source),
-      clientId: MERGE_CLIENT_ID
+      writerId: MERGE_CLIENT_ID
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)
@@ -228,7 +228,7 @@ describe('mergeAdopted', () => {
     await mergeAdopted({
       store: connected,
       entities: await collect(source),
-      clientId: MERGE_CLIENT_ID
+      writerId: MERGE_CLIENT_ID
     })
 
     const listed = await connected.listEntities<Note>(COLLECTION)

@@ -58,7 +58,7 @@ interface PostDoc {
   title: string
   createdAt: string
   updatedAt: string
-  clientId: string
+  writerId: string
 }
 
 function makeDoc(title: string): PostDoc {
@@ -68,7 +68,7 @@ function makeDoc(title: string): PostDoc {
     title,
     createdAt: now,
     updatedAt: now,
-    clientId: 'device-test'
+    writerId: 'device-test'
   }
 }
 

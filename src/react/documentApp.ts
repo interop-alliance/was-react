@@ -12,9 +12,9 @@
  *
  * The facade is a degenerate entity store: one collection (the app-named
  * sandbox collection) holding one logical document under a fixed id. The
- * stored row wraps the app's data (`{ id, updatedAt, clientId, data }`) so app
+ * stored row wraps the app's data (`{ id, updatedAt, writerId, data }`) so app
  * fields can never collide with the LWW fields the sync layer requires, and
- * the facade stamps `updatedAt`/`clientId` on every write itself. Hydration
+ * the facade stamps `updatedAt`/`writerId` on every write itself. Hydration
  * goes through `LocalStore.hydrateSingleton`, which LWW-reconciles the
  * duplicate envelope rows two devices can mint for the same logical document.
  *
@@ -33,10 +33,9 @@ import type {
   WasExpiryConfig,
   WasSyncConfig
 } from '../config.js'
-import type { SeedCredentialConfig } from '../identity/seedCredential.js'
 import type { SessionStatus } from '../session/authStore.js'
 import { createEntityStore } from '../storage/entityStore.js'
-import { getClientId, requireStore } from '../storage/storageManager.js'
+import { getWriterId, requireStore } from '../storage/storageManager.js'
 import type { SyncRollup } from '../storage/syncStatusStore.js'
 import { useLogin, useLogout, useSyncStatus } from './hooks.js'
 
@@ -62,7 +61,7 @@ export const DOCUMENT_EXPORT_FORMAT = 'was-document/v1'
 interface StoredDocument<T> {
   id: string
   updatedAt: string
-  clientId: string
+  writerId: string
   data: T
 }
 
@@ -147,10 +146,11 @@ export interface DocumentApp<T extends object> {
  * @param options {object}
  * @param options.appName {string}   human-readable name (consent reason lines)
  * @param options.appOrigin {string}   this app's own web origin
+ * @param options.appUrl {string}   this app's canonical URL (absolute,
+ *   fragment-less, same-origin with `appOrigin`)
  * @param [options.mediatorBase] {string}   CHAPI mediator base URL
  * @param options.document {object}   `collectionId` (the WAS sandbox
  *   collection id) and `initial` (the document value before the first write)
- * @param options.credential {SeedCredentialConfig}   seed-credential naming
  * @param [options.dbName] {string}   local database base name
  * @param [options.storageKeyPrefix] {string}   localStorage key prefix
  * @param [options.sync] {WasSyncConfig}   replication tuning
@@ -160,9 +160,9 @@ export interface DocumentApp<T extends object> {
 export function defineDocumentApp<T extends object>({
   appName,
   appOrigin,
+  appUrl,
   mediatorBase,
   document,
-  credential,
   dbName,
   storageKeyPrefix,
   sync,
@@ -170,9 +170,9 @@ export function defineDocumentApp<T extends object>({
 }: {
   appName: string
   appOrigin: string
+  appUrl: string
   mediatorBase?: string
   document: { collectionId: string; initial: T }
-  credential: SeedCredentialConfig
   dbName?: string
   storageKeyPrefix?: string
   sync?: WasSyncConfig
@@ -182,17 +182,17 @@ export function defineDocumentApp<T extends object>({
   const docStore = createEntityStore<StoredDocument<T>>(DOCUMENT_COLLECTION_KEY)
   // Resolved once, under the same prefix the config hands the session layer,
   // so the facade's stamps and the adoption repair share one identity.
-  const clientId = getClientId({
+  const writerId = getWriterId({
     ...(storageKeyPrefix !== undefined && { storageKeyPrefix })
   })
 
   const config: WasAppConfig = {
     appName,
     appOrigin,
+    appUrl,
     ...(mediatorBase !== undefined && { mediatorBase }),
     collections: [{ key: DOCUMENT_COLLECTION_KEY, id: collectionId }],
     onboarding: 'local-first',
-    credential,
     ...(dbName !== undefined && { dbName }),
     ...(storageKeyPrefix !== undefined && { storageKeyPrefix }),
     ...(sync !== undefined && { sync }),
@@ -230,7 +230,7 @@ export function defineDocumentApp<T extends object>({
     await docStore.getState().upsert({
       id: DOCUMENT_ID,
       updatedAt: new Date().toISOString(),
-      clientId,
+      writerId,
       data
     })
   }

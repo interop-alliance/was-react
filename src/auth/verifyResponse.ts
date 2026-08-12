@@ -13,13 +13,16 @@
  * 2. Manual proof checks verifier-core does not make: `proofPurpose` is
  *    `authentication`, `domain` equals what this app sent (its origin), and
  *    the `challenge` echoes this request's fresh nonce.
- * 3. Grant structure: every zcap is controlled by OUR seed-derived DID,
- *    targets a single space on a single WAS host, is unexpired, and the
- *    collection set is fully covered with sufficient actions -- where
- *    "sufficient" is capped at each collection's class ceiling: a conformant
- *    wallet caps a public-collection grant add-only, so requiring `PUT` or
- *    `DELETE` there would reject every correct wallet (the App Connect spec
- *    forbids failing a connection over an action the class ceiling excludes).
+ * 3. Grant structure: every zcap is controlled by OUR seed-derived DID, carries
+ *    a single non-empty string `invocationTarget`, targets a collection (never
+ *    the Space itself or a reserved sub-endpoint) in a single space on a single
+ *    WAS host, is unexpired, and the collection set is fully covered with
+ *    sufficient actions -- where "sufficient" is capped at each collection
+ *    class's allowed actions (the App Connect spec's "Allowed actions" table).
+ *    Both collection classes allow the full vocabulary today, so the cap bounds
+ *    nothing at present; it stays because the spec forbids failing a connection
+ *    over an action the requested class never allows, which a correct wallet
+ *    would be obliged to withhold.
  *    (Delegation-chain proofs are enforced server-side at invocation; the RP
  *    checks structure.)
  *
@@ -180,10 +183,10 @@ function actionsOf(zcap: IZcap): string[] {
  * @param options.controllerDid {string}   this app's seed-derived DID
  * @param options.collections {GrantRequestCollection[]}   the collections that
  *   must be covered (WAS collection id + visibility; the visibility selects
- *   the class ceiling the required actions are capped at)
+ *   the class's allowed actions the required actions are capped at)
  * @param [options.requiredActions] {string[]}   the actions each collection
- *   grant must allow, capped per collection at its class ceiling (defaults to
- *   `RW_ACTIONS`, so each collection requires exactly its ceiling)
+ *   grant must allow, capped per collection at its class's allowed actions
+ *   (defaults to `RW_ACTIONS`, so each collection requires exactly them)
  * @returns {CheckedGrants}
  */
 export function checkGrants({
@@ -224,9 +227,9 @@ export function checkGrants({
       throw new Error(`No grant covers the "${id}" collection.`)
     }
     const actions = actionsOf(grant)
-    // The requirement is capped at the class ceiling: a conformant wallet caps
-    // a public grant add-only, so an above-ceiling requirement (explicit or
-    // the RW default) must cost the excess actions, never the login.
+    // The requirement is capped at the class's allowed actions: an app must
+    // never fail a connection over an action its requested class never allows,
+    // since a conformant wallet is obliged to withhold it.
     const required = actionCeiling(visibility).filter(action =>
       requiredActions.includes(action)
     )

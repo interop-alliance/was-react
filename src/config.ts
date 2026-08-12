@@ -3,8 +3,8 @@
  */
 /**
  * The central configuration contract for a WAS-backed local-first app: the app
- * identity/origin, the registry of storage collections, the seed-credential
- * naming, and the (all-optional) sync/expiry tuning. An app builds one
+ * identity/origin/URL, the registry of storage collections, and the
+ * (all-optional) sync/expiry tuning. An app builds one
  * {@link WasAppConfig} and threads it through the auth, storage, and sync
  * layers.
  *
@@ -26,8 +26,6 @@
  * an app special-case a singleton collection (e.g. a current-focus doc) without
  * a rigid CRUD interface.
  */
-import type { SeedCredentialConfig } from './identity/seedCredential.js'
-
 /**
  * One storage collection: the logical `key` (app-side / RxDB collection handle)
  * mapped to its WAS collection `id` (the generic, interoperable name).
@@ -47,7 +45,7 @@ export interface WasCollectionConfig {
    * declares a world-readable collection (the wallet provisions it with a
    * public-read policy); public implies PLAINTEXT -- payloads are stored as-is,
    * with no per-collection cipher, and the LWW bookkeeping fields (`updatedAt`,
-   * `clientId`) are world-readable alongside the content (`clientId` is a
+   * `writerId`) are world-readable alongside the content (`writerId` is a
    * random per-install attribution label, but still a linkability handle across
    * a user's public documents). Changing a collection's visibility after first
    * use is a data-migration event, not a config tweak: existing rows keep
@@ -68,7 +66,7 @@ export interface WasCollectionConfig {
 /**
  * One SHARED collection: a wallet-owned, already-encrypted collection the app
  * asks the wallet for read-and-decrypt access to (the
- * `https://w3id.org/byoe#shared-collection` grant). It is the mirror image of
+ * `https://w3id.org/byoe#shared-wallet-collection` grant). It is the mirror image of
  * {@link WasCollectionConfig}: read-only, NOT replicated into RxDB, NOT written
  * to, and with no local replica. Reads go straight to the server through a
  * `SharedCollectionReader`.
@@ -134,6 +132,17 @@ export interface WasAppConfig {
    */
   appOrigin: string
   /**
+   * This app's canonical URL: what identifies this application among the
+   * applications served from its origin, so the app identity is scoped to the
+   * triple (user, origin, `appUrl`). It MUST be an absolute URL, MUST NOT carry
+   * a fragment, and MUST be same-origin with the app's live browser origin.
+   * Everything downstream stores and compares the parsed URL's serialization,
+   * so spellings differing only in a default port, in percent-encoding case, or
+   * in dot-segments do not name distinct applications. An app with a Web App
+   * Manifest is well served by using its processed manifest `id` here.
+   */
+  appUrl: string
+  /**
    * The CHAPI mediator base URL (the requesting origin is appended).
    */
   mediatorBase?: string
@@ -143,7 +152,7 @@ export interface WasAppConfig {
   collections: WasCollectionConfig[]
   /**
    * Wallet-owned collections this app asks to be given READ-AND-DECRYPT access
-   * to (the `https://w3id.org/byoe#shared-collection` grant). Read-only by construction: they
+   * to (the `https://w3id.org/byoe#shared-wallet-collection` grant). Read-only by construction: they
    * are never replicated into RxDB, never written to, and have no local
    * replica -- reads go straight to the server through a
    * `SharedCollectionReader`. A collection may be app-owned (`collections`) or
@@ -168,18 +177,14 @@ export interface WasAppConfig {
    */
   seedLocal?: () => Promise<void>
   /**
-   * The seed-credential type name + vocabulary namespace.
-   */
-  credential: SeedCredentialConfig
-  /**
    * Base name for the local RxDB database and session IndexedDB naming. Defaults
    * to {@link DEFAULT_DB_NAME}.
    */
   dbName?: string
   /**
-   * Prefix for this app's `localStorage` keys (e.g. the LWW `clientId`).
+   * Prefix for this app's `localStorage` keys (e.g. the LWW `writerId`).
    * Defaults to {@link DEFAULT_STORAGE_KEY_PREFIX}. Migrating apps should set
-   * their prior prefix so an existing per-install client id is preserved.
+   * their prior prefix so an existing per-install writer id is preserved.
    */
   storageKeyPrefix?: string
   /**
@@ -236,7 +241,7 @@ export const DEFAULT_DB_NAME = 'was-react'
 export const DEFAULT_ONBOARDING = 'login-gated'
 
 /**
- * Default `localStorage` key prefix (e.g. `was-react:clientId`).
+ * Default `localStorage` key prefix (e.g. `was-react:writerId`).
  */
 export const DEFAULT_STORAGE_KEY_PREFIX = 'was-react:'
 

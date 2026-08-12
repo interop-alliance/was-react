@@ -43,10 +43,7 @@ function baseConfig(onboarding: 'local-first' | 'login-gated'): WasAppConfig {
     appOrigin: 'http://localhost:5173',
     onboarding,
     collections: [{ key: 'notes', id: 'notes' }],
-    credential: {
-      credentialType: 'TestAppKey',
-      vocabBase: 'urn:test-app:vocab#'
-    },
+    appUrl: 'http://localhost:5173/test-app',
     dbName: `was-react-${Math.random().toString(36).slice(2)}`
   }
 }

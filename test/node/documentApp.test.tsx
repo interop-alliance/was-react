@@ -44,7 +44,7 @@ interface SaveFile {
 interface StoredSave {
   id: string
   updatedAt: string
-  clientId: string
+  writerId: string
   data: SaveFile
 }
 
@@ -78,10 +78,7 @@ function localApp() {
     appName: 'Test Saves',
     appOrigin: 'http://localhost:5173',
     document: { collectionId: 'test-saves', initial: INITIAL },
-    credential: {
-      credentialType: 'TestSavesAppKey',
-      vocabBase: 'urn:test-saves:vocab#'
-    }
+    appUrl: 'http://localhost:5173/test-app'
   })
   const store = createAuthStore({ config: app.config, registry: app.registry })
   store.setState({ status: 'local' })
@@ -145,7 +142,7 @@ describe('defineDocumentApp', () => {
     fake.rows.set('main', {
       id: 'main',
       updatedAt: '2026-07-19T00:00:00.000Z',
-      clientId: 'device-1',
+      writerId: 'device-1',
       data: { score: 12, playerName: 'restored' }
     })
     await app.registry[DOCUMENT_COLLECTION_KEY]?.hydrate()
@@ -204,7 +201,7 @@ describe('useAppDocument', () => {
     // LWW stamps are the facade's job: an ISO timestamp and the persisted
     // per-install device id, wrapped BESIDE the app data, never inside it.
     expect(Date.parse(row?.updatedAt ?? '')).not.toBeNaN()
-    expect(row?.clientId).toBeTruthy()
+    expect(row?.writerId).toBeTruthy()
     expect(fake.rows.size).toBe(1)
 
     await result.current.update({ score: 8 })

@@ -3,7 +3,7 @@
  */
 /**
  * The storage manager: a thin process-wide holder for the one {@link LocalStore}
- * instance, the per-session {@link WasRemoteStore}, plus the per-install client
+ * instance, the per-session {@link WasRemoteStore}, plus the per-install writer
  * id. Entity stores reach for the stores through {@link requireStore} /
  * {@link requireRemoteStore} inside their verbs rather than importing them
  * directly, which keeps this module free of store imports (no cycle) and lets
@@ -102,36 +102,43 @@ export function clearRemoteStore(): void {
 }
 
 /**
- * The unpersisted fallback client id for environments without `localStorage`
+ * The unpersisted fallback writer id for environments without `localStorage`
  * (tests, SSR): process-stable, so every stamp within one run agrees, minted
  * fresh on the next run.
  */
-let fallbackClientId: string | null = null
+let fallbackWriterId: string | null = null
 
 /**
- * A stable per-install client id (the last-write-wins tiebreak stamped into
- * every payload), persisted in localStorage under `<prefix>clientId`. In an
+ * A stable per-install writer id (the last-write-wins tiebreak stamped into
+ * every payload), persisted in localStorage under `<prefix>writerId`. In an
  * environment without `localStorage` it falls back to a process-stable
  * unpersisted id instead of throwing.
+ *
+ * The id is an unkeyed, clearable attribution label -- never an identity. On a
+ * miss it adopts a value left under the pre-rename `<prefix>clientId` key and
+ * removes the old one, so an existing install keeps stamping the same id
+ * across the rename rather than looking like a second writer.
  *
  * @param [options] {object}
  * @param [options.storageKeyPrefix] {string}   the localStorage key prefix
  *   (defaults to {@link DEFAULT_STORAGE_KEY_PREFIX})
  * @returns {string}
  */
-export function getClientId({
+export function getWriterId({
   storageKeyPrefix = DEFAULT_STORAGE_KEY_PREFIX
 }: { storageKeyPrefix?: string } = {}): string {
-  const clientIdKey = `${storageKeyPrefix}clientId`
+  const writerIdKey = `${storageKeyPrefix}writerId`
+  const legacyKey = `${storageKeyPrefix}clientId`
   try {
-    let id = localStorage.getItem(clientIdKey)
+    let id = localStorage.getItem(writerIdKey)
     if (!id) {
-      id = uuidv7()
-      localStorage.setItem(clientIdKey, id)
+      id = localStorage.getItem(legacyKey) || uuidv7()
+      localStorage.setItem(writerIdKey, id)
+      localStorage.removeItem(legacyKey)
     }
     return id
   } catch {
-    fallbackClientId ??= uuidv7()
-    return fallbackClientId
+    fallbackWriterId ??= uuidv7()
+    return fallbackWriterId
   }
 }

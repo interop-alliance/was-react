@@ -98,20 +98,20 @@ describe('createEntityStore', () => {
   it('discards a stale patch that loses LWW to the held doc', async () => {
     interface LwwNote extends Note {
       updatedAt: string
-      clientId: string
+      writerId: string
     }
     const store = createEntityStore<LwwNote>('notes')
     const newer = {
       id: 'a',
       text: 'newer',
       updatedAt: '2026-07-12T10:00:05Z',
-      clientId: 'device-1'
+      writerId: 'device-1'
     }
     const older = {
       id: 'a',
       text: 'older',
       updatedAt: '2026-07-12T10:00:00Z',
-      clientId: 'device-2'
+      writerId: 'device-2'
     }
 
     // Out-of-order decrypts within one burst: the older payload arrives last.

@@ -3,17 +3,23 @@
  */
 /**
  * The app-key credential: a self-issued VC holding the app's 32-byte master
- * seed, stored in (and recovered from) the user's wallet. An inline-context
- * pattern keeps it verifiable with no remote vocabulary fetch.
+ * seed, stored in (and recovered from) the user's wallet.
+ *
+ * The credential's vocabulary is fixed and shared by every application: the
+ * `type` array is exactly `['VerifiableCredential', 'AppKeyCredential']`, and
+ * the `@context` is the VC 1.0 context plus the hosted App Connect context
+ * (`https://w3id.org/byoe/app-connect/v1`, resolved as a static context by the
+ * document loader, so verification still needs no fetch). Nothing in the
+ * credential is app-scoped.
  *
  * The credential is self-issued: `issuer === credentialSubject.id`, and both
  * equal the did:key controller DERIVED FROM THE EMBEDDED SEED -- so possession
  * of the credential is possession of the identity, and a parsed credential can
  * be re-checked against its own seed. `credentialSubject.origin` binds the
  * credential to this app's web origin (the anti-phishing guard checked at
- * login). The credential type name and vocabulary namespace are app-supplied
- * (`SeedCredentialConfig`) so different apps hold sibling credential types on
- * the same pattern.
+ * login), and `credentialSubject.appUrl` identifies WHICH application on that
+ * origin it belongs to: the app identity is scoped to the triple (user,
+ * origin, `appUrl`).
  */
 import { base64urlnopad } from '@scure/base'
 import * as vc from '@interop/vc'
@@ -22,7 +28,7 @@ import type {
   IVerifiableCredential,
   IVerifiablePresentation
 } from '@interop/data-integrity-core'
-import { CONTEXT_V1 } from 'byoe-context'
+import { CONTEXT_URL_V1 } from 'byoe-context'
 import { asArray } from '../jsonLd.js'
 import { deriveIdentity, type IdentityAgents } from './agents.js'
 import type { DocumentLoader } from './documentLoader.js'
@@ -30,11 +36,10 @@ import type { DocumentLoader } from './documentLoader.js'
 const VC_1_CONTEXT_URL = 'https://www.w3.org/2018/credentials/v1'
 
 /**
- * The marker type every app key carries alongside the app's own
- * `credentialType`, mapped to one stable IRI for every app (NOT interpolated
- * from an app's `vocabBase`). It makes "presents as an app key" a term check
- * rather than a shape heuristic, which is what lets the wallet refuse a
- * foreign app key at store time.
+ * The marker type every app key carries, mapped to one stable IRI for every
+ * app by the hosted App Connect context. It makes "presents as an app key" a
+ * term check rather than a shape heuristic, which is what lets the wallet
+ * refuse a foreign app key at store time.
  *
  * It is a self-declaration, not evidence: the `type` array of a planted
  * credential is attacker-controlled like the rest of it. The marker makes the
@@ -44,22 +49,12 @@ const VC_1_CONTEXT_URL = 'https://www.w3.org/2018/credentials/v1'
 export const APP_KEY_CREDENTIAL_TYPE = 'AppKeyCredential'
 
 /**
- * The shared BYOE term IRIs, taken from the published context rather than
- * restated here.
+ * The credential's fixed two-entry `type` array, in this order.
  */
-const BYOE_TERMS = CONTEXT_V1['@context']
-
-const APP_KEY_CREDENTIAL_TYPE_IRI = BYOE_TERMS.AppKeyCredential
-
-/**
- * App-supplied naming for the seed credential: the VC `type` name and the URN
- * vocabulary namespace its inline-context terms are minted under (e.g.
- * `credentialType: 'MyAppKey'`, `vocabBase: 'urn:my-app:vocab#'`).
- */
-export interface SeedCredentialConfig {
-  credentialType: string
-  vocabBase: string
-}
+export const APP_KEY_TYPE_ARRAY: readonly string[] = Object.freeze([
+  'VerifiableCredential',
+  APP_KEY_CREDENTIAL_TYPE
+])
 
 /**
  * A parsed and structurally validated seed credential.
@@ -73,29 +68,6 @@ export interface ParsedSeedCredential {
    * master identity a second time (the derivation is the expensive step).
    */
   identity: IdentityAgents
-}
-
-/**
- * Builds the inline context object for the credential's terms, so it stays
- * verifiable with no remote vocabulary fetch. The marker type and the `seed` /
- * `origin` claims carry shared `https://w3id.org/byoe#` IRIs (imported from
- * `byoe-context`) -- they mean the same thing for every app, so they do not
- * belong under a per-app `vocabBase`, which keeps only the app's own type
- * term.
- */
-function seedContext({ credentialType, vocabBase }: SeedCredentialConfig): {
-  '@protected': true
-  [term: string]: unknown
-} {
-  return {
-    '@protected': true,
-    [APP_KEY_CREDENTIAL_TYPE]: APP_KEY_CREDENTIAL_TYPE_IRI,
-    [credentialType]: `${vocabBase}${credentialType}`,
-    seed: BYOE_TERMS.seed,
-    origin: BYOE_TERMS.origin,
-    name: BYOE_TERMS.name,
-    description: BYOE_TERMS.description
-  }
 }
 
 /**
@@ -119,41 +91,40 @@ export function base64urlToBytes(text: string): Uint8Array {
  * @param options {object}
  * @param options.seed {Uint8Array}   the 32-byte master seed
  * @param options.origin {string}     this app's web origin (anti-phishing bind)
+ * @param options.appUrl {string}     this app's canonical URL, in its
+ *   serialized form (see `serializedAppUrl`); identifies the application among
+ *   the applications on its origin
  * @param options.appName {string}    human-readable app name, shown by the
  *   wallet on the credential (`name`/`description`)
- * @param options.config {SeedCredentialConfig}   credential type + vocab
  * @param options.documentLoader {DocumentLoader}
  * @returns {Promise<IVerifiableCredential>}
  */
 export async function issueSeedCredential({
   seed,
   origin,
+  appUrl,
   appName,
-  config,
   documentLoader
 }: {
   seed: Uint8Array
   origin: string
+  appUrl: string
   appName: string
-  config: SeedCredentialConfig
   documentLoader: DocumentLoader
 }): Promise<IVerifiableCredential> {
   // `deriveIdentity` enforces the 32-byte seed rule.
   const { controllerDid, keyAgent } = await deriveIdentity({ seed })
   const credential = {
-    '@context': [VC_1_CONTEXT_URL, seedContext(config)],
+    '@context': [VC_1_CONTEXT_URL, CONTEXT_URL_V1],
     id: `urn:uuid:${crypto.randomUUID()}`,
-    type: [
-      'VerifiableCredential',
-      APP_KEY_CREDENTIAL_TYPE,
-      config.credentialType
-    ],
+    type: [...APP_KEY_TYPE_ARRAY],
     name: `${appName} app key`,
     description: `The ${appName} app keeps this key in your wallet so it can open your encrypted data on this and other devices.`,
     issuer: controllerDid,
     credentialSubject: {
       id: controllerDid,
       seed: bytesToBase64url(seed),
+      appUrl,
       origin
     }
   }
@@ -166,68 +137,82 @@ export async function issueSeedCredential({
 }
 
 /**
- * Parses a seed credential and enforces the structural contract: the shared
- * `AppKeyCredential` marker type, the app's own type, self-issue
- * (issuer === subject id), origin binding, a well-formed 32-byte seed, and --
- * the strongest check -- that the DID derived from the embedded seed IS the
- * credential's subject/issuer DID. (The cryptographic proof on the credential
- * is verified separately at the presentation level.)
+ * Parses an app-key credential and enforces the App Connect spec's six parse
+ * checks, in order: the `AppKeyCredential` marker type, the `appUrl` claim
+ * matching what this request sent (exact string), self-issue (issuer ===
+ * subject id), the origin binding (exact string, against this app's own live
+ * origin -- the same value it sent as the request `domain`), a well-formed
+ * 32-byte base64url-no-pad seed, and -- the strongest check -- that the DID
+ * derived from the embedded seed IS the credential's subject/issuer DID. (The
+ * cryptographic proof on the credential is verified separately at the
+ * presentation level.)
  *
- * The marker is required, not merely tolerated: a wallet may only store a
- * credential presenting as an app key when it binds to its own seed, so
- * requiring the marker here keeps both sides on one rule. It weakens nothing,
- * since the seed-to-DID binding below is the boundary either way.
+ * These duplicate checks the wallet already made; that is the point. They are
+ * defense in depth over an origin binding and an identity binding this app is
+ * fully able to check itself.
  *
  * @param options {object}
  * @param options.credential {IVerifiableCredential}
- * @param options.origin {string}   the expected app origin
- * @param options.config {SeedCredentialConfig}   credential type + vocab
+ * @param options.origin {string}   this app's own live browser origin
+ * @param options.appUrl {string}   the serialized `appUrl` this request sent
  * @returns {Promise<ParsedSeedCredential>}
  */
 export async function parseSeedCredential({
   credential,
   origin,
-  config
+  appUrl
 }: {
   credential: IVerifiableCredential
   origin: string
-  config: SeedCredentialConfig
+  appUrl: string
 }): Promise<ParsedSeedCredential> {
-  const { credentialType } = config
   const types = asArray(credential.type)
-  if (!types.includes(credentialType)) {
-    throw new Error(`Credential is not a ${credentialType} credential.`)
-  }
   if (!types.includes(APP_KEY_CREDENTIAL_TYPE)) {
     throw new Error(
-      `${credentialType} credential does not carry the ` +
+      `The app-key credential does not carry the ` +
         `${APP_KEY_CREDENTIAL_TYPE} type.`
+    )
+  }
+  const subject = credential.credentialSubject as {
+    id?: string
+    seed?: string
+    origin?: string
+    appUrl?: string
+  }
+  if (subject?.appUrl !== appUrl) {
+    throw new Error(
+      `The app-key credential's appUrl "${subject?.appUrl ?? ''}" does not ` +
+        `match this app's appUrl "${appUrl}".`
     )
   }
   const issuer =
     typeof credential.issuer === 'string'
       ? credential.issuer
       : (credential.issuer as { id?: string } | undefined)?.id
-  const subject = credential.credentialSubject as {
-    id?: string
-    seed?: string
-    origin?: string
-  }
   if (!issuer || !subject?.id || issuer !== subject.id) {
-    throw new Error(`${credentialType} credential is not self-issued.`)
+    throw new Error('The app-key credential is not self-issued.')
   }
   if (subject.origin !== origin) {
     throw new Error(
-      `${credentialType} origin "${subject.origin ?? ''}" does not match this app's origin "${origin}".`
+      `The app-key credential's origin "${subject.origin ?? ''}" does not match this app's origin "${origin}".`
     )
   }
   if (typeof subject.seed !== 'string' || subject.seed.length === 0) {
-    throw new Error(`${credentialType} credential carries no seed.`)
+    throw new Error('The app-key credential carries no seed.')
   }
-  const seed = base64urlToBytes(subject.seed)
+  // Fail closed on anything that is not base64url-no-pad decoding to exactly
+  // 32 bytes -- never truncate or pad.
+  let seed: Uint8Array
+  try {
+    seed = base64urlToBytes(subject.seed)
+  } catch (err) {
+    throw new Error('The app-key seed is not valid base64url (no padding).', {
+      cause: err
+    })
+  }
   if (seed.length !== 32) {
     throw new Error(
-      `${credentialType} seed must decode to 32 bytes (got ${seed.length}).`
+      `The app-key seed must decode to 32 bytes (got ${seed.length}).`
     )
   }
   // Derived once and handed back on the result: the same agents the caller
@@ -235,38 +220,42 @@ export async function parseSeedCredential({
   const identity = await deriveIdentity({ seed })
   if (identity.controllerDid !== subject.id) {
     throw new Error(
-      `${credentialType} seed does not derive the credential subject DID.`
+      'The app-key seed does not derive the credential subject DID.'
     )
   }
   return { seed, controllerDid: identity.controllerDid, identity }
 }
 
 /**
- * Finds the seed credential inside a wallet response VP, or `null` when the
- * wallet returned none (the first-run signal).
+ * Finds the app-key credential inside a wallet response VP, or `null` when the
+ * wallet returned none (the wallet-unsupported signal).
  *
- * Matched on the app's own type alone, deliberately: a returned credential
- * missing the `AppKeyCredential` marker must surface as a parse error from
- * {@link parseSeedCredential}, not as a `null` the caller would read as first
- * run and answer by silently minting a second key.
+ * Matched on the `credentialSubject.appUrl` claim ALONE: per the App Connect
+ * spec's response-verification step 3, the `AppKeyCredential` marker type must
+ * NOT be required here. Requiring it would make "the wallet returned a
+ * credential that is wrong" indistinguishable from "the wallet returned
+ * nothing" -- a returned credential missing the marker must surface as a parse
+ * error from {@link parseSeedCredential}, not as a `null` a caller would read
+ * as first run and answer by silently minting a second key.
  *
  * @param options {object}
  * @param options.presentation {IVerifiablePresentation}
- * @param options.credentialType {string}   the app's seed-credential type name
+ * @param options.appUrl {string}   the serialized `appUrl` this request sent
  * @returns {IVerifiableCredential | null}
  */
 export function findSeedCredential({
   presentation,
-  credentialType
+  appUrl
 }: {
   presentation: IVerifiablePresentation
-  credentialType: string
+  appUrl: string
 }): IVerifiableCredential | null {
   const embedded = (presentation as { verifiableCredential?: unknown })
     .verifiableCredential
   for (const entry of asArray(embedded)) {
-    const types = asArray((entry as { type?: string | string[] }).type)
-    if (types.includes(credentialType)) {
+    const subject = (entry as { credentialSubject?: { appUrl?: unknown } })
+      .credentialSubject
+    if (subject?.appUrl === appUrl) {
       return entry as IVerifiableCredential
     }
   }

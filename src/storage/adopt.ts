@@ -14,8 +14,8 @@
  *   the same last-write-wins rule replication runs ({@link remotePayloadWins});
  *   a connected doc without LWW fields always loses to a stamped adopted one.
  *
- * Adopted payloads missing `updatedAt`/`clientId` are stamped at adoption time
- * with the session's resolved client id (the sync layer's conflict resolution
+ * Adopted payloads missing `updatedAt`/`writerId` are stamped at adoption time
+ * with the session's resolved writer id (the sync layer's conflict resolution
  * requires them); payloads that already carry them keep their original values,
  * so a doc edited long ago does not suddenly outrank fresher remote edits.
  */
@@ -32,7 +32,7 @@ import type { LocalStore } from './localStore.js'
  * @param options.store {LocalStore}   the open connected replica
  * @param options.entities {Record<string, Array<{ id: string }>>}   decrypted
  *   payloads per collection key, as collected from the anonymous replica
- * @param options.clientId {string}   the session's resolved LWW client id
+ * @param options.writerId {string}   the session's resolved LWW writer id
  *   (stamped onto payloads missing their LWW fields, so the repair carries the
  *   same attribution identity as the app's own writes)
  * @returns {Promise<void>}
@@ -40,13 +40,13 @@ import type { LocalStore } from './localStore.js'
 export async function mergeAdopted({
   store,
   entities,
-  clientId
+  writerId
 }: {
   store: LocalStore
   entities: Record<string, Array<{ id: string }>>
-  clientId: string
+  writerId: string
 }): Promise<void> {
-  let stamp: { updatedAt: string; clientId: string } | null = null
+  let stamp: { updatedAt: string; writerId: string } | null = null
   for (const [key, payloads] of Object.entries(entities)) {
     const existing = new Map(
       (await store.listEntities(key)).map(doc => [doc.id, doc])
@@ -55,7 +55,7 @@ export async function mergeAdopted({
       let adopted = payload
       let adoptedLww = lwwFields(payload)
       if (!adoptedLww) {
-        stamp ??= { updatedAt: new Date().toISOString(), clientId }
+        stamp ??= { updatedAt: new Date().toISOString(), writerId }
         adopted = { ...payload, ...stamp }
         adoptedLww = stamp
       }

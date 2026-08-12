@@ -75,7 +75,7 @@ import { LocalStore, dbNameForController } from '../storage/localStore.js'
 import {
   clearLocalStore,
   clearRemoteStore,
-  getClientId,
+  getWriterId,
   hasStore,
   requireStore,
   setLocalStore,
@@ -129,7 +129,7 @@ export interface AuthState {
    * every entity insert and update; the adoption repair uses the same value,
    * so one install writes under one identity.
    */
-  clientId: string
+  writerId: string
   /**
    * The current login phase, for the login page's progress line, and the single
    * source of truth for "a Login With Wallet flow is in flight" (non-`null`
@@ -271,10 +271,10 @@ export function createAuthStore({
 }): WasAuthStore {
   const dbName = config.dbName ?? DEFAULT_DB_NAME
   const onboarding = config.onboarding ?? DEFAULT_ONBOARDING
-  // Resolve the per-install LWW client id ONCE, honoring the configured
+  // Resolve the per-install LWW writer id ONCE, honoring the configured
   // localStorage prefix, so every stamp -- the app's own writes and the
   // adoption repair -- carries the same attribution identity.
-  const clientId = getClientId({
+  const writerId = getWriterId({
     ...(config.storageKeyPrefix !== undefined && {
       storageKeyPrefix: config.storageKeyPrefix
     })
@@ -311,7 +311,7 @@ export function createAuthStore({
         visibility: collection.visibility
       })
     })),
-    credential: config.credential,
+    appUrl: config.appUrl,
     ...(config.sharedCollections && {
       sharedCollections: config.sharedCollections.map(entry => entry.id)
     }),
@@ -576,7 +576,7 @@ export function createAuthStore({
     })
     setLocalStore(local)
     if (adopt) {
-      await mergeAdopted({ store: local, entities: adopt.entities, clientId })
+      await mergeAdopted({ store: local, entities: adopt.entities, writerId })
     }
     await hydrateAll(registry)
   }
@@ -1099,7 +1099,7 @@ export function createAuthStore({
     return {
       status: 'boot',
       onboarding,
-      clientId,
+      writerId,
       phase: null,
       error: null,
       controllerDid: null,

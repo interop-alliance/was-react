@@ -6,21 +6,25 @@
  * request.
  *
  * A single CHAPI `get` carries DIDAuthentication plus an `AppConnectQuery` that
- * names the app (for the wallet's consent screen), the seed-credential naming
- * the wallet needs to MATCH an existing app key or MINT a fresh one, and one
- * collection-scoped capabilityQuery per requested collection. The wallet
- * responds -- in the same round -- with the app-key credential and the
- * delegated zcaps embedded in the response VP, so first-run and returning are a
- * single request/response with no store popup and no separate grants popup.
+ * names the app (its display name for the wallet's consent screen and the
+ * canonical `appUrl` the wallet needs to MATCH an existing app key or MINT a
+ * fresh one), and one collection-scoped capabilityQuery per requested
+ * collection. The wallet responds -- in the same round -- with the app-key
+ * credential and the delegated zcaps embedded in the response VP, so first-run
+ * and returning are a single request/response with no store popup and no
+ * separate grants popup.
  *
  * Only collection-scoped capabilities are requested (no whole-space grant),
- * and each request stays within the ACTION CEILING of the descriptor class it
- * uses (the App Connect spec's "Action ceilings" table): a private collection
- * asks for the full vocabulary ({@link RW_ACTIONS}), a public collection at
- * most the add-only set ({@link PUBLIC_ACTIONS}). A configured action set
- * naming an action above a requested collection's ceiling is a configuration
- * error thrown here, at build time -- a conformant wallet can never grant it,
- * so letting it ride would surface later as a failed login instead.
+ * and each request stays within the ALLOWED ACTIONS of the descriptor class it
+ * uses (the App Connect spec's "Allowed actions" table): both collection
+ * classes -- private and public -- allow the full action vocabulary
+ * ({@link RW_ACTIONS}), since a published collection is still the app's own
+ * data and un-publishing and revision are data management like any other
+ * write. A share is read-only ({@link SHARED_ACTIONS}). A configured action set
+ * naming an action above a requested collection's allowed set is a
+ * configuration error thrown here, at build time -- a conformant wallet can
+ * never grant it, so letting it ride would surface later as a failed login
+ * instead.
  *
  * A `visibility: 'public'` collection is requested with the distinct descriptor
  * type `https://w3id.org/byoe#public-collection` (the wallet provisions it plaintext with a
@@ -47,28 +51,19 @@
  * to sign; `challenge` must be fresh per request (echoed into the DIDAuth
  * proof and checked in verifyResponse).
  */
-import type { SeedCredentialConfig } from '../identity/seedCredential.js'
+import { serializedAppUrl } from '@interop/wallet-core/request'
 import type {
   IAppConnectCapabilityQuery,
   IVPRDetails
 } from './walletRequestTypes.js'
 
 /**
- * Default read/write actions requested on each private app collection -- also
- * the `https://w3id.org/byoe#private-collection` class ceiling (the full WAS
- * action vocabulary).
+ * The full WAS action vocabulary, in the order of the App Connect spec's
+ * "Allowed actions" table -- also the allowed-action set of BOTH collection
+ * classes, `https://w3id.org/byoe#private-collection` and
+ * `https://w3id.org/byoe#public-collection`.
  */
-export const RW_ACTIONS = ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
-
-/**
- * The `https://w3id.org/byoe#public-collection` class ceiling: add-only, reads
- * plus `POST`, never `PUT` or `DELETE`. A write to a plaintext world-readable
- * collection is publication under the user's identity and irreversible in
- * practice, so a conformant wallet caps a public grant here no matter what was
- * asked -- and the App Connect spec forbids an application from requiring an
- * action above it.
- */
-export const PUBLIC_ACTIONS = ['GET', 'HEAD', 'POST']
+export const RW_ACTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
 
 /**
  * The actions requested on a SHARED (wallet-owned) collection: read-only, and
@@ -78,18 +73,21 @@ export const PUBLIC_ACTIONS = ['GET', 'HEAD', 'POST']
 export const SHARED_ACTIONS = ['GET', 'HEAD']
 
 /**
- * The action ceiling of the descriptor class a collection is requested with
- * (the App Connect spec's "Action ceilings" table): add-only for
- * `visibility: 'public'` (`https://w3id.org/byoe#public-collection`), the full
- * vocabulary otherwise (`https://w3id.org/byoe#private-collection`). Shares
- * have their own fixed {@link SHARED_ACTIONS} and never consult a configured
- * action set.
+ * The allowed actions of the descriptor class a collection is requested with
+ * (the App Connect spec's "Allowed actions" table). Both collection classes --
+ * public and private -- allow the full action vocabulary: published content is
+ * still the application's own data, and un-publishing and revision are data
+ * management like any other write, so an app may `PUT` or `DELETE` what it
+ * published. Shares have their own fixed {@link SHARED_ACTIONS} and never
+ * consult a configured action set.
  *
- * @param [visibility] {'private' | 'public'}
+ * @param [_visibility] {'private' | 'public'}
  * @returns {string[]}
  */
-export function actionCeiling(visibility?: 'private' | 'public'): string[] {
-  return visibility === 'public' ? PUBLIC_ACTIONS : RW_ACTIONS
+export function actionCeiling(_visibility?: 'private' | 'public'): string[] {
+  // Both classes currently allow the full vocabulary; the parameter stays so a
+  // future class that DOES bound actions has one place to bound them.
+  return RW_ACTIONS
 }
 
 /**
@@ -118,13 +116,14 @@ export function newChallenge(): string {
 
 /**
  * The actions to request for one collection: the configured set capped at the
- * collection's class ceiling, kept in ceiling order. When no set is configured
- * the whole ceiling is requested. An EXPLICIT set naming an action above the
- * ceiling is a configuration error thrown here, at request build time: a
- * conformant wallet can never grant it, so silently capping would leave the
- * app believing it asked for more than any correct wallet returns, and the
- * mismatch would surface later as a failed login instead of as the config bug
- * it is.
+ * collection class's allowed actions, kept in table order. When no set is
+ * configured the whole allowed set is requested; a narrower subset stays legal
+ * and is passed through as asked. An EXPLICIT set naming an action OUTSIDE the
+ * class's allowed actions is a configuration error thrown here, at request
+ * build time: a conformant wallet can never grant it, so silently capping
+ * would leave the app believing it asked for more than any correct wallet
+ * returns, and the mismatch would surface later as a failed login instead of
+ * as the config bug it is.
  *
  * @param options {object}
  * @param options.id {string}   the WAS collection id (for error messages)
@@ -148,8 +147,9 @@ function requestedActions({
   const excess = actions.filter(action => !ceiling.includes(action))
   if (excess.length > 0) {
     throw new Error(
-      `Collection "${id}" cannot request action(s) above its class ceiling: ` +
-        `${excess.join(', ')} (the ceiling is ${ceiling.join(', ')}).`
+      `Collection "${id}" cannot request action(s) outside its class's ` +
+        `allowed actions: ${excess.join(', ')} (the allowed actions are ` +
+        `${ceiling.join(', ')}).`
     )
   }
   const capped = ceiling.filter(action => actions.includes(action))
@@ -164,9 +164,12 @@ function requestedActions({
 /**
  * The one-popup App Connect VPR: DIDAuthentication + a single `AppConnectQuery`.
  *
- * The `app` block names the app (for the wallet's consent screen) and carries
- * the seed-credential naming (`credentialType`/`vocabBase`) the wallet needs to
- * MATCH an existing app key or MINT a fresh one. `capabilityQuery` holds one
+ * The `app` block names the app -- `name` for the wallet's consent screen, and
+ * `appUrl`, the application's canonical URL, which the wallet needs to MATCH an
+ * existing app key or MINT a fresh one. The `appUrl` is validated and
+ * serialized here against `domain` (this app's own live browser origin): it
+ * must be an absolute, fragment-less, same-origin URL, and the serialization is
+ * what everything downstream stores and compares. `capabilityQuery` holds one
  * collection-scoped grant request per app collection -- the existing capability
  * shape MINUS `controller` (the wallet fills it with the app-key subject DID)
  * and MINUS `reason` (the App Connect consent screen supersedes per-grant
@@ -179,8 +182,8 @@ function requestedActions({
  * @param options.domain {string}
  * @param options.appName {string}   human-readable app name for the consent
  *   screen
- * @param options.credential {SeedCredentialConfig}   the app's seed-credential
- *   type name + vocabulary namespace (match / mint)
+ * @param options.appUrl {string}   the application's canonical URL, same-origin
+ *   with `domain` and fragment-less; emitted in its serialized form
  * @param options.collections {GrantRequestCollection[]}   the collections to
  *   request (WAS collection id + visibility)
  * @param [options.sharedCollections] {string[]}   WAS collection ids of
@@ -188,17 +191,17 @@ function requestedActions({
  *   a `https://w3id.org/byoe#shared-wallet-collection` descriptor with
  *   {@link SHARED_ACTIONS}
  * @param [options.actions] {string[]}   the action set to request on each app
- *   collection; when omitted each collection requests exactly its class
- *   ceiling ({@link actionCeiling}). An explicit set naming an action above a
- *   requested collection's ceiling throws (a configuration error, surfaced at
- *   build time rather than as a failed login)
+ *   collection; when omitted each collection requests exactly its class's
+ *   allowed actions ({@link actionCeiling}). An explicit set naming an action
+ *   outside them throws (a configuration error, surfaced at build time rather
+ *   than as a failed login)
  * @returns {IVPRDetails}
  */
 export function buildAppConnectVpr({
   challenge,
   domain,
   appName,
-  credential,
+  appUrl,
   collections,
   sharedCollections = [],
   actions
@@ -206,7 +209,7 @@ export function buildAppConnectVpr({
   challenge: string
   domain: string
   appName: string
-  credential: SeedCredentialConfig
+  appUrl: string
   collections: GrantRequestCollection[]
   sharedCollections?: string[]
   actions?: string[]
@@ -244,8 +247,7 @@ export function buildAppConnectVpr({
         type: 'AppConnectQuery',
         app: {
           name: appName,
-          credentialType: credential.credentialType,
-          vocabBase: credential.vocabBase
+          appUrl: serializedAppUrl({ appUrl, origin: domain })
         },
         capabilityQuery
       }

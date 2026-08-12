@@ -55,12 +55,12 @@ export {
 } from './identity/seedStore.js'
 export {
   APP_KEY_CREDENTIAL_TYPE,
+  APP_KEY_TYPE_ARRAY,
   issueSeedCredential,
   parseSeedCredential,
   findSeedCredential,
   bytesToBase64url,
   base64urlToBytes,
-  type SeedCredentialConfig,
   type ParsedSeedCredential
 } from './identity/seedCredential.js'
 export {
@@ -78,7 +78,6 @@ export {
 export { DEFAULT_MEDIATOR_BASE, loadChapi, chapiGet } from './auth/chapi.js'
 export {
   RW_ACTIONS,
-  PUBLIC_ACTIONS,
   SHARED_ACTIONS,
   actionCeiling,
   newChallenge,
@@ -128,7 +127,7 @@ export {
   requireRemoteStore,
   hasRemoteStore,
   clearRemoteStore,
-  getClientId
+  getWriterId
 } from './storage/storageManager.js'
 export { createEntityStore, type EntityStore } from './storage/entityStore.js'
 export {

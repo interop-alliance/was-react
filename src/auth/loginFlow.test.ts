@@ -23,10 +23,7 @@ import type {
   IVerifiablePresentation,
   IZcap
 } from '@interop/data-integrity-core'
-import {
-  issueSeedCredential,
-  type SeedCredentialConfig
-} from '../identity/seedCredential.js'
+import { issueSeedCredential } from '../identity/seedCredential.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
 import { deriveIdentity } from '../identity/agents.js'
 import type { LoginConfig } from './loginFlow.js'
@@ -49,24 +46,14 @@ const mockGet = vi.mocked(chapiGet)
 
 const SERVER_URL = 'http://localhost:3999'
 const SPACE_URL = `${SERVER_URL}/space/e2e-space`
-const CONFIG: SeedCredentialConfig = {
-  credentialType: 'TestAppKey',
-  vocabBase: 'urn:test-app:vocab#'
-}
+const APP_URL = `${ORIGIN}/test-app`
 const COLLECTIONS = [{ id: 'notes' }, { id: 'projects' }]
 const documentLoader = createDocumentLoader()
 
-const ZCAP_TERM_CONTEXT = {
-  '@protected': true,
-  zcap: { '@id': 'https://w3id.org/byoe#zcap', '@container': '@set' }
-} as const
-
-// Mirrors the wallet's actual composeVp term (wallet-core's
-// DEFAULT_VOCAB_BASE_IRI), so this fixture drifts with the real wire IRI.
-const APP_CONNECT_TERM_CONTEXT = {
-  '@protected': true,
-  appConnect: { '@id': 'https://w3id.org/byoe#appConnect', '@type': '@json' }
-} as const
+// The hosted App Connect context defines the response VP's `zcap` and
+// `appConnect` terms (and the app-key credential's), exactly as the wallet
+// emits them; the document loader resolves it statically.
+const APP_CONNECT_CONTEXT_URL = 'https://w3id.org/byoe/app-connect/v1'
 
 interface WalletIdentity {
   holder: string
@@ -80,8 +67,8 @@ let appSeed: Uint8Array
 const loginConfig: LoginConfig = {
   appOrigin: ORIGIN,
   appName: 'Test App',
+  appUrl: APP_URL,
   collections: COLLECTIONS,
-  credential: CONFIG,
   documentLoader
 }
 
@@ -148,11 +135,13 @@ async function walletVp({
   }
   const contexts: unknown[] = []
   if (zcaps && zcaps.length > 0) {
-    contexts.push(ZCAP_TERM_CONTEXT)
+    contexts.push(APP_CONNECT_CONTEXT_URL)
     presentation.zcap = zcaps
   }
+  if (appConnect && !contexts.includes(APP_CONNECT_CONTEXT_URL)) {
+    contexts.push(APP_CONNECT_CONTEXT_URL)
+  }
   if (appConnect) {
-    contexts.push(APP_CONNECT_TERM_CONTEXT)
     presentation.appConnect = appConnect
   }
   if (contexts.length > 0) {
@@ -175,8 +164,8 @@ async function appKeyCredential(): Promise<IVerifiableCredential> {
   return issueSeedCredential({
     seed: appSeed,
     origin: ORIGIN,
+    appUrl: APP_URL,
     appName: 'Test App',
-    config: CONFIG,
     documentLoader
   })
 }
@@ -322,14 +311,11 @@ describe('App Connect grant checking', () => {
     )
   })
 
-  it('completes a public-collection login against a wallet that caps public grants add-only', async () => {
-    // The FW-106 regression: a config declaring a public collection must
-    // request within the add-only ceiling and accept the GET/HEAD/POST grant a
-    // conformant wallet returns -- not reject it over PUT/DELETE the
-    // public-collection ceiling forbids.
+  it('completes a public-collection login on the full action vocabulary', async () => {
+    // A public collection now allows the same actions as a private one, so the
+    // request asks for the whole vocabulary on both and the wallet grants it.
     const credential = await appKeyCredential()
     mockGet.mockImplementation(async ({ vpr }) => {
-      // The request itself stays within the ceiling per collection.
       const queries = Array.isArray(vpr.query) ? vpr.query : [vpr.query]
       const appConnect = queries.find(
         entry => entry.type === 'AppConnectQuery'
@@ -337,16 +323,13 @@ describe('App Connect grant checking', () => {
       expect(
         appConnect.capabilityQuery.map(entry => entry.allowedAction)
       ).toEqual([
-        ['GET', 'HEAD', 'POST'],
-        ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+        ['GET', 'HEAD', 'POST', 'PUT', 'DELETE'],
+        ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
       ])
       return walletVp({
         challenge: vpr.challenge as string,
         credential,
-        zcaps: [
-          grantFor('microblog-posts', ['GET', 'HEAD', 'POST']),
-          grantFor('notes')
-        ]
+        zcaps: [grantFor('microblog-posts'), grantFor('notes')]
       })
     })
 

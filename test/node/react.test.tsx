@@ -21,10 +21,7 @@ const config: WasAppConfig = {
   appName: 'Test App',
   appOrigin: 'http://localhost:5173',
   collections: [{ key: 'notes', id: 'notes' }],
-  credential: {
-    credentialType: 'TestAppKey',
-    vocabBase: 'urn:test-app:vocab#'
-  }
+  appUrl: 'http://localhost:5173/test-app'
 }
 
 const registry: StoreRegistry = {}

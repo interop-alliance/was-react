@@ -61,10 +61,7 @@ function baseConfig(collections: { key: string; id: string }[]): WasAppConfig {
     appName: 'Test App',
     appOrigin: 'http://localhost:5173',
     collections,
-    credential: {
-      credentialType: 'TestAppKey',
-      vocabBase: 'urn:test-app:vocab#'
-    },
+    appUrl: 'http://localhost:5173/test-app',
     // A unique base name per config so the RxDB databases never collide
     // across tests sharing the one process-wide fake-indexeddb.
     dbName: `was-react-${Math.random().toString(36).slice(2)}`

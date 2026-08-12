@@ -26,11 +26,11 @@ import type {
   IVerifiablePresentation,
   IZcap
 } from '@interop/data-integrity-core'
+import { serializedAppUrl } from '@interop/wallet-core/request'
 import type { DocumentLoader } from '../identity/documentLoader.js'
 import {
   findSeedCredential,
-  parseSeedCredential,
-  type SeedCredentialConfig
+  parseSeedCredential
 } from '../identity/seedCredential.js'
 import { NO_EXPIRY_MS } from '../identity/appSession.js'
 import type { IdentityAgents } from '../identity/agents.js'
@@ -63,6 +63,14 @@ export interface LoginConfig {
    */
   appName: string
   /**
+   * This app's canonical URL: the application's identity among the
+   * applications on its origin. It must be an absolute URL, carry no fragment,
+   * and be same-origin with `appOrigin`; the flow serializes it once and uses
+   * that serialization for the request, the credential lookup, and the parse
+   * check alike.
+   */
+  appUrl: string
+  /**
    * The collections to request read/write grants for (WAS collection id +
    * visibility; `'public'` selects the `https://w3id.org/byoe#public-collection` descriptor).
    */
@@ -73,10 +81,6 @@ export interface LoginConfig {
    * Read-only; never replicated.
    */
   sharedCollections?: string[]
-  /**
-   * The seed-credential type name + vocabulary namespace.
-   */
-  credential: SeedCredentialConfig
   /**
    * The JSON-LD document loader (see `createDocumentLoader`).
    */
@@ -207,17 +211,46 @@ function checkGrantsForCollections({
 }
 
 /**
+ * This app's live browser origin: the value sent as the request `domain`, the
+ * origin the `appUrl` is validated against, and the origin the returned
+ * credential's `origin` claim is checked against. The App Connect spec requires
+ * all three to be the same value, and requires it to be the origin the app is
+ * actually running on rather than one taken from configuration -- so a
+ * configured `appOrigin` that drifts from it is warned about here and never
+ * used as the bind.
+ *
+ * @param config {LoginConfig}
+ * @returns {string}
+ */
+function liveOrigin(config: LoginConfig): string {
+  const origin = window.location.origin
+  if (config.appOrigin !== origin) {
+    console.warn(
+      `Configured appOrigin "${config.appOrigin}" differs from this app's ` +
+        `live browser origin "${origin}"; the live origin is what binds.`
+    )
+  }
+  return origin
+}
+
+/**
  * Runs one App Connect round trip: builds the VPR, opens the single CHAPI `get`
  * popup, and verifies the response presentation (cryptographically, plus the
  * challenge/domain binds). Shared by the full login and the reconnect re-grant
  * -- the same request either way; they differ only in what they take from the
  * verified presentation, and in the step a user cancel names.
  *
+ * The `challenge` is a fresh, unpredictable nonce per call (never reused), and
+ * is retained for the response check. The serialized `appUrl` actually sent is
+ * returned alongside the presentation, so the credential lookup and the parse
+ * check compare against the very same string.
+ *
  * @param options {object}
  * @param options.config {LoginConfig}
  * @param options.cancelStep {string}   the step a cancel is reported against
  * @param [options.onPhase] {Function}
- * @returns {Promise<IVerifiablePresentation>}
+ * @returns {Promise<{ presentation: IVerifiablePresentation, origin: string,
+ *   appUrl: string }>}
  */
 async function runAppConnect({
   config,
@@ -227,14 +260,21 @@ async function runAppConnect({
   config: LoginConfig
   cancelStep: string
   onPhase?: (phase: LoginPhase) => void
-}): Promise<IVerifiablePresentation> {
+}): Promise<{
+  presentation: IVerifiablePresentation
+  origin: string
+  appUrl: string
+}> {
   onPhase?.('connecting')
   const challenge = newChallenge()
+  const origin = liveOrigin(config)
+  // Serialized once, here, and threaded to every comparison downstream.
+  const appUrl = serializedAppUrl({ appUrl: config.appUrl, origin })
   const vpr = buildAppConnectVpr({
     challenge,
-    domain: window.location.origin,
+    domain: origin,
     appName: config.appName,
-    credential: config.credential,
+    appUrl,
     collections: config.collections,
     ...(config.sharedCollections && {
       sharedCollections: config.sharedCollections
@@ -253,10 +293,10 @@ async function runAppConnect({
   await verifyLoginPresentation({
     presentation,
     challenge,
-    domain: window.location.origin,
+    domain: origin,
     documentLoader: config.documentLoader
   })
-  return presentation
+  return { presentation, origin, appUrl }
 }
 
 /**
@@ -280,7 +320,7 @@ export async function requestGrants({
   config: LoginConfig
   onPhase?: (phase: LoginPhase) => void
 }): Promise<CheckedGrants> {
-  const presentation = await runAppConnect({
+  const { presentation } = await runAppConnect({
     config,
     cancelStep: 'storage grants',
     ...(onPhase && { onPhase })
@@ -316,7 +356,7 @@ export async function loginWithWallet({
   config: LoginConfig
   onPhase?: (phase: LoginPhase) => void
 }): Promise<LoginOutcome> {
-  const presentation = await runAppConnect({
+  const { presentation, origin, appUrl } = await runAppConnect({
     config,
     cancelStep: 'wallet login',
     ...(onPhase && { onPhase })
@@ -325,20 +365,20 @@ export async function loginWithWallet({
   // The wallet mints the app key on first run, so a response with no app-key
   // credential is not first run -- it is a wallet that could not satisfy
   // `AppConnectQuery` at all. Fail closed, legibly, rather than as a generic
-  // verification error.
-  const credential = findSeedCredential({
-    presentation,
-    credentialType: config.credential.credentialType
-  })
+  // verification error. Located by the `appUrl` claim alone; a returned
+  // credential that is wrong in any other way throws from the parse below
+  // rather than reading here as "nothing returned".
+  const credential = findSeedCredential({ presentation, appUrl })
   if (!credential) {
     throw new WalletUnsupportedError()
   }
-  // Recover the seed, enforcing self-issue + origin + the seed-to-DID binding
-  // (the same contract whether the wallet matched or minted the credential).
+  // Recover the seed, enforcing the marker type, the appUrl match, self-issue,
+  // the origin bind, and the seed-to-DID binding (the same contract whether the
+  // wallet matched or minted the credential).
   const parsedCredential = await parseSeedCredential({
     credential,
-    origin: config.appOrigin,
-    config: config.credential
+    origin,
+    appUrl
   })
   const seed = parsedCredential.seed
   const firstRun = appConnectFirstRun(presentation)

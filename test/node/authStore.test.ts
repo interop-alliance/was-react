@@ -151,10 +151,7 @@ function baseConfig(): WasAppConfig {
     appName: 'Test App',
     appOrigin: 'http://localhost:5173',
     collections: [{ key: 'notes', id: 'notes' }],
-    credential: {
-      credentialType: 'TestAppKey',
-      vocabBase: 'urn:test-app:vocab#'
-    },
+    appUrl: 'http://localhost:5173/test-app',
     // A unique base name per config so the RxDB / IndexedDB databases never
     // collide across tests sharing the one process-wide fake-indexeddb.
     dbName: `was-react-${Math.random().toString(36).slice(2)}`
@@ -504,14 +501,14 @@ describe('adoption', () => {
       id: string
       title: string
       updatedAt: string
-      clientId: string
+      writerId: string
     }>('notes')
     expect(adopted.map(doc => doc.title).sort()).toEqual(['first', 'second'])
     for (const doc of adopted) {
       expect(typeof doc.updatedAt).toBe('string')
       expect(doc.updatedAt.length).toBeGreaterThan(0)
-      expect(typeof doc.clientId).toBe('string')
-      expect(doc.clientId.length).toBeGreaterThan(0)
+      expect(typeof doc.writerId).toBe('string')
+      expect(doc.writerId.length).toBeGreaterThan(0)
     }
     // The anon seed is gone and its database was deleted (a reopen is empty).
     expect(await anon.loadSeed()).toBeNull()
@@ -583,7 +580,7 @@ describe('adoption', () => {
       id: uuid,
       title: 'connected-older',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
 
     // Back to local (the connected replica is kept on the device), then write a
@@ -594,7 +591,7 @@ describe('adoption', () => {
       id: uuid,
       title: 'anon-newer',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
 
     // Reconnect under the same seed (same per-controller database): adoption
@@ -621,7 +618,7 @@ describe('adoption', () => {
       id: uuid,
       title: 'connected-newer',
       updatedAt: '2026-02-02T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
 
     await store.getState().logout()
@@ -629,7 +626,7 @@ describe('adoption', () => {
       id: uuid,
       title: 'anon-older',
       updatedAt: '2026-01-01T00:00:00.000Z',
-      clientId: 'device-a'
+      writerId: 'device-a'
     })
 
     await store.getState().connectWithGrants({ seed: walletSeed, grants })

@@ -74,10 +74,13 @@ export type IAppConnectCapabilityQuery = Omit<
 >
 
 /**
- * The one-popup App Connect query: it names the requesting app (for the consent
- * screen) and the seed-credential naming the wallet needs to MATCH an existing
- * app key or MINT a fresh one, alongside the collection grants to delegate to
- * that app key's subject DID. A wallet that predates this type renders it
+ * The one-popup App Connect query: it names the requesting app -- `name` for
+ * the consent screen, and `appUrl`, the application's canonical URL (absolute,
+ * fragment-less, same-origin with the request `domain`, in serialized form),
+ * which the wallet uses to MATCH an existing app key or MINT a fresh one --
+ * alongside the collection grants to delegate to that app key's subject DID.
+ * The app identity is scoped to the pair (origin, `appUrl`), so applications
+ * sharing an origin keep distinct identities. A wallet that predates this type renders it
  * UNSATISFIABLE (the intended fail-closed behavior -- see `verifyResponse` /
  * `loginFlow`), so an older wallet cannot silently degrade the login.
  *
@@ -87,8 +90,7 @@ export type IAppConnectQuery = {
   type: 'AppConnectQuery'
   app: {
     name: string
-    credentialType: string
-    vocabBase: string
+    appUrl: string
   }
   capabilityQuery: IAppConnectCapabilityQuery | IAppConnectCapabilityQuery[]
 }

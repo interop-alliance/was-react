@@ -7,17 +7,17 @@
  * correct for content-addressed (immutable-per-id) collections but wrong here:
  * every entity is a mutable head that two devices can edit concurrently, so a
  * genuine content conflict must be settled by last-write-wins on the payload's
- * own `updatedAt` (clientId tiebreak) -- exactly the rule two offline replicas
+ * own `updatedAt` (writerId tiebreak) -- exactly the rule two offline replicas
  * apply independently to converge.
  *
  * The wrinkle is that the conflicting bodies are EDV envelopes (ciphertext), so
  * `resolve` must decrypt both sides through this collection's cipher before it
- * can compare the plaintext `updatedAt` / `clientId`. `isEqual` stays cheap and
+ * can compare the plaintext `updatedAt` / `writerId`. `isEqual` stays cheap and
  * synchronous (a structural compare of the opaque bodies), as RxDB requires.
  *
  * Convergence: the server holds ONE winner of the push race as `realMasterState`;
  * every replica compares that same master against its own local edit, and the
- * `payloadWins` comparator is a total order over `(updatedAt, clientId)`, so the
+ * `payloadWins` comparator is a total order over `(updatedAt, writerId)`, so the
  * globally-latest payload wins on every replica with no coordination.
  *
  * The resolution rules, in order:
@@ -105,7 +105,7 @@ async function lwwFieldsOf(
  * @param [payloadWins] {(remote: LwwFields, local: LwwFields) => boolean}
  *   the total-order comparator deciding whether the remote payload replaces the
  *   local one; defaults to {@link remotePayloadWins} (later `updatedAt` wins,
- *   `clientId` breaks a tie)
+ *   `writerId` breaks a tie)
  * @returns {import('rxdb/plugins/core').RxConflictHandler<SyncedDoc>}
  */
 export function makeLwwConflictHandler(

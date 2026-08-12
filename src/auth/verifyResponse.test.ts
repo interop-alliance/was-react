@@ -17,10 +17,7 @@ import type {
   IVerifiablePresentation,
   IZcap
 } from '@interop/data-integrity-core'
-import {
-  issueSeedCredential,
-  type SeedCredentialConfig
-} from '../identity/seedCredential.js'
+import { issueSeedCredential } from '../identity/seedCredential.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
 import { deriveIdentity } from '../identity/agents.js'
 import {
@@ -33,10 +30,7 @@ const ORIGIN = 'http://localhost:5173'
 const APP_NAME = 'Test App'
 const SERVER_URL = 'http://localhost:3999'
 const SPACE_URL = `${SERVER_URL}/space/e2e-space`
-const CONFIG: SeedCredentialConfig = {
-  credentialType: 'TestAppKey',
-  vocabBase: 'urn:test-app:vocab#'
-}
+const APP_URL = `${ORIGIN}/test-app`
 const TEST_COLLECTIONS = [
   'action-items',
   'projects',
@@ -52,10 +46,9 @@ const TEST_COLLECTIONS = [
 const TEST_COLLECTION_REQUESTS = TEST_COLLECTIONS.map(id => ({ id }))
 const documentLoader = createDocumentLoader()
 
-const ZCAP_TERM_CONTEXT = {
-  '@protected': true,
-  zcap: { '@id': 'https://w3id.org/byoe#zcap', '@container': '@set' }
-} as const
+// The hosted App Connect context defines the response VP's `zcap` term
+// exactly as the wallet emits it; the document loader resolves it statically.
+const APP_CONNECT_CONTEXT_URL = 'https://w3id.org/byoe/app-connect/v1'
 
 interface WalletIdentity {
   holder: string
@@ -147,7 +140,7 @@ function unsignedVp({
     const base = presentation['@context']
     presentation['@context'] = [
       ...(Array.isArray(base) ? base : [base]),
-      ZCAP_TERM_CONTEXT
+      APP_CONNECT_CONTEXT_URL
     ]
     presentation.zcap = zcaps
   }
@@ -193,8 +186,8 @@ describe('verifyLoginPresentation', () => {
     const credential = await issueSeedCredential({
       seed: appSeed,
       origin: ORIGIN,
+      appUrl: APP_URL,
       appName: APP_NAME,
-      config: CONFIG,
       documentLoader
     })
     const presentation = await walletVp({
@@ -381,8 +374,8 @@ describe('verifyLoginPresentation', () => {
     const credential = await issueSeedCredential({
       seed: appSeed,
       origin: ORIGIN,
+      appUrl: APP_URL,
       appName: APP_NAME,
-      config: CONFIG,
       documentLoader
     })
     const subject = credential.credentialSubject as Record<string, unknown>
@@ -502,12 +495,14 @@ describe('checkGrants', () => {
     ).toThrow(/lacks required actions/)
   })
 
-  it('accepts an add-only grant on a public collection (the wallet ceiling)', () => {
-    // A conformant wallet caps a #public-collection grant at GET/HEAD/POST;
-    // the default RW requirement must be capped at that ceiling too, not
-    // reject every correct wallet.
+  it('accepts a full-vocabulary grant on a public collection', () => {
+    // A public collection allows the same actions as a private one, so the
+    // default RW requirement is met outright.
     const grants = [
-      grantFor({ collectionId: 'posts', actions: ['GET', 'HEAD', 'POST'] })
+      grantFor({
+        collectionId: 'posts',
+        actions: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE']
+      })
     ]
     const checked = checkGrants({
       grants,
@@ -517,9 +512,9 @@ describe('checkGrants', () => {
     expect(Object.keys(checked.parsed.byCollectionId)).toEqual(['posts'])
   })
 
-  it('still rejects a public-collection grant below the add-only ceiling', () => {
+  it('rejects a public-collection grant missing a required write action', () => {
     const grants = [
-      grantFor({ collectionId: 'posts', actions: ['GET', 'HEAD'] })
+      grantFor({ collectionId: 'posts', actions: ['GET', 'HEAD', 'POST'] })
     ]
     expect(() =>
       checkGrants({
@@ -527,12 +522,12 @@ describe('checkGrants', () => {
         controllerDid: appDid,
         collections: [{ id: 'posts', visibility: 'public' }]
       })
-    ).toThrow(/lacks required actions: POST/)
+    ).toThrow(/lacks required actions: PUT, DELETE/)
   })
 
-  it('caps an explicit above-ceiling requirement at the class ceiling', () => {
-    // An app that configures the full RW set as required must not fail a
-    // public-collection login over the actions the ceiling forbids.
+  it('accepts an add-only public grant when only add-only is required', () => {
+    // The requirement is the app's own; a narrower one is met by the narrower
+    // grant a wallet returned for it.
     const grants = [
       grantFor({ collectionId: 'posts', actions: ['GET', 'HEAD', 'POST'] })
     ]
@@ -541,7 +536,7 @@ describe('checkGrants', () => {
         grants,
         controllerDid: appDid,
         collections: [{ id: 'posts', visibility: 'public' }],
-        requiredActions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+        requiredActions: ['GET', 'HEAD', 'POST']
       })
     ).not.toThrow()
   })

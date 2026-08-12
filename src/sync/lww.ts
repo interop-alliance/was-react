@@ -9,7 +9,7 @@
  * `updatedAt` (an ISO-8601 string) decides, compared CHRONOLOGICALLY (parsed to
  * epoch ms, never lexically -- `updatedAt` is app-owned, so mixed precision like
  * `...05Z` vs `...05.400Z`, or a `+00:00` offset, must still order by instant);
- * `clientId` breaks an exact-instant tie deterministically. Both fields live in
+ * `writerId` breaks an exact-instant tie deterministically. Both fields live in
  * the payload (never the envelope-level checkpoint `updatedAt`).
  */
 
@@ -21,7 +21,7 @@
  */
 export interface LwwFields {
   updatedAt: string
-  clientId: string
+  writerId: string
 }
 
 /**
@@ -35,7 +35,7 @@ function parseInstant(updatedAt: string): number | null {
 /**
  * Whether the remote payload wins over the local one under last-write-wins.
  * The chronologically later `updatedAt` wins; on an exact-instant tie the
- * lexically greater `clientId` wins (an arbitrary but deterministic,
+ * lexically greater `writerId` wins (an arbitrary but deterministic,
  * replica-independent choice).
  *
  * Unparseable `updatedAt` values are rejected as losers: a side whose stamp
@@ -64,23 +64,23 @@ export function remotePayloadWins(
     // Neither parses: fall back to the deterministic lexical compare.
     return remote.updatedAt > local.updatedAt
   }
-  return remote.clientId > local.clientId
+  return remote.writerId > local.writerId
 }
 
 /**
  * Reads the LWW fields off a doc when it carries them. Storage payloads are
- * generic over `{ id: string }`, so docs without `updatedAt`/`clientId` are
+ * generic over `{ id: string }`, so docs without `updatedAt`/`writerId` are
  * legal; callers fall back to their own rule for those.
  *
  * @param doc {unknown}
  * @returns {LwwFields | null}
  */
 export function lwwFields(doc: unknown): LwwFields | null {
-  const { updatedAt, clientId } = doc as {
+  const { updatedAt, writerId } = doc as {
     updatedAt?: unknown
-    clientId?: unknown
+    writerId?: unknown
   }
-  return typeof updatedAt === 'string' && typeof clientId === 'string'
-    ? { updatedAt, clientId }
+  return typeof updatedAt === 'string' && typeof writerId === 'string'
+    ? { updatedAt, writerId }
     : null
 }

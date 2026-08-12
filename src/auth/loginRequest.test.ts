@@ -3,15 +3,14 @@
  */
 /**
  * buildAppConnectVpr tests: the one-popup App Connect VPR carries a
- * DIDAuthentication query plus a single `AppConnectQuery` naming the app and the
- * seed-credential, with exactly one collection-scoped capability query per
+ * DIDAuthentication query plus a single `AppConnectQuery` naming the app (its
+ * display name and its canonical `appUrl`), with exactly one collection-scoped capability query per
  * requested collection -- and no `controller` or `reason` on those entries (the
  * wallet fills the controller; the consent screen supersedes reasons).
  */
 import { describe, expect, it } from 'vitest'
 import {
   buildAppConnectVpr,
-  PUBLIC_ACTIONS,
   RW_ACTIONS,
   SHARED_ACTIONS
 } from './loginRequest.js'
@@ -25,10 +24,7 @@ const BASE = {
   challenge: 'challenge-1',
   domain: 'https://app.example',
   appName: 'Example',
-  credential: {
-    credentialType: 'ExampleAppKey',
-    vocabBase: 'urn:example:vocab#'
-  }
+  appUrl: 'https://app.example/notes-app'
 }
 
 function appConnectQueryOf(vpr: IVPRDetails): IAppConnectQuery {
@@ -59,13 +55,43 @@ describe('buildAppConnectVpr', () => {
     expect(vpr.domain).toBe(BASE.domain)
   })
 
-  it('carries the app name and seed-credential naming in the app block', () => {
+  it('carries the app name and the serialized appUrl in the app block', () => {
     const vpr = buildAppConnectVpr({ ...BASE, collections: [{ id: 'notes' }] })
     expect(appConnectQueryOf(vpr).app).toEqual({
       name: BASE.appName,
-      credentialType: BASE.credential.credentialType,
-      vocabBase: BASE.credential.vocabBase
+      appUrl: BASE.appUrl
     })
+  })
+
+  it('emits the appUrl in serialized form, not as spelled', () => {
+    const vpr = buildAppConnectVpr({
+      ...BASE,
+      appUrl: 'https://app.example:443/a/../notes-app',
+      collections: [{ id: 'notes' }]
+    })
+    expect(appConnectQueryOf(vpr).app.appUrl).toBe(
+      'https://app.example/notes-app'
+    )
+  })
+
+  it('refuses an appUrl that is not same-origin with the domain', () => {
+    expect(() =>
+      buildAppConnectVpr({
+        ...BASE,
+        appUrl: 'https://other.example/notes-app',
+        collections: [{ id: 'notes' }]
+      })
+    ).toThrow()
+  })
+
+  it('refuses an appUrl carrying a fragment', () => {
+    expect(() =>
+      buildAppConnectVpr({
+        ...BASE,
+        appUrl: 'https://app.example/notes-app#main',
+        collections: [{ id: 'notes' }]
+      })
+    ).toThrow()
   })
 
   it('emits exactly one collection-scoped query per collection, no controller or reason', () => {
@@ -111,28 +137,37 @@ describe('buildAppConnectVpr', () => {
         { type: 'https://w3id.org/byoe#private-collection', name: 'drafts' },
         { type: 'https://w3id.org/byoe#private-collection', name: 'notes' }
       ])
-      // Each collection requests exactly its class ceiling: add-only for a
-      // public collection (a conformant wallet caps the grant there anyway),
-      // the full RW vocabulary for a private one.
+      // Both classes allow the full action vocabulary, so each collection
+      // requests exactly it.
       expect(capabilityQuery.map(entry => entry.allowedAction)).toEqual([
-        PUBLIC_ACTIONS,
+        RW_ACTIONS,
         RW_ACTIONS,
         RW_ACTIONS
       ])
     }
   )
 
-  it('throws at build time when an explicit action set exceeds a public ceiling', () => {
+  it('allows PUT and DELETE on a public collection', () => {
+    const vpr = buildAppConnectVpr({
+      ...BASE,
+      collections: [{ id: 'microblog-posts', visibility: 'public' }],
+      actions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+    })
+    const capabilityQuery = capabilityQueriesOf(vpr)
+    expect(capabilityQuery[0]?.allowedAction).toEqual(RW_ACTIONS)
+  })
+
+  it('throws at build time on an action outside the vocabulary', () => {
     expect(() =>
       buildAppConnectVpr({
         ...BASE,
         collections: [{ id: 'microblog-posts', visibility: 'public' }],
-        actions: ['GET', 'HEAD', 'PUT', 'POST', 'DELETE']
+        actions: ['GET', 'PATCH']
       })
-    ).toThrow(/above its class ceiling: PUT, DELETE/)
+    ).toThrow(/outside its class's allowed actions: PATCH/)
   })
 
-  it('caps an explicit within-ceiling action set to ceiling order', () => {
+  it('keeps an explicit narrower action set, in table order', () => {
     const vpr = buildAppConnectVpr({
       ...BASE,
       collections: [{ id: 'microblog-posts', visibility: 'public' }],

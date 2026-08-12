@@ -273,7 +273,7 @@ export class LocalStore {
     // Each collection gets an LWW conflict handler bound to its own cipher, so
     // a 412 push conflict (concurrent multi-device edit of the same mutable
     // head) is settled by decrypting both sides and comparing payload
-    // `updatedAt` (clientId tiebreak) rather than RxDB's default master-wins.
+    // `updatedAt` (writerId tiebreak) rather than RxDB's default master-wins.
     // On a public collection the codec is pass-through, so the handler reads
     // those fields directly off the plaintext payload.
     // The handler decrypts through the store's epoch-REFRESHING path once the
@@ -695,7 +695,7 @@ export class LocalStore {
    * created the singleton before syncing produce distinct envelope rows that all
    * decrypt to the same logical id; because LWW conflict resolution is
    * per-envelope-id, those duplicates never reconcile on their own. This keeps
-   * the last-writer-wins winner (payload `updatedAt`, `clientId` tiebreak) and
+   * the last-writer-wins winner (payload `updatedAt`, `writerId` tiebreak) and
    * tombstones the losers so the deletion replicates and the space converges on
    * one row. Returns the winning payload, or `null` when the collection is empty.
    *
@@ -703,7 +703,7 @@ export class LocalStore {
    * @returns {Promise<T | null>}
    */
   async hydrateSingleton<
-    T extends { id: string; updatedAt: string; clientId: string }
+    T extends { id: string; updatedAt: string; writerId: string }
   >(key: string): Promise<T | null> {
     const collection = this.#collection(key)
     const rows = await collection.find().exec()
