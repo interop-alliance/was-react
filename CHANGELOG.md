@@ -1,5 +1,25 @@
 # @interop/was-react Changelog
 
+## 0.12.0 - TBD
+
+### Changed
+
+- Requires `@interop/was-client` >= 0.34.
+- `createWasSyncPort` now delegates to was-client's own `createWasSyncPort`
+  (built with `mapAuthErrors: true`) instead of hand-building requests; it still
+  returns a `WasSyncBasePort`, with `get` supplied by `withFeedMasterRead`.
+- WAS URL grammar is imported from `@interop/was-client/paths` (`spacePath`,
+  `collectionPath`, `collectionItems`, `resourcePath`, `toUrl`,
+  `rootCapability`); the local `collectionPath` in `grants.ts` is gone.
+- `publicUrlFor` builds its URL through the shared path builders, fixing a
+  double slash when the server URL ends in `/` and rejecting reserved and
+  dot-segment ids.
+- `WasSyncAuthError`, `WasSyncConflictError`, and `errorMessage` are now
+  re-exported from `@interop/was-client` rather than declared locally; the
+  exported names are unchanged.
+- `SyncCheckpoint` is an alias of was-client's type, and `MasterState` extends
+  was-client's (adding the required `deleted` flag, and picking up `createdBy`).
+
 ## 0.11.1 - 2026-08-10
 
 ### Breaking

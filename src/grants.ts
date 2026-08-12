@@ -33,26 +33,6 @@ export interface ParsedGrants {
 }
 
 /**
- * Builds the server path of a collection, the inverse of the grammar
- * `parseInvocationTarget` reads. Callers append a trailing slash or query
- * string for resource-listing and query endpoints.
- *
- * @param options {object}
- * @param options.spaceId {string}
- * @param options.collectionId {string}
- * @returns {string}
- */
-export function collectionPath({
-  spaceId,
-  collectionId
-}: {
-  spaceId: string
-  collectionId: string
-}): string {
-  return `/space/${spaceId}/${collectionId}`
-}
-
-/**
  * Parses a single `invocationTarget` URL into its WAS components: the server
  * origin, the space id, and the collection (every routed grant is
  * collection-scoped, so `collectionId` is always present). `serverUrl` is

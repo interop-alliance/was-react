@@ -2,29 +2,32 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit tests for `createWasSyncPort`'s HTTP-status-to-typed-error mapping,
- * driven by a fake `WasClient` whose `request` rejects with a scripted status.
- * The port maps `412` to {@link WasSyncConflictError} and `401` / `403` / `404`
- * (a WAS server masks a failed capability invocation as `404`) to
- * {@link WasSyncAuthError} on both the query (pull) and the conditional-write
- * (push) paths; every other status propagates unchanged, and a `404` on delete
- * stays the already-absent success.
+ * Unit tests for the glue this package still owns over the client's own sync
+ * port: that it is built with `mapAuthErrors` on, so a `401` / `403` / the
+ * `404` a WAS server masks a failed capability invocation as arrive as a
+ * {@link WasSyncAuthError} the sync controller can match -- on the pull path as
+ * well as the push path -- while `412` stays a {@link WasSyncConflictError}, a
+ * `404` on delete stays the already-absent success, and every other status
+ * propagates unchanged. The requests themselves (paths, headers, ETag parsing)
+ * are the client's, and are tested there.
  */
 import { describe, it, expect } from 'vitest'
 import type { WasClient } from '@interop/was-client'
-import { errorStatus } from '@interop/was-client/sync'
 import { createWasSyncPort } from './wasSyncPort.js'
 import { WasSyncAuthError, WasSyncConflictError } from './types.js'
 
 /**
- * A fake `WasClient` whose `request` always rejects with an error carrying the
- * given HTTP status, so a test can assert how the port maps that status.
+ * A fake `WasClient` whose raw `request` and whose `changes` feed both reject
+ * with an error carrying the given HTTP status, so a test can assert how the
+ * port maps that status on either path.
  */
 function rejectingClient(status: number): WasClient {
+  const reject = async () => {
+    throw Object.assign(new Error(`HTTP ${status}`), { status })
+  }
   return {
-    request: async () => {
-      throw Object.assign(new Error(`HTTP ${status}`), { status })
-    }
+    request: reject,
+    space: () => ({ collection: () => ({ changes: reject }) })
   } as unknown as WasClient
 }
 
@@ -34,38 +37,6 @@ function makePort(status: number) {
     spaceId: 'space-1',
     collectionId: 'notes'
   })
-}
-
-/**
- * One recorded `was.request()` call: what the port put on the wire.
- */
-interface RequestCall {
-  path: string
-  method: string
-  json?: unknown
-  headers?: Record<string, string>
-}
-
-/**
- * A fake `WasClient` whose `request` records the call and answers like a
- * versioning server (an `ETag` the port parses into the acked revision), so a
- * test can assert the request the port BUILT rather than only its error
- * mapping.
- */
-function recordingPort(etag = '"3"') {
-  const calls: RequestCall[] = []
-  const was = {
-    request: async (options: RequestCall) => {
-      calls.push(options)
-      return { data: {}, headers: new Headers({ etag }) }
-    }
-  } as unknown as WasClient
-  const port = createWasSyncPort({
-    was,
-    spaceId: 'space-1',
-    collectionId: 'notes'
-  })
-  return { calls, port }
 }
 
 describe('createWasSyncPort error mapping', () => {
@@ -125,79 +96,5 @@ describe('createWasSyncPort error mapping', () => {
     await expect(port.query({ limit: 10 })).rejects.toMatchObject({
       status: 500
     })
-  })
-})
-
-describe('createWasSyncPort request building', () => {
-  it('sends the key epoch as the key-epoch header on a content write', async () => {
-    const { calls, port } = recordingPort()
-
-    const version = await port.putContent({
-      id: 'a b',
-      data: { x: 1 },
-      ifMatch: '"2"',
-      epoch: 'e2'
-    })
-
-    expect(version).toBe(3)
-    expect(calls[0]).toMatchObject({
-      path: '/space/space-1/notes/a%20b',
-      method: 'PUT',
-      json: { x: 1 }
-    })
-    expect(calls[0]!.headers).toEqual({
-      'if-match': '"2"',
-      'key-epoch': 'e2'
-    })
-  })
-
-  it('sends no key-epoch header when the write carries no epoch', async () => {
-    const { calls, port } = recordingPort()
-
-    await port.putContent({ id: 'a', data: { x: 1 }, ifNoneMatch: true })
-
-    expect(calls[0]!.headers).toEqual({ 'if-none-match': '*' })
-  })
-
-  it('sends { custom } on a metadata write that carries metadata', async () => {
-    const { calls, port } = recordingPort()
-
-    const metaVersion = await port.putMeta({
-      id: 'a',
-      custom: { jwe: 'x' },
-      ifMatch: '"1"'
-    })
-
-    expect(metaVersion).toBe(3)
-    expect(calls[0]).toMatchObject({
-      path: '/space/space-1/notes/a/meta',
-      method: 'PUT',
-      json: { custom: { jwe: 'x' } }
-    })
-  })
-
-  it('sends an empty body (the cleared state) when custom is absent', async () => {
-    // The /meta PUT is a full replace: a body with no `custom` member clears
-    // the resource's metadata, which is how a metadata clear replicates.
-    const { calls, port } = recordingPort()
-
-    await port.putMeta({ id: 'a', ifMatch: '"1"' })
-
-    expect(calls[0]!.json).toEqual({})
-    expect('custom' in (calls[0]!.json as object)).toBe(false)
-  })
-})
-
-describe('errorStatus', () => {
-  it('reads a top-level status', () => {
-    expect(errorStatus({ status: 403 })).toBe(403)
-  })
-
-  it('falls back to response.status', () => {
-    expect(errorStatus({ response: { status: 401 } })).toBe(401)
-  })
-
-  it('returns undefined when no status is present', () => {
-    expect(errorStatus(new Error('boom'))).toBeUndefined()
   })
 })

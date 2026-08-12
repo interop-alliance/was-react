@@ -24,7 +24,7 @@ export {
   type WasSyncBasePort,
   type WasSyncPort
 } from './types.js'
-export { createWasSyncPort, errorMessage } from './wasSyncPort.js'
+export { createWasSyncPort } from './wasSyncPort.js'
 export { withFeedMasterRead } from './feedMasterPort.js'
 export {
   createDocCipher,
@@ -40,6 +40,7 @@ export { lwwFields, remotePayloadWins, type LwwFields } from './lww.js'
 // package's consumers already import stay put.
 export {
   errorStatus,
+  errorMessage,
   formatEtag,
   isEncryptedEnvelope
 } from '@interop/was-client/sync'

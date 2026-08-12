@@ -30,11 +30,11 @@ importers:
         specifier: ^3.5.4
         version: 3.5.4
       '@interop/wallet-core':
-        specifier: ^0.24.0
-        version: 0.24.0(@interop/jsonld-signatures@11.8.4)
+        specifier: ^0.30.1
+        version: 0.30.1(@interop/jsonld-signatures@11.8.4)
       '@interop/was-client':
-        specifier: ^0.32.1
-        version: 0.32.1(@interop/jsonld-signatures@11.8.4)
+        specifier: ^0.34.0
+        version: 0.34.0(@interop/jsonld-signatures@11.8.4)
       '@interop/webkms-client':
         specifier: ^14.7.1
         version: 14.7.1
@@ -801,8 +801,8 @@ packages:
     resolution: {integrity: sha512-SBpkmNdyEjWP14MmjE94RKf59bvSx3Q5oLbCtT+mcTVJpbtlEh9sAKzazAh8Nlghj/wClK2fnu+Yy8+qS5DYaA==}
     engines: {node: '>=22.0'}
 
-  '@interop/storage-core@0.5.0':
-    resolution: {integrity: sha512-OnvF2q9qrstGOPrPlb8NpcbxGpNdYIin1sXMM09VYii7XNkKRiHTWeGUqycAvdFkApQmtM1ZQZGkMy0A49olDA==}
+  '@interop/storage-core@0.6.0':
+    resolution: {integrity: sha512-dSPOdCe1/V8yoWkUHE54yn7gCFHG8NULkdTECyYBgB4uIhOuzefLgcV+egss3cM6tTPYG1ugj7ca9ziLWjYkmA==}
     engines: {node: '>=22.0'}
 
   '@interop/vc-bitstring-status-list@3.0.4':
@@ -817,12 +817,12 @@ packages:
     resolution: {integrity: sha512-OBnDT3gBgBrfO2bT90RXLZNpfn1eqvOO1aiczi+ooKNciBkCTOGCXQm+ozs4n1ksNnCHF+D6g3GNUFkyS3o8sw==}
     engines: {node: '>=24.0'}
 
-  '@interop/wallet-core@0.24.0':
-    resolution: {integrity: sha512-Mb+sNSG9BKrhQEcB6IBkuJBwaipxtXZdY5C6w5DsTDMaz8toqH/SxlEJOXXwIIgpCaAjLfGUvv9+i8XMstFX1Q==}
+  '@interop/wallet-core@0.30.1':
+    resolution: {integrity: sha512-eaAc+ECFw7C7Z3D3bgrSbzllnhK1ff8ONIVs0fmSes92bxiv7wKuxiuV3jtngMKEfPFCIRBxuxMFIZw1lbE5Qg==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-client@0.32.1':
-    resolution: {integrity: sha512-SthlUrOns/hGSObXyq7tfqAUYTU1UWELCHwjjLIGmVLTfgWFyrLoAaSka4nbn/G1eEHlAujnb65Nw6iU817e9w==}
+  '@interop/was-client@0.34.0':
+    resolution: {integrity: sha512-y0qqWriXfLtig9nAbj/fXy2dewqa2nh28EXcnd6OFMPl52KuvS1WrLO5utjaNlJo+zVqKO1RQGEv/LiivC2kUQ==}
     engines: {node: '>=24.0'}
 
   '@interop/webkms-client@14.7.1':
@@ -4142,7 +4142,7 @@ snapshots:
 
   '@interop/bnid@6.0.2':
     dependencies:
-      '@scure/base': 2.2.0
+      '@scure/base': 2.3.0
 
   '@interop/data-integrity-core@8.4.0': {}
 
@@ -4378,7 +4378,7 @@ snapshots:
     dependencies:
       '@interop/data-integrity-core': 8.4.0
 
-  '@interop/storage-core@0.5.0':
+  '@interop/storage-core@0.6.0':
     dependencies:
       '@interop/data-integrity-core': 8.4.0
 
@@ -4418,7 +4418,7 @@ snapshots:
     transitivePeerDependencies:
       - react-native-get-random-values
 
-  '@interop/wallet-core@0.24.0(@interop/jsonld-signatures@11.8.4)':
+  '@interop/wallet-core@0.30.1(@interop/jsonld-signatures@11.8.4)':
     dependencies:
       '@interop/data-integrity-core': 8.4.0
       '@interop/data-integrity-proof': 3.4.3
@@ -4429,18 +4429,19 @@ snapshots:
       '@interop/security-document-loader': 10.0.0
       '@interop/social-core': 0.8.0
       '@interop/vc': 11.0.6
-      '@interop/was-client': 0.32.1(@interop/jsonld-signatures@11.8.4)
+      '@interop/was-client': 0.34.0(@interop/jsonld-signatures@11.8.4)
       '@interop/webkms-client': 14.7.1
       '@interop/x25519-key-agreement-key': 5.2.1
       '@noble/hashes': 2.3.0
       '@scure/base': 2.3.0
+      byoe-context: 0.3.0
       jsonpath-plus: 10.4.0
     transitivePeerDependencies:
       - '@interop/jsonld-signatures'
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-client@0.32.1(@interop/jsonld-signatures@11.8.4)':
+  '@interop/was-client@0.34.0(@interop/jsonld-signatures@11.8.4)':
     dependencies:
       '@interop/data-integrity-core': 8.4.0
       '@interop/ed25519-signature': 7.1.4(@interop/jsonld-signatures@11.8.4)
@@ -4448,7 +4449,7 @@ snapshots:
       '@interop/ezcap': 7.4.1
       '@interop/http-client': 1.0.5
       '@interop/minimal-cipher': 7.8.1
-      '@interop/storage-core': 0.5.0
+      '@interop/storage-core': 0.6.0
       '@interop/x25519-key-agreement-key': 5.2.1
       '@noble/hashes': 2.3.0
       '@scure/base': 2.3.0

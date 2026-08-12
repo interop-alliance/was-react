@@ -28,8 +28,13 @@ import { ensureFirstEpoch, ownerRecipient } from '@interop/was-client/edv'
 import type { IDelegatedZcap } from '@interop/data-integrity-core'
 import { CapabilityAgent } from '@interop/webkms-client'
 import { agentsFromKeyAgent } from '@interop/wallet-core/identity'
+import {
+  collectionPath,
+  rootCapability,
+  spacePath,
+  toUrl
+} from '@interop/was-client/paths'
 import { deriveIdentity } from '../identity/agents.js'
-import { collectionPath } from '../grants.js'
 import { RW_ACTIONS } from '../auth/loginRequest.js'
 import { errorStatus } from '../sync/index.js'
 
@@ -186,13 +191,11 @@ export async function provisionDevGrants({
   // of every `/<collection>/<resource>` and `/<collection>/query` request. A
   // grant rooted at the collection's own root authorizes only the exact
   // collection-description URL, not its resources or the changes feed.
-  const spaceUrl = `${serverUrl}/space/${space.id}`
-  const spaceRoot = {
-    '@context': 'https://w3id.org/zcap/v1',
-    id: `urn:zcap:root:${encodeURIComponent(spaceUrl)}`,
-    controller: provisionerDid,
-    invocationTarget: spaceUrl
-  } as unknown as Parameters<typeof provisioner.grant>[0]['capability']
+  const spaceUrl = toUrl({ serverUrl, path: spacePath(space.id) })
+  const spaceRoot = rootCapability({
+    target: spaceUrl,
+    controller: provisionerDid
+  })
 
   // `Promise.all` preserves input order, so `grants[i]` still corresponds to
   // `collections[i]` (the probe below relies on that for `[0]`).
@@ -257,10 +260,7 @@ export async function provisionDevGrants({
   const probeCollectionId =
     typeof firstEntry === 'string' ? firstEntry : firstEntry.id
   const probeCapability = grants[0]!
-  const probePath = collectionPath({
-    spaceId: space.id,
-    collectionId: probeCollectionId
-  })
+  const probePath = collectionPath(space.id, probeCollectionId)
   log(
     `\nDescription-write probe on "${probeCollectionId}" (delegated RW zcap):`
   )

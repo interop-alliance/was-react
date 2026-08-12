@@ -25,6 +25,31 @@
  * copy every wire-to-local mapping runs.
  */
 import type { Json } from '@interop/was-client'
+import type {
+  MasterState as ClientMasterState,
+  SyncCheckpoint as ClientSyncCheckpoint
+} from '@interop/was-client/sync'
+
+/**
+ * The typed port signals, owned by `@interop/was-client` (its sync port raises
+ * them) and re-exported here so the names this package's consumers already
+ * import stay put -- and so an `instanceof` check anywhere in this package
+ * matches the very class the port throws.
+ *
+ * `WasSyncConflictError` marks a conditional write rejected with `412
+ * precondition-failed` (a lost-update conflict, or a create-if-absent whose
+ * target already exists); the push handler catches exactly it to trigger the
+ * re-read-and-report-conflict path. `WasSyncAuthError` marks a request refused
+ * on authorization grounds -- `401`, `403`, or the `404` a WAS server masks a
+ * failed capability invocation as, which on the sync paths (where the invoked
+ * collection is known to exist) means the invocation was rejected. It keeps the
+ * offending HTTP status on `status`, which the `/meta` push path reads to tell
+ * a masked denial from an ordinary delete race.
+ */
+export {
+  WasSyncAuthError,
+  WasSyncConflictError
+} from '@interop/was-client/sync'
 
 /**
  * A JSON value -- the opaque stored resource body the sync layer moves verbatim.
@@ -106,12 +131,10 @@ export function copyOptionalBodyFields({
  * The keyset position in the change feed: the `{ id, updatedAt }` of the last
  * document a pull returned. Passed back verbatim to resume, and used as the
  * RxDB replication checkpoint. `id` is the total-order tiebreaker within a
- * single `updatedAt`.
+ * single `updatedAt`. The client's own checkpoint type, aliased here so the
+ * replication layer and the port agree by construction.
  */
-export interface SyncCheckpoint {
-  id: string
-  updatedAt: string
-}
+export type SyncCheckpoint = ClientSyncCheckpoint
 
 /**
  * One document as it travels on the `changes` feed wire
@@ -165,20 +188,15 @@ export interface SyncedDoc {
 
 /**
  * The current master state of a single resource, as read back for the 412
- * conflict path. `deleted` distinguishes a tombstone from a live resource;
- * `metaVersion` / `custom` are present only once metadata has been written.
+ * conflict path: the client's own `MasterState` (content `version` /
+ * `updatedAt`, plus the optional `metaVersion` / `data` / `custom` /
+ * `createdBy` / `epoch`) plus the `deleted` flag that distinguishes a tombstone
+ * from a live resource. The flag is required here because this package resolves
+ * the master from the changes feed, where a tombstone travels as a document
+ * rather than as an absent read.
  */
-export interface MasterState {
-  version: number
-  updatedAt: string
+export interface MasterState extends ClientMasterState {
   deleted: boolean
-  metaVersion?: number
-  data?: Json
-  custom?: Json
-  /**
-   * The key-epoch stamp of the master's content body, when the feed carries one.
-   */
-  epoch?: string
 }
 
 /**
@@ -336,41 +354,4 @@ export interface WasSyncPort extends WasSyncBasePort {
     id: string
     cache?: MasterReadCache
   }): Promise<MasterState | null>
-}
-
-/**
- * Thrown by a {@link WasSyncPort} implementation when a conditional write is
- * rejected with `412 precondition-failed` (a lost-update conflict, or a
- * create-if-absent whose target already exists). The core push handler catches
- * exactly this type to trigger the re-read-and-report-conflict path; any other
- * error propagates to RxDB for retry.
- */
-export class WasSyncConflictError extends Error {
-  constructor(message = 'WAS conditional write precondition failed.') {
-    super(message)
-    this.name = 'WasSyncConflictError'
-  }
-}
-
-/**
- * Thrown by a {@link WasSyncPort} implementation when a request is rejected with
- * `401 unauthorized`, `403 forbidden`, or `404 not found` -- the
- * storage-access-expired/revoked signal. `404` qualifies because a WAS server
- * masks a failed capability invocation as `404` (never confirming to an
- * unauthorized caller whether the resource exists); on the sync paths the
- * invoked collection is known to exist, so a `404` means the invocation was
- * rejected. Mapping the raw HTTP status to a typed error at the port boundary
- * (the same way `412` becomes {@link WasSyncConflictError}) lets the sync
- * controller recognise expired access with an `instanceof` check rather than
- * re-extracting status codes from a wrapped RxDB error graph. The offending
- * HTTP status is kept on `status` -- diagnostics, plus the delete path's
- * already-absent-404 check.
- */
-export class WasSyncAuthError extends Error {
-  readonly status: number
-  constructor(status: number) {
-    super(`WAS storage access denied (HTTP ${status}).`)
-    this.name = 'WasSyncAuthError'
-    this.status = status
-  }
 }

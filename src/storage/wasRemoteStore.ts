@@ -29,9 +29,15 @@ import { WasClient } from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 import type { EncryptionDescriptorSource } from '@interop/wallet-core/descriptors'
+import {
+  collectionItems,
+  collectionPath,
+  resourcePath,
+  toUrl
+} from '@interop/was-client/paths'
 import { errorStatus, errorMessage } from '../sync/index.js'
 import type { WasCollectionConfig } from '../config.js'
-import { collectionPath, type ParsedGrants } from '../grants.js'
+import type { ParsedGrants } from '../grants.js'
 
 /**
  * The outcome of a best-effort encryption-descriptor PUT, for diagnostics.
@@ -170,7 +176,7 @@ export class WasRemoteStore {
     try {
       const response = await this.was.request({
         capability,
-        path: collectionPath({ spaceId: this.spaceId, collectionId }),
+        path: collectionPath(this.spaceId, collectionId),
         method: 'GET'
       })
       const description = response.data as
@@ -333,8 +339,7 @@ export class WasRemoteStore {
     const response = await this.was.request({
       capability,
       path:
-        `${collectionPath({ spaceId: this.spaceId, collectionId })}/` +
-        `?${params.join('&')}`,
+        collectionItems(this.spaceId, collectionId) + `?${params.join('&')}`,
       method: 'GET'
     })
     const page = response.data as Partial<EqualityQueryPage> | undefined
@@ -394,11 +399,10 @@ export class WasRemoteStore {
         `No delegated capability covers collection "${collectionId}".`
       )
     }
-    return (
-      this.serverUrl +
-      collectionPath({ spaceId: this.spaceId, collectionId }) +
-      `/${encodeURIComponent(id)}`
-    )
+    return toUrl({
+      serverUrl: this.serverUrl,
+      path: resourcePath(this.spaceId, collectionId, id)
+    })
   }
 
   /**
@@ -420,7 +424,7 @@ export class WasRemoteStore {
     try {
       const response = await this.was.request({
         capability,
-        path: collectionPath({ spaceId: this.spaceId, collectionId }),
+        path: collectionPath(this.spaceId, collectionId),
         method: 'PUT',
         json: description
       })
