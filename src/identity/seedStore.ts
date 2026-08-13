@@ -14,7 +14,12 @@
  * {@link createDescriptorCache} presents the descriptor record of one such
  * store as the `EncryptionDescriptorCache` seam
  * (`@interop/wallet-core/descriptors`), which is what the session's
- * descriptor acquisition reads and writes through.
+ * descriptor acquisition reads and writes through. It adds two BULK operations
+ * on top of that seam ({@link SessionDescriptorCache}): the whole cache in one
+ * read, and a whole set of descriptors in one read-modify-write. A session
+ * bring-up phase reads or writes every registered collection at once, so the
+ * bulk pair costs one IndexedDB open/close per phase instead of one per
+ * collection.
  */
 import type { CollectionEncryption } from '@interop/was-client'
 import type { EncryptionDescriptorCache } from '@interop/wallet-core/descriptors'
@@ -151,6 +156,34 @@ export function createSeedStore({
 }
 
 /**
+ * The session's descriptor cache: the `EncryptionDescriptorCache` seam
+ * `@interop/wallet-core/descriptors` acquires through, plus the two bulk
+ * operations a session bring-up works in. Every op reads (or read-modify-writes)
+ * the same single stored blob, so doing a whole phase at once costs one
+ * IndexedDB open/close rather than one per collection.
+ */
+export interface SessionDescriptorCache extends EncryptionDescriptorCache {
+  /**
+   * Reads the whole cached set (by WAS collection id) in one blob read. Empty
+   * when nothing is cached, or when the blob belongs to another controller.
+   */
+  readAllDescriptors(): Promise<Record<string, CollectionEncryption>>
+  /**
+   * Merges a whole set of descriptors into the cache in ONE serialized
+   * read-modify-write, on the same write chain `writeDescriptor` rides (so the
+   * two can never lose one another's entries). Entries not named here are left
+   * as they are.
+   *
+   * @param options {object}
+   * @param options.descriptors {Record<string, CollectionEncryption>}
+   * @returns {Promise<void>}
+   */
+  writeDescriptors(options: {
+    descriptors: Record<string, CollectionEncryption>
+  }): Promise<void>
+}
+
+/**
  * Presents a {@link SeedStore}'s persisted descriptor record as the
  * `EncryptionDescriptorCache` seam that `@interop/wallet-core/descriptors`
  * acquires through: per-collection get/put over the single stored blob, already
@@ -168,11 +201,16 @@ export function createSeedStore({
  * one-record persistence allows; concurrent puts are serialized through a
  * promise chain so two of them cannot lose one another's entry.
  *
+ * The returned cache is a superset of the seam
+ * ({@link SessionDescriptorCache}): `readAllDescriptors` and `writeDescriptors`
+ * do a whole bring-up phase in one blob read, or one read-modify-write,
+ * instead of one IndexedDB open/close per collection.
+ *
  * @param options {object}
  * @param options.store {SeedStore}   the session seed store to persist through
  * @param options.controller {string}   the controller DID the cached
  *   descriptors belong to
- * @returns {EncryptionDescriptorCache}
+ * @returns {SessionDescriptorCache}
  */
 export function createDescriptorCache({
   store,
@@ -180,7 +218,7 @@ export function createDescriptorCache({
 }: {
   store: SeedStore
   controller: string
-}): EncryptionDescriptorCache {
+}): SessionDescriptorCache {
   async function readAll(): Promise<Record<string, CollectionEncryption>> {
     const stored = (await store.loadDescriptors()) as {
       controller?: unknown
@@ -200,9 +238,32 @@ export function createDescriptorCache({
   // Serializes the read-modify-write of the single stored record.
   let writes: Promise<void> = Promise.resolve()
 
+  /**
+   * Queues one read-modify-write merging `entries` into the stored blob. Both
+   * write verbs go through it, so a per-collection put and a bulk put can never
+   * lose one another's entries.
+   */
+  function mergeIntoBlob(
+    entries: Record<string, CollectionEncryption>
+  ): Promise<void> {
+    const next = writes.then(async () => {
+      const descriptors = await readAll()
+      Object.assign(descriptors, entries)
+      await store.saveDescriptors({ controller, descriptors })
+    })
+    writes = next.then(
+      () => {},
+      () => {}
+    )
+    return next
+  }
+
   return {
     async readDescriptor({ collectionId }: { collectionId: string }) {
       return (await readAll())[collectionId]
+    },
+    async readAllDescriptors() {
+      return await readAll()
     },
     writeDescriptor({
       collectionId,
@@ -211,16 +272,14 @@ export function createDescriptorCache({
       collectionId: string
       descriptor: CollectionEncryption
     }) {
-      const next = writes.then(async () => {
-        const descriptors = await readAll()
-        descriptors[collectionId] = descriptor
-        await store.saveDescriptors({ controller, descriptors })
-      })
-      writes = next.then(
-        () => {},
-        () => {}
-      )
-      return next
+      return mergeIntoBlob({ [collectionId]: descriptor })
+    },
+    writeDescriptors({
+      descriptors
+    }: {
+      descriptors: Record<string, CollectionEncryption>
+    }) {
+      return mergeIntoBlob(descriptors)
     }
   }
 }

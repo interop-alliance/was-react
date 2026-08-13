@@ -32,7 +32,8 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
 - `src/storage/` -- the encrypted `LocalStore`, the process-wide store holder
   (`storageManager.ts`, which also resolves the per-install `writerId`), generic
   entity stores, the delegated remote store, the read-only
-  `SharedCollectionReader`, the replication bootstrap (`wasSync.ts`), the sync
+  `SharedCollectionReader`, the replication bootstrap (`wasSync.ts`), the
+  session's encryption-descriptor policy (`descriptorManager.ts`), the sync
   controller, sync status, the rehydrate mechanism, the local-to-connected
   adoption merge (`adopt.ts`), and the public share-URL helper (`publicUrl.ts`).
 - `src/session/` -- the session auth store factory (`createAuthStore`): the
@@ -468,7 +469,23 @@ grants cover, concurrently, each failure a warn-and-skip.
 `readRemoteDescriptors` is the login-time counterpart: one descriptor read per
 granted private collection BEFORE any replication exists, because the connected
 replica must open epoch-aware -- epoch-from-birth leaves no single-key fallback,
-and the adoption merge writes into it before sync starts.
+and the adoption merge writes into it before sync starts. Both it and the
+bootstrap's per-collection pass run the same read-filter sequence, written once
+in `wasSync.ts`: skip the public and ungranted collections, read each remaining
+collection's description exactly once (reusing one the caller already read), and
+keep only the epoch-bearing descriptors. The bootstrap hangs its own
+per-collection work off that pass, so the description PUTs and the cipher
+rebuild ride the same single read.
+
+`createDescriptorManager` (`src/storage/descriptorManager.ts`) owns where a
+descriptor comes from at each point of a bring-up, bound once to the app's
+collection registry and its two seed stores. It mints and persists the anonymous
+replica's descriptors at local birth, reads the offline cache before any remote
+exists, completes that set with live reads for a granted private collection the
+cache does not cover, and writes the sync bootstrap's fetched set back. The auth
+store only sequences those four operations. Each is best-effort in the same way:
+a failure warns and leaves the affected collections fail-closed rather than
+failing the session.
 
 `createDescriptorCache` (`src/identity/seedStore.ts`) presents the seed store's
 single persisted descriptor record as the `EncryptionDescriptorCache` seam
@@ -478,7 +495,10 @@ controller reads it as empty and overwrites the stamp on its first write: a
 descriptor names an epoch roster a specific identity is a recipient of, so a
 login under another controller must never build ciphers from it. Puts are
 read-modify-writes over the one record, serialized through a promise chain so
-two of them cannot lose one another's entry.
+two of them cannot lose one another's entry. The cache is a superset of that
+seam: it also reads the whole set in one blob read and merges a whole set in one
+read-modify-write, so a bring-up phase costs one IndexedDB open/close instead of
+one per collection.
 
 The root entry also re-exports `mintRecordEncryption` (from
 `@interop/wallet-core/keyring`) beside `LocalStore`, `deriveIdentity`, and

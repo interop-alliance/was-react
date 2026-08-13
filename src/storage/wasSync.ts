@@ -51,6 +51,77 @@ export interface WasSyncBootstrap {
 }
 
 /**
+ * The one read-filter-cache pass over a grant set, shared by the login-time
+ * {@link readRemoteDescriptors} and the sync bootstrap: per REGISTERED
+ * collection the grants actually cover, read the private ones' encryption
+ * descriptor ONCE (reusing one the caller already read) and keep only the
+ * epoch-bearing ones -- a rosterless descriptor cannot build a cipher. A
+ * granted id the app never registered is nobody's business here, and a public
+ * collection carries no descriptor at all.
+ *
+ * `onCollection` is the bootstrap's hook: it runs per granted collection --
+ * public ones included -- with the RAW descriptor as read (epoch-bearing or
+ * not), so the description PUTs and the cipher rebuild ride the same single
+ * read. Collections are processed concurrently, hook included, so one slow
+ * collection never holds up the others.
+ *
+ * @param options {object}
+ * @param options.remoteStore {WasRemoteStore}
+ * @param options.collections {WasCollectionConfig[]}
+ * @param options.parsed {ParsedGrants}
+ * @param [options.knownDescriptors] {Record<string, CollectionEncryption>}
+ *   descriptors already read live in this bring-up, reused instead of re-read
+ * @param [options.onCollection] {(options) => Promise<void>}   per granted
+ *   collection, with its raw descriptor (absent for a public one)
+ * @returns {Promise<Record<string, CollectionEncryption>>}   the epoch-bearing
+ *   descriptors, keyed by WAS collection id
+ */
+async function readGrantedEncryption({
+  remoteStore,
+  collections,
+  parsed,
+  knownDescriptors = {},
+  onCollection
+}: {
+  remoteStore: WasRemoteStore
+  collections: WasCollectionConfig[]
+  parsed: ParsedGrants
+  knownDescriptors?: Record<string, CollectionEncryption>
+  onCollection?: (options: {
+    collection: WasCollectionConfig
+    encryption?: CollectionEncryption
+  }) => Promise<void>
+}): Promise<Record<string, CollectionEncryption>> {
+  const granted = collections.filter(
+    collection => parsed.byCollectionId[collection.id] !== undefined
+  )
+  const descriptors: Record<string, CollectionEncryption> = {}
+  await Promise.all(
+    granted.map(async collection => {
+      const { id: collectionId } = collection
+      let encryption: CollectionEncryption | undefined
+      if (!isPublicCollection(collection)) {
+        // A descriptor the caller read seconds ago is reused as-is; only ids it
+        // did not cover (or a hot restore, which passes none) are read live.
+        encryption =
+          knownDescriptors[collectionId] ??
+          (await remoteStore.readCollectionEncryption(collectionId))
+        if (hasKeyEpochs(encryption)) {
+          descriptors[collectionId] = encryption
+        }
+      }
+      if (onCollection) {
+        await onCollection({
+          collection,
+          ...(encryption && { encryption })
+        })
+      }
+    })
+  )
+  return descriptors
+}
+
+/**
  * One live encryption-descriptor read per granted private collection, invoked
  * with the grants' delegated zcaps and keyed by WAS collection id. Only
  * epoch-bearing descriptors are returned (a rosterless one cannot build a
@@ -81,20 +152,7 @@ export async function readRemoteDescriptors({
     zcapClient,
     collections
   })
-  const descriptors: Record<string, CollectionEncryption> = {}
-  await Promise.all(
-    collections.map(async collection => {
-      const { id } = collection
-      if (isPublicCollection(collection) || !parsed.byCollectionId[id]) {
-        return
-      }
-      const encryption = await remoteStore.readCollectionEncryption(id)
-      if (hasKeyEpochs(encryption)) {
-        descriptors[id] = encryption
-      }
-    })
-  )
-  return descriptors
+  return await readGrantedEncryption({ remoteStore, collections, parsed })
 }
 
 /**
@@ -196,26 +254,19 @@ export async function startWasSync({
   // SHARED collections never appear here: they are wallet-owned, absent from
   // the app-owned registry, and a read-only grant would draw nothing but a
   // pointless 403.
-  const granted = collections.filter(
-    collection => parsed.byCollectionId[collection.id] !== undefined
-  )
-  const descriptors: Record<string, CollectionEncryption> = {}
-  await Promise.all(
-    granted.map(async collection => {
+  const descriptors = await readGrantedEncryption({
+    remoteStore,
+    collections,
+    parsed,
+    knownDescriptors,
+    onCollection: async ({ collection, encryption }) => {
       const { id: collectionId } = collection
       if (!isPublicCollection(collection)) {
-        // A descriptor the login flow read seconds ago is reused as-is; only
-        // ids it did not cover (or a hot restore, which passes none) are read
-        // live here.
-        const encryption =
-          knownDescriptors[collectionId] ??
-          (await remoteStore.readCollectionEncryption(collectionId))
         // Only an epoch-bearing descriptor enters the offline cache or
         // rebuilds a cipher; a collection without a key-epoch roster stays
         // fail-closed, stated plainly here rather than surfacing later as
         // per-row decrypt failures.
         if (hasKeyEpochs(encryption)) {
-          descriptors[collectionId] = encryption
           await localStore.applyRemoteDescriptor({ collectionId, encryption })
         } else {
           console.warn(
@@ -254,8 +305,8 @@ export async function startWasSync({
           `Indexes declaration PUT not authorized for "${collectionId}" (status ${indexes.status ?? 'n/a'}).`
         )
       }
-    })
-  )
+    }
+  })
   // Install the encryption-descriptor source so a decrypt that meets an unseen
   // epoch (a rotation on another device) re-reads the descriptor and rebuilds
   // the cipher -- once per collection per session.

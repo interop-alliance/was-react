@@ -1,5 +1,18 @@
 # @interop/was-react Changelog
 
+## 0.17.0 - TBD
+
+### Changed
+
+- The session's encryption-descriptor policy (mint at local birth, cache-only
+  read, live completion, cache write-back) moved out of the auth store into
+  `src/storage/descriptorManager.ts`; the auth store only sequences it.
+- `createDescriptorCache` gained bulk `readAllDescriptors` / `writeDescriptors`
+  operations, so a bring-up phase reads or writes every collection's descriptor
+  in one IndexedDB cycle instead of one per collection.
+- The sync bootstrap and the login-time descriptor read now share one
+  read-filter helper instead of duplicating the sequence.
+
 ## 0.16.0 - 2026-08-12
 
 ### Added

@@ -37,25 +37,19 @@ import { createStore, type StoreApi } from 'zustand/vanilla'
 import type { RxStorage } from 'rxdb/plugins/core'
 import type { IZcap } from '@interop/data-integrity-core'
 import type { CollectionEncryption } from '@interop/was-client'
-import { acquireDescriptors } from '@interop/wallet-core/descriptors'
-import { mintRecordEncryption } from '@interop/wallet-core/keyring'
 import {
   DEFAULT_DB_NAME,
   DEFAULT_EXPIRY_WARNING_MS,
   DEFAULT_EXPIRY_WATCH_MS,
   DEFAULT_ONBOARDING,
-  isPublicCollection,
   type StoreRegistry,
   type WasAppConfig
 } from '../config.js'
 import type { SharedCollectionReader } from '../storage/sharedCollectionReader.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
 import { deriveIdentity, type IdentityAgents } from '../identity/agents.js'
-import {
-  createDescriptorCache,
-  createSeedStore,
-  type SeedStore
-} from '../identity/seedStore.js'
+import { createSeedStore, type SeedStore } from '../identity/seedStore.js'
+import { createDescriptorManager } from '../storage/descriptorManager.js'
 import {
   clearAppSession,
   peekAppSession,
@@ -91,7 +85,7 @@ import {
   patchFromChange
 } from '../storage/rehydrate.js'
 import { mergeAdopted } from '../storage/adopt.js'
-import { readRemoteDescriptors, startWasSync } from '../storage/wasSync.js'
+import { startWasSync } from '../storage/wasSync.js'
 import { errorMessage } from '../sync/index.js'
 import { SyncController } from '../storage/syncController.js'
 import { useSyncStatusStore } from '../storage/syncStatusStore.js'
@@ -287,23 +281,19 @@ export function createAuthStore({
   setWriterId(writerId)
   const sessionStore =
     seedStore ?? createSeedStore({ dbName: `${dbName}-session` })
-  // The offline encryption-descriptor cache, presented as the seam
-  // `@interop/wallet-core/descriptors` acquires through. Reads serve the
-  // connected replica's epoch-aware open (cache-only, no network); writes land
-  // the descriptors the sync bootstrap fetched. Bound per controller DID at
-  // each use: a login under a different controller than the one that cached
-  // the descriptors reads the cache as empty rather than building ciphers the
-  // new identity is no epoch recipient of.
-  function sessionDescriptorCache(controllerDid: string) {
-    return createDescriptorCache({
-      store: sessionStore,
-      controller: controllerDid
-    })
-  }
   // The anonymous-seed persistence for `local` mode: only a raw 32-byte seed,
   // no session record, in its own IndexedDB so it never collides with the
   // wallet session or a connected replica.
   const anonStore = createSeedStore({ dbName: `${dbName}-anon` })
+  // Where every encryption descriptor of this session comes from: minted at an
+  // anonymous collection's birth, read from the offline cache, completed with
+  // live reads, cached again after the sync bootstrap fetched. The store only
+  // sequences these.
+  const descriptorManager = createDescriptorManager({
+    collections: config.collections,
+    sessionStore,
+    anonStore
+  })
   const documentLoader = createDocumentLoader()
 
   // The login flow consumes only the WAS collection ids + visibility; this
@@ -449,9 +439,11 @@ export function createAuthStore({
       identityKeys: { keyAgreementKey, keyResolver },
       onAuthError: () => store.getState().notifyAccessExpired(),
       onDescriptorsFetched: descriptors =>
-        void cacheDescriptors({ descriptors, controllerDid }).catch(err =>
-          console.warn('Failed to cache encryption descriptors:', err)
-        ),
+        void descriptorManager
+          .cacheDescriptors({ descriptors, controllerDid })
+          .catch(err =>
+            console.warn('Failed to cache encryption descriptors:', err)
+          ),
       ...(knownDescriptors && { knownDescriptors })
     })
     setRemoteStore(remoteStore)
@@ -619,48 +611,6 @@ export function createAuthStore({
   }
 
   /**
-   * Loads -- or on first use mints and persists -- the anonymous replica's
-   * per-collection encryption descriptors. Epoch-from-birth applies locally
-   * too: a private collection's cipher only exists from an epoch-bearing
-   * descriptor, and with no wallet to provision one the app mints it at the
-   * collection's local birth -- a one-epoch roster sealed to the anonymous
-   * identity's KAK alone (the same record-own-epoch construction wallet-core
-   * uses for its own locally stored records). Persisted so a reload decrypts
-   * the rows the previous session sealed.
-   *
-   * @param identity {IdentityAgents}   the anonymous identity
-   * @returns {Promise<Record<string, CollectionEncryption>>}
-   */
-  async function loadOrMintAnonDescriptors(
-    identity: IdentityAgents
-  ): Promise<Record<string, CollectionEncryption>> {
-    // The anonymous replica's descriptor cache, persisted alongside the anon
-    // seed (and wiped with it). Kept apart from the connected session's cache
-    // and bound to the anon controller: the two identities' epochs must never
-    // cross.
-    const cache = createDescriptorCache({
-      store: anonStore,
-      controller: identity.controllerDid
-    })
-    const descriptors: Record<string, CollectionEncryption> = {}
-    for (const collection of config.collections) {
-      if (isPublicCollection(collection)) {
-        continue
-      }
-      const { id } = collection
-      let descriptor = await cache.readDescriptor({ collectionId: id })
-      if (!descriptor) {
-        descriptor = await mintRecordEncryption({
-          keyAgreementKey: identity.keyAgreementKey
-        })
-        await cache.writeDescriptor({ collectionId: id, descriptor })
-      }
-      descriptors[id] = descriptor
-    }
-    return descriptors
-  }
-
-  /**
    * Opens (or re-opens) the anonymous local replica and lands `local`. Seeds
    * dev fixtures only when the anonymous seed was just minted (so they run once
    * per fresh replica, never on reload).
@@ -672,7 +622,7 @@ export function createAuthStore({
     const identity = await deriveIdentity({ seed })
     await openAndHydrate({
       identity,
-      descriptors: await loadOrMintAnonDescriptors(identity)
+      descriptors: await descriptorManager.loadOrMintAnonDescriptors(identity)
     })
     if (created && config.seedLocal) {
       await config.seedLocal()
@@ -695,119 +645,6 @@ export function createAuthStore({
    *   grants and expiry, plus the payloads to adopt (merge logins only)
    * @returns {Promise<void>}
    */
-  /**
-   * Loads the cached encryption descriptors for the registered collections
-   * (keyed by WAS collection id), or `undefined` when none are cached.
-   *
-   * Acquired CACHE-ONLY -- `acquireDescriptors` with no `source` -- because
-   * this runs before any remote store exists and must not touch the network:
-   * the whole point is that an offline hot restore opens epoch-aware. The
-   * connected session refreshes them from the server once sync bootstraps.
-   * Best-effort: on a read failure the private collections open fail-closed
-   * until the sync bootstrap supplies live descriptors.
-   */
-  async function loadCachedDescriptors({
-    controllerDid
-  }: {
-    controllerDid: string
-  }): Promise<Record<string, CollectionEncryption> | undefined> {
-    try {
-      const descriptors = await acquireDescriptors({
-        cache: sessionDescriptorCache(controllerDid),
-        collectionIds: config.collections.map(collection => collection.id)
-      })
-      return Object.keys(descriptors).length > 0 ? descriptors : undefined
-    } catch (err) {
-      console.warn('Failed to load cached encryption descriptors:', err)
-      return undefined
-    }
-  }
-
-  /**
-   * Writes the descriptors the sync bootstrap fetched into the offline cache,
-   * through the same seam {@link loadCachedDescriptors} reads.
-   *
-   * @param options {object}
-   * @param options.descriptors {Record<string, CollectionEncryption>}
-   * @param options.controllerDid {string}   the identity the descriptors were
-   *   fetched for (the cache stamp)
-   * @returns {Promise<void>}
-   */
-  async function cacheDescriptors({
-    descriptors,
-    controllerDid
-  }: {
-    descriptors: Record<string, CollectionEncryption>
-    controllerDid: string
-  }): Promise<void> {
-    const cache = sessionDescriptorCache(controllerDid)
-    await Promise.all(
-      Object.entries(descriptors).map(([collectionId, descriptor]) =>
-        cache.writeDescriptor({ collectionId, descriptor })
-      )
-    )
-  }
-
-  /**
-   * Completes the cached descriptor set with live reads for any granted
-   * private collection the cache does not cover. A first login has no cache at
-   * all, and the connected replica must open epoch-aware BEFORE sync starts:
-   * the adoption merge writes into it right after open, and epoch-from-birth
-   * leaves no single-key fallback to write under. Best-effort: a failed read
-   * leaves those collections fail-closed until the sync bootstrap's own
-   * descriptor read lands. Freshly fetched descriptors enter the offline cache
-   * immediately, and come back separately as `fresh` so the sync bootstrap can
-   * reuse them instead of re-issuing the same reads seconds later (cached
-   * descriptors are NOT passed on -- the bootstrap read is their freshness
-   * refresh).
-   *
-   * @param options {object}
-   * @param [options.cached] {Record<string, CollectionEncryption>}
-   * @param options.identity {IdentityAgents}
-   * @param options.parsed {ParsedGrants}
-   * @returns {Promise<object>}   `descriptors` (the completed set, or
-   *   undefined when there are none) and `fresh` (the live-read subset)
-   */
-  async function completeDescriptors({
-    cached,
-    identity,
-    parsed
-  }: {
-    cached?: Record<string, CollectionEncryption>
-    identity: IdentityAgents
-    parsed: ParsedGrants
-  }): Promise<{
-    descriptors?: Record<string, CollectionEncryption>
-    fresh: Record<string, CollectionEncryption>
-  }> {
-    const missing = config.collections.filter(
-      collection =>
-        !isPublicCollection(collection) &&
-        parsed.byCollectionId[collection.id] !== undefined &&
-        !cached?.[collection.id]
-    )
-    if (missing.length === 0) {
-      return { descriptors: cached, fresh: {} }
-    }
-    try {
-      const fetched = await readRemoteDescriptors({
-        parsed,
-        zcapClient: identity.zcapClient,
-        collections: missing
-      })
-      if (Object.keys(fetched).length > 0) {
-        await cacheDescriptors({
-          descriptors: fetched,
-          controllerDid: identity.controllerDid
-        })
-        return { descriptors: { ...fetched, ...cached }, fresh: fetched }
-      }
-    } catch (err) {
-      console.warn('Failed to read encryption descriptors at login:', err)
-    }
-    return { descriptors: cached, fresh: {} }
-  }
-
   async function activateConnected(session: {
     seed: Uint8Array
     identity: IdentityAgents
@@ -821,13 +658,14 @@ export function createAuthStore({
       // epoch-aware: an offline hot restore then decrypts multi-recipient
       // envelopes with no live description read, while a first login (no cache
       // yet) completes the set with live reads before the replica opens.
-      const { descriptors, fresh } = await completeDescriptors({
-        cached: await loadCachedDescriptors({
-          controllerDid: session.identity.controllerDid
-        }),
-        identity: session.identity,
-        parsed: session.parsed
-      })
+      const { descriptors, fresh } =
+        await descriptorManager.completeDescriptors({
+          cached: await descriptorManager.loadCachedDescriptors({
+            controllerDid: session.identity.controllerDid
+          }),
+          identity: session.identity,
+          parsed: session.parsed
+        })
       await openAndHydrate({
         identity: session.identity,
         ...(session.adopt && { adopt: session.adopt }),
@@ -953,7 +791,7 @@ export function createAuthStore({
       keyResolver: identity.keyResolver,
       collections: config.collections,
       dbName: dbNameForController({ dbName, controllerDid }),
-      descriptors: await loadOrMintAnonDescriptors(identity),
+      descriptors: await descriptorManager.loadOrMintAnonDescriptors(identity),
       ...(storage && { storage })
     })
     try {
