@@ -12,7 +12,7 @@
  */
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mintRecordEncryption } from '@interop/wallet-core/keyring'
+import { mintRecordEncryption } from '../../src/index.js'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import { mergeAdopted } from '../../src/storage/adopt.js'

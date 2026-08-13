@@ -45,7 +45,7 @@ import {
   LoginCancelledError
 } from '../../src/auth/loginFlow.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
-import { mintRecordEncryption } from '@interop/wallet-core/keyring'
+import { mintRecordEncryption } from '../../src/index.js'
 import { hasStore, requireStore } from '../../src/storage/storageManager.js'
 import {
   LocalStore,

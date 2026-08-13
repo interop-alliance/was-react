@@ -480,6 +480,14 @@ login under another controller must never build ciphers from it. Puts are
 read-modify-writes over the one record, serialized through a promise chain so
 two of them cannot lose one another's entry.
 
+The root entry also re-exports `mintRecordEncryption` (from
+`@interop/wallet-core/keyring`) beside `LocalStore`, `deriveIdentity`, and
+`createDescriptorCache`. The seam rule: a consumer handed `LocalStore` directly
+is handed everything needed to provision one under epoch-from-birth -- minting
+the one-epoch descriptor a fresh encrypted collection requires must not force a
+dependency on `@interop/wallet-core`. It is the same minting the anonymous
+replica and this package's own tests use.
+
 `publicUrlFor({ collectionKey, id })` (`src/storage/publicUrl.ts`) composes the
 stable, world-readable resource URL of a document in a public (plaintext)
 collection -- the publish-copy share pattern. It routes the logical key to its

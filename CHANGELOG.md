@@ -1,5 +1,15 @@
 # @interop/was-react Changelog
 
+## 0.16.0 - TBD
+
+### Added
+
+- The root entry re-exports `mintRecordEncryption` (from
+  `@interop/wallet-core/keyring`) beside `LocalStore`, `deriveIdentity`, and
+  `createDescriptorCache`, so a consumer opening a `LocalStore` directly can
+  mint the epoch-bearing encryption descriptor that epoch-from-birth requires
+  without depending on wallet-core.
+
 ## 0.15.0 - 2026-08-12
 
 ### Added

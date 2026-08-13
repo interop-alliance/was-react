@@ -117,6 +117,10 @@ export * from './sync/index.js'
 // stores, the delegated remote store, sync status, rehydrate mechanism, and the
 // replication controller.
 export { LocalStore } from './storage/localStore.js'
+// Re-exported beside `LocalStore` (with `deriveIdentity` and
+// `createDescriptorCache` above) so a consumer handed the store directly is
+// also handed everything needed to provision one under epoch-from-birth.
+export { mintRecordEncryption } from '@interop/wallet-core/keyring'
 export {
   setLocalStore,
   requireStore,

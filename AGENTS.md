@@ -63,6 +63,13 @@ core entry must not import `@mui/material`, `@mui/icons-material`,
 `react-router`, or `node:*`. Keep those imports confined to `src/mui/` and
 `src/dev/` respectively.
 
+The root entry keeps the direct-`LocalStore` seam complete: a consumer handed
+`LocalStore` directly is handed everything needed to provision one under
+epoch-from-birth. That is why `mintRecordEncryption` is re-exported from
+`@interop/wallet-core/keyring` beside `LocalStore`, `deriveIdentity`, and
+`createDescriptorCache` -- a consumer must not need a wallet-core dependency to
+mint the descriptor a fresh encrypted collection requires.
+
 ### Peer-dependency policy
 
 `react`, `zustand`, and `rxdb` are required peers. `@mui/material`,
