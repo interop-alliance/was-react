@@ -16,8 +16,17 @@
  */
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it } from 'vitest'
-import { initRecipients, ownerRecipient } from '@interop/was-client/edv'
-import type { CollectionEncryption } from '@interop/was-client'
+import {
+  createEdvEncryption,
+  initRecipients,
+  mintHmacKey,
+  ownerRecipient,
+  wrapEpochSecret
+} from '@interop/was-client/edv'
+import type {
+  CollectionEncryption,
+  ResourceMetadataCustom
+} from '@interop/was-client'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import type { WasCollectionConfig } from '../../src/config.js'
@@ -357,6 +366,176 @@ describe('LocalStore key-epoch stamping', () => {
     // The stale stamp is REPLACED by the epoch the re-encrypt sealed under,
     // so the push keeps the server's stamp in step with the envelope.
     expect((await rawRow(store)).epoch).toBe(encryption.currentEpoch)
+  })
+})
+
+// The persisted blinded-index schema a searchable collection's metadata holds.
+const INDEX_SCHEMA = {
+  revision: 1,
+  indexes: [{ attribute: 'content.title', addedIn: 1 }]
+}
+
+/**
+ * The one-epoch descriptor with a blinded-index HMAC key installed -- the
+ * searchable-collection fixture. The blinding key is distributed exactly like
+ * an epoch key, so the same wrap builds it.
+ */
+async function mintIndexableDescriptor(): Promise<CollectionEncryption> {
+  const { keyAgreementKey } = await identityKeys()
+  const encryption = await mintDescriptor()
+  const hmac = await mintHmacKey()
+  return {
+    ...encryption,
+    hmac: {
+      id: hmac.id,
+      type: hmac.type,
+      recipients: [
+        await wrapEpochSecret({
+          epochSecret: hmac.secret,
+          recipient: ownerRecipient({ keyAgreementKey })
+        })
+      ]
+    }
+  }
+}
+
+/**
+ * The stored `/meta` `custom` value the collection carries: the opaque metadata
+ * envelope, built through the very codec the direct (Collection handle) path
+ * writes it with.
+ */
+async function encodeIndexSchemaMeta(
+  encryption: CollectionEncryption,
+  collectionId: string = COLLECTION
+): Promise<unknown> {
+  const keys = await identityKeys()
+  const provider = createEdvEncryption({ resolveKeys: async () => keys })
+  const codec = await provider.codecFor({
+    spaceId: 'space-1',
+    collectionId,
+    scheme: 'edv',
+    encryption
+  })
+  if (!codec) {
+    throw new Error('Expected an EDV codec for the descriptor.')
+  }
+  codec.indexing?.applySchema(INDEX_SCHEMA)
+  const { custom } = await codec.encodeMeta({
+    custom: { indexSchema: INDEX_SCHEMA } as unknown as ResourceMetadataCustom
+  })
+  return custom
+}
+
+/**
+ * The blinded index entries the single at-rest envelope carries.
+ */
+async function rawIndexed(store: LocalStore): Promise<unknown[]> {
+  const envelope = (await rawEnvelope(store)) as unknown as {
+    indexed?: unknown[]
+  }
+  return envelope.indexed ?? []
+}
+
+describe('LocalStore.applyCollectionMeta', () => {
+  it('ignores an unknown id and a public collection', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
+    expect(
+      await store.applyCollectionMeta({ collectionId: 'no-such-collection' })
+    ).toBe(false)
+    expect(
+      await store.applyCollectionMeta({ collectionId: 'microblog-posts' })
+    ).toBe(false)
+  })
+
+  it('installs the schema so later writes carry blinded index entries', async () => {
+    const encryption = await mintIndexableDescriptor()
+    const store = await openStore(
+      `was-react-test-${++dbCounter}`,
+      COLLECTIONS,
+      {
+        [COLLECTION]: encryption
+      }
+    )
+    const custom = await encodeIndexSchemaMeta(encryption)
+
+    expect(
+      await store.applyCollectionMeta({ collectionId: COLLECTION, custom })
+    ).toBe(true)
+
+    await store.insertEntity(COLLECTION, makeNote('Indexed note'))
+    expect(await rawIndexed(store)).toHaveLength(1)
+  })
+
+  it('re-installs the schema when the cipher is rebuilt', async () => {
+    const encryption = await mintIndexableDescriptor()
+    const store = await openStore(
+      `was-react-test-${++dbCounter}`,
+      COLLECTIONS,
+      {
+        [COLLECTION]: encryption
+      }
+    )
+    await store.applyCollectionMeta({
+      collectionId: COLLECTION,
+      custom: await encodeIndexSchemaMeta(encryption)
+    })
+
+    // A rotation elsewhere rebuilds the cipher; the schema is not a casualty.
+    await store.rebuildCipher({ key: COLLECTION, encryption })
+
+    await store.insertEntity(COLLECTION, makeNote('Still indexed'))
+    expect(await rawIndexed(store)).toHaveLength(1)
+  })
+
+  it('remembers metadata applied while the placeholder cipher is held', async () => {
+    // No cached descriptor: the collection opens fail-closed behind the
+    // placeholder cipher, which has no schema to install.
+    const store = await openStore(
+      `was-react-test-${++dbCounter}`,
+      COLLECTIONS,
+      {}
+    )
+    const encryption = await mintIndexableDescriptor()
+    expect(
+      await store.applyCollectionMeta({
+        collectionId: COLLECTION,
+        custom: await encodeIndexSchemaMeta(encryption)
+      })
+    ).toBe(true)
+
+    // The first live descriptor read swaps in the real cipher, which picks the
+    // remembered schema up.
+    expect(
+      await store.applyRemoteDescriptor({
+        collectionId: COLLECTION,
+        encryption
+      })
+    ).toBe(true)
+
+    await store.insertEntity(COLLECTION, makeNote('Indexed after provisioning'))
+    expect(await rawIndexed(store)).toHaveLength(1)
+  })
+
+  it('does not remember a metadata value the cipher cannot decode', async () => {
+    const encryption = await mintIndexableDescriptor()
+    const store = await openStore(
+      `was-react-test-${++dbCounter}`,
+      COLLECTIONS,
+      {
+        [COLLECTION]: encryption
+      }
+    )
+    // A metadata envelope AEAD-bound to another collection is refused by the
+    // cipher, and the failed value must not stay remembered: a poisoned memo
+    // would make the next rebuild throw on a collection that reads fine.
+    const foreign = await encodeIndexSchemaMeta(encryption, 'other-collection')
+    await expect(
+      store.applyCollectionMeta({ collectionId: COLLECTION, custom: foreign })
+    ).rejects.toThrow()
+
+    await store.rebuildCipher({ key: COLLECTION, encryption })
+    await store.insertEntity(COLLECTION, makeNote('Unindexed but writable'))
+    expect(await rawIndexed(store)).toHaveLength(0)
   })
 })
 

@@ -11,6 +11,13 @@
  * prior envelope. `decrypt` reverses it. The sync layer moves the envelope
  * verbatim; it never touches these keys.
  *
+ * On a collection whose encryption descriptor declares a blinded-index key, the
+ * cipher can also carry the collection's persisted index schema (supplied at
+ * build time as `meta`, or installed afterwards through `applyMeta`), so the
+ * envelopes it writes carry the same blinded `indexed` entries a direct write
+ * through a collection handle emits -- which is what makes a pushed document
+ * findable by an equality query.
+ *
  * A PUBLIC (plaintext) collection uses {@link createPlaintextDocCodec} instead:
  * the same {@link DocCipher} seam with pass-through implementations, so the
  * storage layer above needs no encrypted-vs-plaintext fork.
@@ -54,6 +61,12 @@ export function isUnknownEpochError(err: unknown): boolean {
  * reverses either. An EDV (key-epoch) cipher also surfaces the `epoch` id it
  * encrypted under, which rides the content push as the `Key-Epoch` header; the
  * plaintext codec returns none.
+ *
+ * `applyMeta` is the blinded-index schema install hook an EDV cipher exposes:
+ * given the collection's stored `/meta` value, it installs the persisted index
+ * schema so subsequent writes emit blinded `indexed` entries. It is absent on
+ * the pass-through plaintext codec and on the fail-closed placeholder, neither
+ * of which has a schema to install -- hence optional here.
  */
 export interface DocCipher {
   encrypt(options: {
@@ -65,6 +78,7 @@ export interface DocCipher {
     current: Json
   }): Promise<{ id: string; envelope: Json; epoch?: string }>
   decrypt(options: { envelope: Json }): Promise<Json>
+  applyMeta?(options: { custom?: unknown }): Promise<unknown>
 }
 
 /**
@@ -167,25 +181,34 @@ export function hasKeyEpochs(
  * @param options.collectionId {string}   labels errors; the codec is agnostic
  * @param options.encryption {CollectionEncryption}   the collection's
  *   encryption descriptor; must carry the key-epoch roster
+ * @param [options.meta] {object}   the collection's stored `/meta` value as the
+ *   replica holds it (its `custom` is the opaque encrypted metadata envelope,
+ *   decrypted by the codec). When supplied and the descriptor declares a
+ *   blinded-index key, the persisted index schema is installed, so writes emit
+ *   blinded `indexed` entries. Without it, writes emit none -- exactly what an
+ *   offline replica holding no collection metadata wrote before
  * @returns {Promise<DocCipher>}
  */
 export async function createDocCipher({
   keyAgreementKey,
   keyResolver,
   collectionId,
-  encryption
+  encryption,
+  meta
 }: {
   keyAgreementKey: IKeyAgreementKey
   keyResolver: IKeyResolver
   collectionId: string
   encryption: CollectionEncryption
+  meta?: { custom?: unknown }
 }): Promise<DocCipher> {
   const cipher = await createEdvDocCipher({
     keyAgreementKey,
     keyResolver,
     collectionId,
     idDerivation: 'random',
-    encryption
+    encryption,
+    ...(meta !== undefined && { meta })
   })
   return cipher as unknown as DocCipher
 }

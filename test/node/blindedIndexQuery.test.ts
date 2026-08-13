@@ -17,7 +17,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { createApp, FileSystemBackend } from 'was-teaching-server'
 import { provisionDevGrants } from '../../src/dev/provisionDevGrants.js'
 import { parseGrants, type ParsedGrants } from '../../src/grants.js'
@@ -32,7 +32,7 @@ import {
 } from '../../src/storage/storageManager.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
 import { SyncController } from '../../src/storage/syncController.js'
-import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
+import { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
 import type { ZcapClient } from '@interop/ezcap'
 import type {
   IKeyAgreementKey,
@@ -48,8 +48,12 @@ import type { WasCollectionConfig } from '../../src/config.js'
 }
 
 const PRIVATE_ID = 'indexed-notes'
+// A second private collection, provisioned WITHOUT a blinding key: nothing to
+// install, so the bootstrap must not spend a metadata read on it.
+const PLAIN_ID = 'plain-notes'
 const REGISTRY: WasCollectionConfig[] = [
-  { key: 'notes', id: PRIVATE_ID, indexes: ['title'] }
+  { key: 'notes', id: PRIVATE_ID, indexes: ['title'] },
+  { key: 'plain', id: PLAIN_ID }
 ]
 
 // A fixed 32-byte app (relying party) master seed, distinct from the other
@@ -137,7 +141,10 @@ beforeAll(async () => {
   const provisioned = await provisionDevGrants({
     serverUrl,
     seed: SEED,
-    collections: [{ id: PRIVATE_ID, visibility: 'private', blindedIndex: true }]
+    collections: [
+      { id: PRIVATE_ID, visibility: 'private', blindedIndex: true },
+      { id: PLAIN_ID, visibility: 'private' }
+    ]
   })
   parsed = parseGrants(provisioned.grants)
   const identity = await deriveIdentity({ seed: SEED })
@@ -249,6 +256,144 @@ describe('blinded-index query against was-teaching-server', () => {
       ...first.documents.map(document => document.data),
       ...second.documents.map(document => document.data)
     ]).toEqual(expect.arrayContaining(matching))
+  }, 60000)
+
+  it('indexes documents written through the local sync path', async () => {
+    // The bootstrap installed the collection's persisted schema on the
+    // replica's cipher, so an ordinary local write carries blinded `indexed`
+    // entries and reaches the server findable.
+    const note = makeNote('a locally written title')
+    await localStore.insertEntity('notes', note)
+
+    const envelopeId = localStore.envelopeIdFor('notes', note.id)
+    expect(envelopeId).toBeDefined()
+    const row = await localStore
+      .rxCollection('notes')
+      .findOne(envelopeId as string)
+      .exec()
+    const envelope = row?.toMutableJSON().data as
+      { indexed?: unknown[] } | undefined
+    expect(envelope?.indexed).toHaveLength(1)
+
+    // Once replication has pushed it, the blinded query finds it like any
+    // codec-written document.
+    const deadline = Date.now() + 30000
+    let found: unknown[] = []
+    while (Date.now() < deadline && found.length === 0) {
+      const page = await remoteStore.queryCollectionByEquality({
+        collectionId: PRIVATE_ID,
+        equals: { title: note.title }
+      })
+      found = page.documents
+      if (found.length === 0) {
+        await new Promise(resolve => setTimeout(resolve, 250))
+      }
+    }
+    expect(found).toHaveLength(1)
+  }, 60000)
+
+  it('reads the metadata only for a collection with a blinding key', async () => {
+    // A second bring-up over the same Space, watched: the metadata read must
+    // follow the declaration (which may have written fresh attributes into the
+    // schema) and must not be spent on the collection with no blinding key.
+    const order: string[] = []
+    const declared = vi
+      .spyOn(WasRemoteStore.prototype, 'declareBlindedIndexes')
+      .mockImplementation(async function (
+        this: WasRemoteStore,
+        collectionId: string
+      ) {
+        order.push(`declare:${collectionId}`)
+        return { collectionId, ok: true }
+      })
+    const read = vi
+      .spyOn(WasRemoteStore.prototype, 'readCollectionMeta')
+      .mockImplementation(async (collectionId: string) => {
+        order.push(`meta:${collectionId}`)
+        return { custom: undefined }
+      })
+    const applied = vi.spyOn(LocalStore.prototype, 'applyCollectionMeta')
+
+    const watchedController = new SyncController({
+      collections: REGISTRY,
+      sync: { pollMs: 500, retryMs: 500 }
+    })
+    const watchedStore = await LocalStore.init({
+      ...identityKeys,
+      collections: REGISTRY,
+      dbName: 'blinded-index-bootstrap'
+    })
+    try {
+      await startWasSync({
+        parsed,
+        zcapClient,
+        collections: REGISTRY,
+        localStore: watchedStore,
+        syncController: watchedController,
+        onRemoteChange: () => {},
+        identityKeys
+      })
+      expect(order).toContain(`declare:${PRIVATE_ID}`)
+      expect(order.indexOf(`meta:${PRIVATE_ID}`)).toBeGreaterThan(
+        order.indexOf(`declare:${PRIVATE_ID}`)
+      )
+      // No blinding key on the second collection: no metadata read at all.
+      expect(order).not.toContain(`meta:${PLAIN_ID}`)
+      expect(
+        applied.mock.calls.map(([options]) => options.collectionId)
+      ).toEqual([PRIVATE_ID])
+    } finally {
+      await watchedController.stop()
+      await watchedStore.remove()
+      declared.mockRestore()
+      read.mockRestore()
+      applied.mockRestore()
+    }
+  }, 60000)
+
+  it('warns and continues when the schema install fails', async () => {
+    const read = vi
+      .spyOn(WasRemoteStore.prototype, 'readCollectionMeta')
+      .mockResolvedValue({ custom: { not: 'an envelope' } })
+    const applied = vi
+      .spyOn(LocalStore.prototype, 'applyCollectionMeta')
+      .mockRejectedValue(new Error('undecodable metadata envelope'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const watchedController = new SyncController({
+      collections: REGISTRY,
+      sync: { pollMs: 500, retryMs: 500 }
+    })
+    const watchedStore = await LocalStore.init({
+      ...identityKeys,
+      collections: REGISTRY,
+      dbName: 'blinded-index-bootstrap-failure'
+    })
+    try {
+      // The bootstrap still resolves: the install is best-effort like every
+      // other declaration on this pass.
+      const bootstrap = await startWasSync({
+        parsed,
+        zcapClient,
+        collections: REGISTRY,
+        localStore: watchedStore,
+        syncController: watchedController,
+        onRemoteChange: () => {},
+        identityKeys
+      })
+      expect(bootstrap.remoteStore).toBeDefined()
+      expect(
+        warn.mock.calls.some(([message]) =>
+          String(message).includes('Blinded-index schema install failed')
+        )
+      ).toBe(true)
+    } finally {
+      await watchedController.stop()
+      await watchedStore.remove()
+      read.mockRestore()
+      applied.mockRestore()
+      warn.mockRestore()
+    }
   }, 60000)
 
   it('answers the entity-store query verb end to end', async () => {

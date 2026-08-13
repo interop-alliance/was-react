@@ -206,6 +206,44 @@ describe('WasRemoteStore.readCollectionEncryption', () => {
   })
 })
 
+describe('WasRemoteStore.readCollectionMeta', () => {
+  it('returns the raw stored custom value from the collection meta path', async () => {
+    // The stored (opaque) envelope, NOT the decoded plaintext: it is what the
+    // local store's cipher decodes itself to recover the index schema.
+    const stored = { jwe: { protected: 'opaque' } }
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 200, data: { custom: stored } }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    expect(await store.readCollectionMeta('notes')).toEqual({ custom: stored })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      url: 'https://was.example/space/space-1/notes/meta',
+      method: 'GET',
+      capability: { id: 'urn:zcap:priv' }
+    })
+  })
+
+  it('returns undefined when no capability covers the collection', async () => {
+    const { calls, zcapClient: stub } = stubZcapClient([{ status: 200 }])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    expect(await store.readCollectionMeta('ungranted')).toBeUndefined()
+    expect(calls).toHaveLength(0)
+  })
+
+  it('returns undefined when the read fails', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient: {
+        request: async () => {
+          throw new Error('offline')
+        }
+      } as unknown as ZcapClient
+    })
+    expect(await store.readCollectionMeta('notes')).toBeUndefined()
+  })
+})
+
 describe('WasRemoteStore.declareCollectionIndexes', () => {
   it('skips a private collection and a public one without indexes', async () => {
     const store = WasRemoteStore.fromGrants({

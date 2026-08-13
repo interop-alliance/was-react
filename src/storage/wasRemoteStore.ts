@@ -38,6 +38,7 @@ import { createEdvEncryption } from '@interop/was-client/edv'
 import type { EncryptionDescriptorSource } from '@interop/wallet-core/descriptors'
 import {
   collectionItems,
+  collectionMeta,
   collectionPath,
   resourcePath,
   toUrl
@@ -240,6 +241,42 @@ export class WasRemoteStore {
   }
 
   /**
+   * Reads one collection's stored `/meta` value RAW, invoked with that
+   * collection's delegated zcap. On an encrypted collection the returned
+   * `custom` is the opaque metadata envelope exactly as stored -- which is what
+   * the local store's cipher wants, since it decodes the envelope itself
+   * (`applyMeta`) to recover the persisted blinded-index schema. Deliberately
+   * NOT `Collection.meta()`: that one DECODES `custom` to plaintext, which
+   * `applyMeta` cannot consume.
+   *
+   * Non-fatal like the descriptor read: answers `undefined` rather than
+   * throwing when no capability covers the collection, the read is unauthorized,
+   * the app is offline, or the backend has no metadata support.
+   *
+   * @param collectionId {string}   the WAS collection id
+   * @returns {Promise<{ custom?: unknown } | undefined>}
+   */
+  async readCollectionMeta(
+    collectionId: string
+  ): Promise<{ custom?: unknown } | undefined> {
+    const capability = this.collectionCapability(collectionId)
+    if (!capability) {
+      return undefined
+    }
+    try {
+      const response = await this.was.request({
+        capability,
+        path: collectionMeta(this.spaceId, collectionId),
+        method: 'GET'
+      })
+      const stored = response.data as { custom?: unknown } | undefined
+      return { custom: stored?.custom }
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
    * Best-effort declaration of the `{ encryption: { scheme: 'edv' } }` descriptor on
    * one collection, invoked with that collection's delegated RW zcap. Non-fatal:
    * returns the outcome rather than throwing, so a server that does not authorize
@@ -422,10 +459,11 @@ export class WasRemoteStore {
    * collection's declared `indexes`, an uncovered collection, and -- on the
    * private path -- a store built without this app's identity keys.
    *
-   * Standing limitation of the private path: documents written through the
-   * local-first sync path do not yet carry blinded index entries, so a blinded
-   * query finds only documents written through an index-aware cipher. They
-   * become findable once they are rewritten that way.
+   * Standing limitation of the private path: the sync path emits blinded
+   * entries only once the bootstrap has installed the collection's persisted
+   * schema on its cipher, so a document written before that install carries no
+   * entries and a blinded query does not find it. Such a document becomes
+   * findable once it is rewritten.
    *
    * @param options {object}
    * @param options.collectionId {string}   the WAS collection id

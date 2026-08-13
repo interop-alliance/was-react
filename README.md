@@ -365,20 +365,23 @@ are written, so a returning session declares nothing. A collection provisioned
 without the key is warned about and keeps replicating in full; only its queries
 are unavailable.
 
+The bootstrap also installs that persisted schema on the collection's own
+document cipher, so documents this app writes carry the same blinded index
+entries as a write through `@interop/was-client`'s `Collection.add` -- a
+document created or edited here is findable by an equality query, on this client
+and on every other recipient.
+
 On the wire, attribute names and values are blinded in the browser with the
 collection's blinding key before the request is sent. The server matches opaque
 tokens and never sees the names or the values, and the returned envelopes are
 decrypted locally.
 
-Two limitations to plan around. Declarations are prospective: a document written
-before its attribute was declared carries no blinded entry for it, and stays
-unfindable until it is rewritten. And documents written through this library's
-own replication path do not yet carry blinded index entries at all, because the
-sync doc cipher underneath does not carry the index schema yet. Today a blinded
-query therefore finds only documents written through an index-aware path, such
-as the wallet's own writes or `@interop/was-client`'s `Collection.add`. Those
-writes light up in a future `@interop/was-client` release, and existing
-documents become findable once rewritten.
+One limitation to plan around: index entries are stamped at write time, so they
+are prospective. A document written before its attribute was declared -- or
+before the sync bootstrap installed the schema, which covers anything written
+offline before the first connect, including data carried in by the login-time
+adoption merge -- carries no blinded entry and stays unfindable until it is
+rewritten.
 
 ### Share links (publish-copy)
 

@@ -13,10 +13,21 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  createEdvEncryption,
   initRecipients,
+  mintHmacKey,
   ownerRecipient,
-  epochKeyIdFor
+  epochKeyIdFor,
+  wrapEpochSecret
 } from '@interop/was-client/edv'
+import type {
+  CollectionEncryption,
+  ResourceMetadataCustom
+} from '@interop/was-client'
+import type {
+  IKeyAgreementKey,
+  IKeyResolver
+} from '@interop/data-integrity-core'
 import { isEncryptedEnvelope } from '@interop/was-client/sync'
 import { deriveIdentity } from '../identity/agents.js'
 import {
@@ -96,6 +107,167 @@ describe('hasKeyEpochs', () => {
     expect(hasKeyEpochs(undefined)).toBe(false)
     // A bare declaration with no roster cannot build a cipher.
     expect(hasKeyEpochs({ scheme: 'edv' })).toBe(false)
+  })
+})
+
+/**
+ * The same one-epoch descriptor with a blinded-index HMAC key installed -- the
+ * searchable-collection fixture. The blinding key is distributed exactly like
+ * an epoch key, so the same wrap builds it.
+ *
+ * @param keyAgreementKey {IKeyAgreementKey}   the sole recipient
+ * @returns {Promise<CollectionEncryption>}
+ */
+async function mintIndexableDescriptor(
+  keyAgreementKey: IKeyAgreementKey
+): Promise<CollectionEncryption> {
+  const encryption = await mintDescriptor(keyAgreementKey)
+  const hmac = await mintHmacKey()
+  return {
+    ...encryption,
+    hmac: {
+      id: hmac.id,
+      type: hmac.type,
+      recipients: [
+        await wrapEpochSecret({
+          epochSecret: hmac.secret,
+          recipient: ownerRecipient({ keyAgreementKey })
+        })
+      ]
+    }
+  }
+}
+
+/**
+ * The stored `/meta` `custom` value a collection carrying this index schema
+ * holds: the opaque metadata envelope, built through the very codec the direct
+ * (Collection handle) path writes it with.
+ *
+ * @param options {object}
+ * @param options.encryption {CollectionEncryption}
+ * @param options.keys {object}   the reader's key material
+ * @param options.keys.keyAgreementKey {IKeyAgreementKey}
+ * @param options.keys.keyResolver {IKeyResolver}
+ * @returns {Promise<unknown>}
+ */
+async function encodeIndexSchemaMeta({
+  encryption,
+  keys
+}: {
+  encryption: CollectionEncryption
+  keys: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver }
+}): Promise<unknown> {
+  const provider = createEdvEncryption({ resolveKeys: async () => keys })
+  const codec = await provider.codecFor({
+    spaceId: 'space-1',
+    collectionId: COLLECTION_ID,
+    scheme: 'edv',
+    encryption
+  })
+  if (!codec) {
+    throw new Error('Expected an EDV codec for the descriptor.')
+  }
+  codec.indexing?.applySchema(INDEX_SCHEMA)
+  const { custom } = await codec.encodeMeta({
+    custom: { indexSchema: INDEX_SCHEMA } as unknown as ResourceMetadataCustom
+  })
+  return custom
+}
+
+const INDEX_SCHEMA = {
+  revision: 1,
+  indexes: [{ attribute: 'content.title', addedIn: 1 }]
+}
+
+/**
+ * The blinded index entries of a stored envelope.
+ *
+ * @param envelope {Json}
+ * @returns {unknown[]}
+ */
+function indexedOf(envelope: Json): unknown[] {
+  return (envelope as { indexed?: unknown[] }).indexed ?? []
+}
+
+describe('createDocCipher (blinded index schema)', () => {
+  it('emits blinded index entries on encrypt and encryptUpdate', async () => {
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({
+      seed: SEED
+    })
+    const encryption = await mintIndexableDescriptor(keyAgreementKey)
+    const custom = await encodeIndexSchemaMeta({
+      encryption,
+      keys: { keyAgreementKey, keyResolver }
+    })
+    const cipher = await createDocCipher({
+      keyAgreementKey,
+      keyResolver,
+      collectionId: COLLECTION_ID,
+      encryption,
+      meta: { custom }
+    })
+
+    const first = await cipher.encrypt({ data: DOC })
+    expect(indexedOf(first.envelope)).toHaveLength(1)
+    // Blinded: neither the attribute nor its value travels in the clear.
+    const serialized = JSON.stringify(indexedOf(first.envelope))
+    expect(serialized).not.toContain('content.title')
+    expect(serialized).not.toContain('hello')
+
+    // The mutable-head update path indexes too.
+    const updated = await cipher.encryptUpdate({
+      id: first.id,
+      data: { ...(DOC as object), title: 'goodbye' } as Json,
+      current: first.envelope
+    })
+    expect(indexedOf(updated.envelope)).toHaveLength(1)
+  })
+
+  it('installs the schema after the build through applyMeta', async () => {
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({
+      seed: SEED
+    })
+    const encryption = await mintIndexableDescriptor(keyAgreementKey)
+    const custom = await encodeIndexSchemaMeta({
+      encryption,
+      keys: { keyAgreementKey, keyResolver }
+    })
+    const cipher = await createDocCipher({
+      keyAgreementKey,
+      keyResolver,
+      collectionId: COLLECTION_ID,
+      encryption
+    })
+
+    // Built without metadata: exactly what an offline replica wrote before.
+    const before = await cipher.encrypt({ data: DOC })
+    expect(indexedOf(before.envelope)).toEqual([])
+
+    await cipher.applyMeta!({ custom })
+
+    const after = await cipher.encrypt({ data: DOC })
+    expect(indexedOf(after.envelope)).toHaveLength(1)
+  })
+
+  it('is a no-op on a descriptor with no blinded-index key', async () => {
+    // No `hmac` means no blinding key at all, so applyMeta may be called
+    // unconditionally.
+    const { keyAgreementKey, keyResolver } = await deriveIdentity({
+      seed: SEED
+    })
+    const encryption = await mintDescriptor(keyAgreementKey)
+    const cipher = await createDocCipher({
+      keyAgreementKey,
+      keyResolver,
+      collectionId: COLLECTION_ID,
+      encryption
+    })
+    await expect(
+      cipher.applyMeta!({ custom: undefined })
+    ).resolves.toBeDefined()
+    const { envelope } = await cipher.encrypt({ data: DOC })
+    expect(indexedOf(envelope)).toEqual([])
+    expect(await cipher.decrypt({ envelope })).toEqual(DOC)
   })
 })
 

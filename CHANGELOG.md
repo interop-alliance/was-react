@@ -1,5 +1,25 @@
 # @interop/was-react Changelog
 
+## 0.18.0 - TBD
+
+### Added
+
+- Documents written through the sync path now carry blinded `indexed` entries:
+  the sync bootstrap reads each hmac-bearing private collection's stored `/meta`
+  (after declaring its blinded-index attributes) and installs the persisted
+  index schema on that collection's document cipher
+  (`LocalStore.applyCollectionMeta`), so app writes are findable by equality
+  queries. The installed schema survives cipher rebuilds (epoch rotations).
+  Documents sealed before the schema was installed remain unfindable until
+  rewritten.
+- `WasRemoteStore.readCollectionMeta` reads a collection's raw stored `/meta`
+  value.
+
+### Changed
+
+- Upgraded `@interop/was-client` to 0.36.0 (adds the `applyMeta` / build-time
+  `meta` support on `createEdvDocCipher` that the above uses).
+
 ## 0.17.0 - 2026-08-12
 
 ### Changed

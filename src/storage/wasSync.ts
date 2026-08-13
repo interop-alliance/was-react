@@ -247,6 +247,15 @@ export async function startWasSync({
   //   the fresh set to the descriptor-cache refresher so an offline session can
   //   rebuild its epoch-aware ciphers without a live read.
   //
+  // A private collection with a blinding key gets one more ride-along on the
+  // same pass: its stored collection metadata is fetched RAW (the opaque
+  // envelope, not the decoded form) and installed on that collection's local
+  // cipher, which carries the persisted blinded-index schema. Documents written
+  // from then on carry blinded `indexed` entries and are findable by
+  // `collection.find()`. It runs AFTER the declaration deliberately: the
+  // declaration may have written fresh attributes into the persisted schema, and
+  // the metadata read must see them.
+  //
   // The description is READ ONCE per collection and feeds both: the same
   // descriptor answers the encryption PUT's read-before-write roster-clobber
   // guard and the cipher rebuild, rather than each fetching it separately.
@@ -297,6 +306,27 @@ export async function startWasSync({
             `Blinded-index declaration failed for "${collectionId}": ` +
               `${blinded.error ?? 'unknown error'} (status ${blinded.status ?? 'n/a'}).`
           )
+        }
+        // The schema the declaration just settled is then installed on this
+        // collection's local cipher, so the documents this replica writes from
+        // now on carry blinded `indexed` entries. A descriptor with no `hmac`
+        // carries no blinding key at all, so the install could only be a no-op:
+        // the metadata read is skipped rather than spent.
+        if (hasKeyEpochs(encryption) && encryption.hmac) {
+          const meta = await remoteStore.readCollectionMeta(collectionId)
+          if (meta) {
+            try {
+              await localStore.applyCollectionMeta({
+                collectionId,
+                custom: meta.custom
+              })
+            } catch (err) {
+              console.warn(
+                `Blinded-index schema install failed for "${collectionId}":`,
+                err
+              )
+            }
+          }
         }
       }
       const indexes = await remoteStore.declareCollectionIndexes(collectionId)

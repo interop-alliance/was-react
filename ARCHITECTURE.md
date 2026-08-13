@@ -447,24 +447,38 @@ compare-and-swap write (`declareBlindedIndexes`, over was-client's
 `Collection.declareIndex`). The encrypted form is what lets every recipient
 discover what is queryable while the server never learns the attribute names.
 Only attributes missing from the persisted schema are written, so a returning
-session writes nothing. All of it is non-fatal and warns on refusal, including a
-private collection provisioned without a blinded-index key (no `hmac` member on
-its descriptor): an unqueryable collection still replicates in full. The remote
-store is built with this app's identity keys when they are available, which is
-what lets the client's EDV keystore construct the codec the blinded-index verbs
-need; replication itself still moves envelopes verbatim and never goes through
-that codec. A private collection whose descriptor carries no key epochs stays
-fail-closed, warned about plainly rather than surfacing later as per-row decrypt
-failures. The fetched descriptors are handed to `onDescriptorsFetched` (the
-offline descriptor cache) and a live descriptor source is installed on the local
-store, so a decrypt that meets an unseen epoch (a rotation elsewhere) re-reads
-and rebuilds once per collection per session. An unseen epoch is the only signal
-that spends that refresh; a decrypt that fails because this app holds no key for
-an epoch the descriptor already lists surfaces as `KeyUnwrapError` and leaves
-the refresh untouched. Shared collections are handled apart from all of that:
-they never enter replication and never receive a description PUT, and instead
-one `SharedCollectionReader` is opened per configured shared collection the
-grants cover, concurrently, each failure a warn-and-skip.
+session writes nothing. After the declaration, the bootstrap reads the
+collection's stored `/meta` value raw (the opaque encrypted metadata envelope;
+`Collection.meta()` would decode it, and the cipher wants it as stored) and
+installs the persisted blinded-index schema on that collection's own document
+cipher (`LocalStore.applyCollectionMeta`, over the upstream cipher's
+`applyMeta`), so every document the app writes from then on carries blinded
+`indexed` entries and is findable by an equality query. The install is
+remembered per collection and re-applied whenever the cipher is rebuilt (an
+epoch rotation, the unknown-epoch refresh): a schema change rotates no epochs,
+so the schema deliberately does not ride the descriptor-equality gate. The
+residue is prospective-only stamping -- a document sealed before the schema was
+installed (anything written offline before the first connect, including the
+adoption merge's pre-sync writes) carries no entries until it is rewritten. All
+of it is non-fatal and warns on refusal, including a private collection
+provisioned without a blinded-index key (no `hmac` member on its descriptor),
+which also skips the meta read outright: an unqueryable collection still
+replicates in full. The remote store is built with this app's identity keys when
+they are available, which is what lets the client's EDV keystore construct the
+codec the blinded-index verbs need; replication itself still moves envelopes
+verbatim and never goes through that codec. A private collection whose
+descriptor carries no key epochs stays fail-closed, warned about plainly rather
+than surfacing later as per-row decrypt failures. The fetched descriptors are
+handed to `onDescriptorsFetched` (the offline descriptor cache) and a live
+descriptor source is installed on the local store, so a decrypt that meets an
+unseen epoch (a rotation elsewhere) re-reads and rebuilds once per collection
+per session. An unseen epoch is the only signal that spends that refresh; a
+decrypt that fails because this app holds no key for an epoch the descriptor
+already lists surfaces as `KeyUnwrapError` and leaves the refresh untouched.
+Shared collections are handled apart from all of that: they never enter
+replication and never receive a description PUT, and instead one
+`SharedCollectionReader` is opened per configured shared collection the grants
+cover, concurrently, each failure a warn-and-skip.
 
 `readRemoteDescriptors` is the login-time counterpart: one descriptor read per
 granted private collection BEFORE any replication exists, because the connected

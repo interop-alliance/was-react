@@ -117,6 +117,10 @@ export class LocalStore {
   // The encryption descriptor each private collection's current cipher was built
   // from (keyed by collection logical key), so a descriptor change can be detected.
   #descriptors: Record<string, CollectionEncryption | undefined>
+  // The last collection metadata installed per collection LOGICAL key (the
+  // stored `/meta` value carrying the blinded-index schema), kept so a cipher
+  // rebuild re-installs the schema instead of silently dropping it.
+  #metas: Record<string, { custom?: unknown }>
   // Reads a private collection's fresh encryption descriptor (a live Collection
   // Description read); injected once a remote store exists. Absent offline /
   // local-only, in which case an unknown epoch simply propagates.
@@ -154,6 +158,7 @@ export class LocalStore {
     this.#keyAgreementKey = keyAgreementKey
     this.#keyResolver = keyResolver
     this.#descriptors = descriptors
+    this.#metas = {}
     // The whole swap an unknown epoch calls for, handed to the policy that
     // rations it: re-read the collection's descriptor through the installed
     // source and rebuild that collection's cipher from it. With no source, or
@@ -429,6 +434,14 @@ export class LocalStore {
    * collection has no EDV cipher and is a no-op. The new cipher replaces the
    * held one in place, so the conflict handler and every read path pick it up.
    *
+   * The collection metadata last installed by {@link applyCollectionMeta} is
+   * re-applied at build time, so the blinded-index schema survives an
+   * epoch-rotation rebuild and the unknown-epoch refresh (both funnel through
+   * here). The schema refresh deliberately does NOT ride the descriptor-equality
+   * gate in {@link applyRemoteDescriptor}: a schema-only change rotates no
+   * epochs, so it is installed on the live cipher rather than waiting for a
+   * descriptor to differ.
+   *
    * @param options {object}
    * @param options.key {string}   the collection logical key
    * @param options.encryption {CollectionEncryption}   the new descriptor
@@ -449,9 +462,60 @@ export class LocalStore {
       keyAgreementKey: this.#keyAgreementKey,
       keyResolver: this.#keyResolver,
       collectionId: config.id,
-      encryption
+      encryption,
+      ...(this.#metas[key] !== undefined && { meta: this.#metas[key] })
     })
     this.#descriptors[key] = encryption
+  }
+
+  /**
+   * Installs one collection's stored metadata (by WAS collection id) on its
+   * cipher: the persisted blinded-index schema lives inside that metadata, and
+   * installing it is what makes subsequent LOCAL writes emit blinded `indexed`
+   * entries, so the envelopes this replica pushes are findable by an equality
+   * query. It is the sync-path analogue of the direct path re-reading the
+   * schema whenever a handle's codec is re-resolved.
+   *
+   * The metadata is also remembered, so a later {@link rebuildCipher} (an epoch
+   * rotation, or the first real cipher swapped in behind the fail-closed
+   * placeholder) re-installs the schema rather than dropping it. Unknown ids and
+   * public collections are ignored. A metadata value the cipher cannot decode
+   * throws: an undecodable envelope is the caller's warn-and-continue.
+   *
+   * @param options {object}
+   * @param options.collectionId {string}   the WAS collection id
+   * @param [options.custom] {unknown}   the stored `custom` value from the
+   *   collection's `/meta` (an opaque envelope on an encrypted collection)
+   * @returns {Promise<boolean>}   whether the metadata was remembered/applied
+   */
+  async applyCollectionMeta({
+    collectionId,
+    custom
+  }: {
+    collectionId: string
+    custom?: unknown
+  }): Promise<boolean> {
+    const key = this.#keyByCollectionId.get(collectionId)
+    if (key === undefined) {
+      return false
+    }
+    if (isPublicCollection(this.collectionConfig(key))) {
+      return false
+    }
+    // Remembered even when the collection currently holds the placeholder
+    // cipher: the schema then rides the rebuild that swaps in the real one.
+    this.#metas[key] = { custom }
+    try {
+      await this.#cipher(key).applyMeta?.({ custom })
+    } catch (err) {
+      // An undecodable value must not stay remembered: `createEdvDocCipher`
+      // applies build-time meta eagerly, so a poisoned memo would make the next
+      // rebuild (the unknown-epoch refresh) throw on a collection that reads
+      // fine today.
+      delete this.#metas[key]
+      throw err
+    }
+    return true
   }
 
   /**
