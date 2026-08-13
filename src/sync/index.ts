@@ -30,7 +30,6 @@ export {
   createDocCipher,
   createPlaintextDocCodec,
   createUnprovisionedDocCipher,
-  hasKeyEpochs,
   isUnknownEpochError,
   type DocCipher
 } from './docCipher.js'
@@ -44,3 +43,6 @@ export {
   formatEtag,
   isEncryptedEnvelope
 } from '@interop/was-client/sync'
+// The crypto-free predicates over a collection's encryption descriptor, owned by
+// the client's EDV subpath and re-exported verbatim for the same reason.
+export { hasKeyEpochs, epochRostersEqual } from '@interop/was-client/edv'

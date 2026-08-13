@@ -33,7 +33,6 @@ import { deriveIdentity } from '../identity/agents.js'
 import {
   createDocCipher,
   createUnprovisionedDocCipher,
-  hasKeyEpochs,
   isUnknownEpochError
 } from './docCipher.js'
 import type { Json } from './types.js'
@@ -96,17 +95,6 @@ describe('createDocCipher (multi-recipient / key epochs)', () => {
     expect(kids).not.toContain(keyAgreementKey.id)
     // The app's own identity key unwraps the epoch and recovers the doc.
     expect(await cipher.decrypt({ envelope })).toEqual(DOC)
-  })
-})
-
-describe('hasKeyEpochs', () => {
-  it('accepts only an epoch-bearing descriptor', async () => {
-    const { keyAgreementKey } = await deriveIdentity({ seed: SEED })
-    const encryption = await mintDescriptor(keyAgreementKey)
-    expect(hasKeyEpochs(encryption)).toBe(true)
-    expect(hasKeyEpochs(undefined)).toBe(false)
-    // A bare declaration with no roster cannot build a cipher.
-    expect(hasKeyEpochs({ scheme: 'edv' })).toBe(false)
   })
 })
 

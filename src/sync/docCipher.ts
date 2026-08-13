@@ -136,28 +136,6 @@ export function createPlaintextDocCodec({
 }
 
 /**
- * Whether an encryption descriptor carries a usable key-epoch roster -- a
- * non-empty `epochs` list plus the `currentEpoch` writes go under. Under
- * was-client's epoch-from-birth model this is the ONLY state an EDV cipher
- * can be built from (`createEdvDocCipher` refuses a rosterless descriptor
- * fail-closed), so a bare `{ scheme: 'edv' }` declaration is treated the same
- * as an absent descriptor.
- *
- * @param [encryption] {CollectionEncryption}
- * @returns {boolean}
- */
-export function hasKeyEpochs(
-  encryption?: CollectionEncryption
-): encryption is CollectionEncryption {
-  return Boolean(
-    encryption &&
-    typeof encryption.currentEpoch === 'string' &&
-    Array.isArray(encryption.epochs) &&
-    encryption.epochs.length > 0
-  )
-}
-
-/**
  * Builds a {@link DocCipher} for one collection from the caller's derived key
  * material (the app's identity X25519 key agreement key, the same one every
  * other collection uses). Keys are supplied directly (no

@@ -1,5 +1,14 @@
 # @interop/was-react Changelog
 
+## 0.18.1 - TBD
+
+### Changed
+
+- `hasKeyEpochs` is now re-exported from `@interop/was-client/edv` instead of
+  being implemented here, and the local store's descriptor-refresh comparison
+  uses that subpath's `epochRostersEqual` (also re-exported). Requires
+  `@interop/was-client` >= 0.37.0.
+
 ## 0.18.0 - 2026-08-13
 
 ### Added

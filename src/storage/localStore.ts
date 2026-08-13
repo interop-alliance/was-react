@@ -52,6 +52,7 @@ import {
   createPlaintextDocCodec,
   createUnprovisionedDocCipher,
   hasKeyEpochs,
+  epochRostersEqual,
   isUnknownEpochError,
   makeLwwConflictHandler,
   remotePayloadWins,
@@ -553,7 +554,7 @@ export class LocalStore {
     if (isPublicCollection(config) || !hasKeyEpochs(encryption)) {
       return false
     }
-    if (descriptorsEqual(this.#descriptors[key], encryption)) {
+    if (epochRostersEqual(this.#descriptors[key], encryption)) {
       return false
     }
     await this.rebuildCipher({ key, encryption })
@@ -914,33 +915,4 @@ export class LocalStore {
   }): Promise<void> {
     await removeRxDatabase(dbName, storage ?? getRxStorageDexie())
   }
-}
-
-/**
- * Whether two encryption descriptors select the same writing epoch: same
- * `currentEpoch` and the same ordered epoch id list. That is all a cipher rebuild
- * turns on -- rotation only appends epochs and moves `currentEpoch` -- so a
- * descriptor that matches on both needs no rebuild. A cached `undefined` (no descriptor
- * built) never equals a real descriptor, so first-ever epochs always rebuild.
- *
- * @param current {CollectionEncryption | undefined}
- * @param next {CollectionEncryption}
- * @returns {boolean}
- */
-function descriptorsEqual(
-  current: CollectionEncryption | undefined,
-  next: CollectionEncryption
-): boolean {
-  if (current === undefined) {
-    return false
-  }
-  if (current.currentEpoch !== next.currentEpoch) {
-    return false
-  }
-  const currentIds = (current.epochs ?? []).map(epoch => epoch.id)
-  const nextIds = (next.epochs ?? []).map(epoch => epoch.id)
-  if (currentIds.length !== nextIds.length) {
-    return false
-  }
-  return currentIds.every((id, index) => id === nextIds[index])
 }
