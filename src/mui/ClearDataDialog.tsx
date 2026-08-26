@@ -4,12 +4,13 @@
 /**
  * The clear-data confirmation dialog. A dumb presentational component over the
  * store's `clearLocalData` action: it confirms the destructive reset --
- * deleting the local replica and minting a brand-new anonymous identity. The
- * warning text is mode-aware: in `local` mode the device copy is the ONLY copy,
- * so it nudges the user to export first; once connected, the copy already
- * synced to the Web Space survives the reset, so the text says so instead of
- * threatening total loss. Dismissing the dialog (backdrop / escape / Cancel)
- * leaves the data untouched.
+ * deleting every database this app wrote on the browser (the connected replica
+ * AND the anonymous one), dropping the writer id, and minting a brand-new
+ * anonymous identity. The warning text is mode-aware: in `local` mode the
+ * browser's copy is the ONLY copy, so it nudges the user to export first; once
+ * connected, the copy already synced to the Web Space survives the reset, so
+ * the text says so instead of threatening total loss. Dismissing the dialog
+ * (backdrop / escape / Cancel) leaves the data untouched.
  */
 import { Button } from '@mui/material'
 import { ConfirmDialog } from './ConfirmDialog.js'
@@ -46,12 +47,13 @@ export function ClearDataDialog({
       title="Clear data"
       body={
         connected
-          ? 'This erases the copy stored on this device and disconnects it ' +
-            'from your Web Space. The data already saved to your Web Space ' +
-            'stays there -- reconnect with your wallet to bring it back ' +
-            'onto this device.'
-          : 'This permanently erases everything stored on this device and ' +
-            'starts you over fresh. Your data lives only on this device, ' +
+          ? 'This erases everything this app has stored in this browser -- ' +
+            'the copy of your Web Space and any offline data kept here ' +
+            'alongside it -- and disconnects from your Web Space. The data ' +
+            'already saved to your Web Space stays there: reconnect with ' +
+            'your wallet to bring it back.'
+          : 'This permanently erases everything this app has stored in this ' +
+            'browser and starts you over fresh. Your data lives only here, ' +
             'so once cleared it cannot be recovered -- export a copy first ' +
             'if you want to keep it.'
       }

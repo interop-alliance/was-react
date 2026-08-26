@@ -25,8 +25,10 @@
  * anonymous seed + database are deleted once the activation lands. `adopt:
  * 'leave'` sets the anonymous replica aside untouched instead (it returns after
  * a logout). Logout returns to a fresh `local` (optionally wiping the connected
- * replica); `clearLocalData` mints a brand-new anonymous seed and replica and
- * drops any persisted connected session.
+ * replica, and leaving the anonymous one in place); `clearLocalData` deletes
+ * every database this app ever wrote on the browser, drops the persisted writer
+ * id and any persisted connected session, and mints a brand-new anonymous seed
+ * and replica.
  *
  * The library cannot bind a module-level store to app config, so this is a
  * FACTORY: {@link createAuthStore} captures the app's {@link WasAppConfig} and
@@ -42,6 +44,7 @@ import {
   DEFAULT_EXPIRY_WARNING_MS,
   DEFAULT_EXPIRY_WATCH_MS,
   DEFAULT_ONBOARDING,
+  DEFAULT_STORAGE_KEY_PREFIX,
   type StoreRegistry,
   type WasAppConfig
 } from '../config.js'
@@ -69,11 +72,18 @@ import {
 import { parseGrants, type ParsedGrants } from '../grants.js'
 import { LocalStore, dbNameForController } from '../storage/localStore.js'
 import {
+  executeLocalWipe,
+  snapshotWipeTargets,
+  type LocalWipeReport,
+  type WipeTargets
+} from './localWipe.js'
+import {
   clearLocalStore,
   clearRemoteStore,
   getWriterId,
   hasStore,
   requireStore,
+  requireWriterId,
   setLocalStore,
   setRemoteStore,
   setWriterId
@@ -202,7 +212,10 @@ export interface AuthState {
   reconnect: () => Promise<void>
   /**
    * Detach the wallet and return to a fresh `local` replica. `wipe` deletes the
-   * connected replica's database; otherwise it is kept on the device.
+   * connected replica's database; otherwise it is kept on this browser. The
+   * anonymous replica and the writer id survive either way -- a local-first app
+   * keeps working logged out, and the user is expected to log back in here. Use
+   * {@link WasAuthStore.clearLocalData} to remove everything.
    *
    * @param [options] {object}
    * @param [options.wipe] {boolean}
@@ -210,13 +223,19 @@ export interface AuthState {
    */
   logout: (options?: { wipe?: boolean }) => Promise<void>
   /**
-   * Delete the local replica, discard the anonymous seed, and mint a fresh
-   * anonymous seed/DID + replica. Also clears any persisted connected session,
-   * so clearing while connected fully disconnects (a later boot lands `local`
-   * instead of silently reconnecting and syncing the data back down). The
-   * reset primitive behind the "Clear data" button.
+   * Delete everything this library ever wrote on this browser -- both replicas
+   * (the connected one and the anonymous one), both seed stores, and the
+   * persisted writer id -- and then mint a fresh anonymous seed/DID + replica.
+   * Clearing while connected therefore fully disconnects (a later boot lands
+   * `local` instead of silently reconnecting and syncing the data back down).
+   * The reset primitive behind the "Clear data" button.
+   *
+   * Returns what was deleted and what could not be confirmed deleted, so a
+   * caller can state an unverified outcome rather than claim a clean wipe.
+   *
+   * @returns {Promise<LocalWipeReport>}
    */
-  clearLocalData: () => Promise<void>
+  clearLocalData: () => Promise<LocalWipeReport>
   /**
    * Whether the anonymous `local` replica currently holds any documents -- the
    * check a login screen runs to decide whether to offer the adoption choice
@@ -358,7 +377,7 @@ export function createAuthStore({
   // guarded by their own flags, and both await the CHAPI popup -- chaining
   // them would hold boots and destroys hostage to user interaction.
   let lifecycle: Promise<void> = Promise.resolve()
-  function serializeLifecycle(task: () => Promise<void>): Promise<void> {
+  function serializeLifecycle<T>(task: () => Promise<T>): Promise<T> {
     const run = lifecycle.then(task, task)
     lifecycle = run.then(
       () => {},
@@ -721,28 +740,56 @@ export function createAuthStore({
   }
 
   /**
-   * Tears the current replica down and re-opens a fresh `local` replica. `wipe`
-   * (via `deleteDb`) deletes the current database rather than closing it (the
-   * logout-wipe and clear-data paths); `discardAnonSeed` drops the persisted
-   * anonymous seed BEFORE the re-open so `openLocal` mints a brand-new anonymous
-   * seed/DID + database (the clear-data path).
+   * Enumerates the databases a wipe of `grade` has to reach, BEFORE any of them
+   * is deleted. The anonymous controller DID is re-derived from the persisted
+   * anonymous seed while that seed still exists (the `clear` grade discards it,
+   * and a name derived afterwards is a name that can no longer be derived at
+   * all -- exactly the orphan this snapshot prevents). In `local` the live
+   * `controllerDid` IS the anonymous one; in `connected` / `reconnect` the two
+   * differ and the `clear` grade takes both.
+   *
+   * @param grade {'logout' | 'clear'}
+   * @returns {Promise<WipeTargets>}
+   */
+  async function snapshotWipe(grade: 'logout' | 'clear'): Promise<WipeTargets> {
+    let anonControllerDid: string | null = null
+    if (grade === 'clear') {
+      try {
+        const seed = await anonStore.loadSeed()
+        if (seed) {
+          anonControllerDid = (await deriveIdentity({ seed })).controllerDid
+        }
+      } catch (err) {
+        console.warn('Could not resolve the anonymous replica to wipe:', err)
+      }
+    }
+    return snapshotWipeTargets({
+      dbName,
+      grade,
+      connectedControllerDid: store.getState().controllerDid,
+      anonControllerDid,
+      storageKeyPrefix: config.storageKeyPrefix ?? DEFAULT_STORAGE_KEY_PREFIX
+    })
+  }
+
+  /**
+   * Tears the current replica down and re-opens a fresh `local` replica. The
+   * logout path: `deleteDb` deletes the replica that is open rather than
+   * closing it (logout-and-erase), and the persisted anonymous seed is left
+   * alone either way, so a local-first app keeps working logged out. The
+   * clear-data path does not come through here -- it enumerates and deletes
+   * every database this app wrote (see `clearLocalData`).
    *
    * @param options {object}
    * @param options.deleteDb {boolean}
-   * @param [options.discardAnonSeed] {boolean}
    * @returns {Promise<void>}
    */
   async function resetToFreshLocal({
-    deleteDb,
-    discardAnonSeed = false
+    deleteDb
   }: {
     deleteDb: boolean
-    discardAnonSeed?: boolean
   }): Promise<void> {
     await deactivateStore({ deleteDb })
-    if (discardAnonSeed) {
-      await anonStore.clearSeedStore()
-    }
     await openLocal()
   }
 
@@ -1191,18 +1238,57 @@ export function createAuthStore({
       // deadlock.
       logout: ({ wipe = false } = {}) =>
         serializeLifecycle(async () => {
+          // Snapshot before the teardown re-points `controllerDid` at the
+          // anonymous identity. Only a connected session has a replica to
+          // erase: a wiping logout from `local` is the anonymous replica
+          // emptying itself, and its database is the one this grade spares.
+          const connected =
+            get().status === 'connected' || get().status === 'reconnect'
+          const targets =
+            wipe && connected ? await snapshotWipe('logout') : null
           await resetToFreshLocal({ deleteDb: wipe })
           await clearAppSession({ store: sessionStore })
+          if (targets) {
+            // RxDB's own removal clears each collection's table but leaves its
+            // IndexedDB database standing, so "erase data" would otherwise
+            // leave the connected replica's shells (and the session store's)
+            // behind. The `logout` grade names them and nothing else.
+            await executeLocalWipe({
+              targets,
+              ...(storage && { storage })
+            })
+          }
           // `resetToFreshLocal` already landed `local` (fresh anon replica);
           // clear the remaining transients.
           set({ phase: null, reconnecting: false })
         }),
 
+      // Ordered so nothing is orphaned and nothing fresh is swept away:
+      // snapshot every target while the identities that name them still exist,
+      // tear the live replica down (an open database blocks its own deletion),
+      // clear the persisted records (which is what reaches an INJECTED seed
+      // store, whose database name this enumeration cannot know), wipe, and
+      // only then mint the new anonymous identity -- `openLocal` last, so the
+      // prefix sweep cannot delete the replica it just created.
       clearLocalData: () =>
         serializeLifecycle(async () => {
-          await resetToFreshLocal({ deleteDb: true, discardAnonSeed: true })
+          const targets = await snapshotWipe('clear')
+          await deactivateStore({ deleteDb: true })
+          await anonStore.clearSeedStore()
           await clearAppSession({ store: sessionStore })
-          set({ phase: null, reconnecting: false })
+          const report = await executeLocalWipe({
+            targets,
+            ...(storage && { storage })
+          })
+          await openLocal()
+          // The cleared id is gone from localStorage; the write verbs stamp
+          // under the fresh in-memory one, so the displayed value follows it.
+          set({
+            phase: null,
+            reconnecting: false,
+            writerId: requireWriterId()
+          })
+          return report
         }),
 
       hasLocalData: async () => {

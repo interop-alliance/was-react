@@ -23,8 +23,10 @@
  *    nothing at present; it stays because the spec forbids failing a connection
  *    over an action the requested class never allows, which a correct wallet
  *    would be obliged to withhold.
- *    (Delegation-chain proofs are enforced server-side at invocation; the RP
- *    checks structure.)
+ *    Chain depth, the parent capability, and the delegator's DID form are
+ *    deliberately not inspected here; validity at invocation is the storage
+ *    server's decision. ARCHITECTURE.md's "Grant checks and the skip
+ *    condition" section states that intent and its consequences.
  *
  * Note on holder binding: the wallet signs the VP as ITS holder DID (did:web
  * or the wallet's did:key) -- not as this app's controller DID, which never

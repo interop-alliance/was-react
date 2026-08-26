@@ -11,3 +11,9 @@ export {
   type AuthState,
   type WasAuthStore
 } from './authStore.js'
+export {
+  executeLocalWipe,
+  snapshotWipeTargets,
+  type LocalWipeReport,
+  type WipeTargets
+} from './localWipe.js'

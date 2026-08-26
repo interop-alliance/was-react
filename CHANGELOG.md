@@ -1,5 +1,51 @@
 # @interop/was-react Changelog
 
+## 0.19.0 - TBD
+
+### Added
+
+- `clearLocalData()` now resolves with a `LocalWipeReport`, describing what was
+  removed and, on an engine that could not confirm a deletion, what stays
+  `unverified`.
+- New exports: `executeLocalWipe` and `snapshotWipeTargets`
+  (`src/session/localWipe.ts`) and `clearWriterId`
+  (`src/storage/storageManager.ts`), plus the `LocalWipeReport` and
+  `WipeTargets` types.
+- Test coverage confirming that conditional writes (`ifMatch` / `ifNoneMatch`)
+  on encrypted collections now produce an RxDB conflict entry on a lost race,
+  rather than the silent last-write-wins the preconditions previously degraded
+  to on this class of collection.
+- Test coverage for connecting to a wallet account anchored by a standing unlock
+  credential with no enrolled durable clients: a deeper delegation chain, an
+  ephemeral, non-stable presentation holder, a clamped grant expiry, a mid-life
+  authorization failure routing to `reconnect`, and a key epoch this app cannot
+  open degrading a shared read to a warn-and-skip and a descriptor-less private
+  collection to its fail-closed cipher. A wallet-composed counterpart case now
+  exercises the same annex-shaped grant against `@interop/wallet-core`'s real
+  request/response composition.
+
+### Fixed
+
+- `clearLocalData()` no longer orphans the anonymous replica: run from a
+  connected session, it used to remove only the open replica, discard the
+  anonymous seed, and mint a fresh identity, stranding the previous anonymous
+  replica under a database name nothing could derive again. It now snapshots
+  every database name before deleting anything and reaches both replicas.
+- `logout({ wipe: true })` no longer leaves empty database shells behind: RxDB's
+  own removal clears a collection's table but leaves its IndexedDB database
+  standing, and the erase grade now deletes those shells too.
+- The writer id is now cleared by `clearLocalData()`; it previously survived
+  every wipe grade.
+
+### Changed
+
+- The logout and clear-data dialog copy is more precise about what each grade
+  erases: the logout dialog names the connected replica specifically, and the
+  clear-data dialog distinguishes the connected case (the synced copy survives)
+  from the local-only case (this browser is the only copy).
+- Upgraded `@interop/wallet-core` to ^0.56.0 and `@interop/was-client` to
+  ^0.44.5.
+
 ## 0.18.1 - 2026-08-13
 
 ### Changed

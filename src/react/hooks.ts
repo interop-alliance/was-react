@@ -11,6 +11,7 @@ import { useStore } from 'zustand'
 import { useShallow } from 'zustand/react/shallow'
 import { WasSessionContext } from './WasSessionProvider.js'
 import type { WasAuthStore } from '../session/authStore.js'
+import type { LocalWipeReport } from '../session/localWipe.js'
 import type { SharedCollectionReader } from '../storage/sharedCollectionReader.js'
 import {
   useSyncStatusStore,
@@ -118,13 +119,15 @@ export function useLogout(): (options?: { wipe?: boolean }) => Promise<void> {
 }
 
 /**
- * The clear-data action: deletes the local replica, discards the anonymous
- * seed, and mints a fresh anonymous seed/DID + replica (the `local`-mode
- * "Clear data" affordance).
+ * The clear-data action: deletes every database this app wrote on the browser
+ * (both replicas and both seed stores), drops the persisted writer id, and
+ * mints a fresh anonymous seed/DID + replica (the "Clear data" affordance).
+ * Resolves with the wipe report, so a caller can surface a deletion the engine
+ * could not confirm rather than claim a clean wipe.
  *
- * @returns {() => Promise<void>}
+ * @returns {() => Promise<LocalWipeReport>}
  */
-export function useClearData(): () => Promise<void> {
+export function useClearData(): () => Promise<LocalWipeReport> {
   const store = useAuthStore()
   return useStore(store, state => state.clearLocalData)
 }

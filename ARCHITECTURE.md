@@ -121,12 +121,42 @@ after a logout. A cancelled or failed login leaves `local` intact either way.
 choice at all (`AdoptDialog` is the shipped affordance).
 
 `logout({ wipe })` returns to a fresh `local`, optionally deleting the connected
-replica's database; `clearLocalData()` deletes the local replica, mints a
-brand-new anonymous seed and replica, and drops any persisted connected session,
-so clearing while connected fully disconnects. `destroy()` tears the live
-replica down without wiping the persisted session record, and boot/destroy are
-serialized through one promise chain so a React dev-mode remount cannot race two
-bring-up or teardown sequences.
+replica's database; `clearLocalData()` deletes every database this app wrote
+here, mints a brand-new anonymous seed and replica, and drops any persisted
+connected session, so clearing while connected fully disconnects (both grades
+are enumerated below). `destroy()` tears the live replica down without wiping
+the persisted session record, and boot/destroy are serialized through one
+promise chain so a React dev-mode remount cannot race two bring-up or teardown
+sequences.
+
+### Logout and clear-data wipes
+
+`logout({ wipe })` and `clearLocalData()` share one wipe module
+(`src/session/localWipe.ts`), enumerated at two grades:
+
+- Logout, keep data (the default): nothing is removed.
+- Logout, erase data (`logout({ wipe: true })`): the connected replica and the
+  session store are deleted by name. RxDB's own removal clears each collection's
+  table but leaves its IndexedDB database standing, so the wipe deletes those
+  shells too. The anonymous replica and the writer id deliberately survive: a
+  local-first app keeps working logged out.
+- Clear data (`clearLocalData()`): everything this library ever wrote on the
+  browser -- both replicas, both seed stores, and the writer id -- leaving the
+  browser as it was before first run. On top of the named targets it runs a
+  prefix sweep, which also reaps anonymous replicas that earlier versions of
+  this library orphaned on the same browser.
+
+The module rests on three rules. Snapshot every target from live state before
+deleting anything: the anonymous DID is re-derived from its seed while that seed
+still exists, because a name derived after the seed is discarded can never be
+reached again. Delete by known name, computed through `dbNameForController`,
+rather than relying on enumeration. Treat `indexedDB.databases()` as discovery
+and verification, not as the deletion gate, since some engines do not implement
+it; what a wipe could not confirm removed is reported on its `unverified` list
+rather than folded into a result that reads clean.
+
+`clearLocalData()` resolves with that report (`LocalWipeReport`), and
+`useClearData()` passes it through unchanged.
 
 ### `writerId`
 
@@ -269,6 +299,13 @@ These checks duplicate checks the wallet already made; that is the point. They
 are defense in depth over an origin binding and an identity binding this app is
 fully able to check itself.
 
+The presentation's holder DID is never checked against anything. It may be any
+resolvable DID, including one that is ephemeral and not stable across visits.
+Application identity does not depend on it: it is the app-key credential's
+subject DID, which the wallet custodies. A reconnect therefore returns the same
+subject DID, and so the same derived X25519 recipient key, even for an account
+with no durable clients of its own.
+
 The marker type is a self-declaration, not evidence -- a planted credential
 controls its own `type` array -- so the seed-to-subject binding is what
 authenticates internal consistency, and the wallet's store-time refusal (app-key
@@ -301,6 +338,28 @@ share; the declined shares are warned about, and the readers are simply not
 opened. Shared collections are never passed to `checkGrants`: a declined share
 is not a login failure. They still reach the routing table through
 `parseGrants`.
+
+That check is structural. `controller` must equal the app's own DID,
+`invocationTarget` must name exactly one collection, and `expires` must be in
+the future. Nothing about the delegation chain leading to the grant is
+inspected: chain depth, the parent capability, and the delegator's DID form are
+deliberately left unchecked. A wallet may root a grant at the Space root or at
+an intermediate delegation. Both are valid here. A standing-credential account's
+grants, for instance, chain through a generation delegation: the chain is depth
+3, and the delegator is a key that never appears in the account document.
+Validity at invocation is the storage server's decision, not this library's.
+
+One consequence follows directly: the connected account may have no durable
+wallet clients at all. A grant can stop verifying before its stated `expires`,
+because the annex generation it chained through was collected. That surfaces as
+a 401 or 403, and the session moves to `reconnect`. A collection can also sit on
+a key epoch this app cannot open, because no login-time sweep ran to repair it.
+A shared collection degrades with a warn-and-skip. An app-owned collection
+degrades further: with no epoch roster at all it falls back to a fail-closed
+placeholder cipher and only that collection is unusable, but a roster that lists
+epochs and excludes this app fails the whole connected activation and lands the
+session back in `local` (see "Storage and sync" below). None of these is a raw,
+unhandled error.
 
 ### Allowed actions
 
@@ -490,6 +549,15 @@ collection's description exactly once (reusing one the caller already read), and
 keep only the epoch-bearing descriptors. The bootstrap hangs its own
 per-collection work off that pass, so the description PUTs and the cipher
 rebuild ride the same single read.
+
+A descriptor's epoch roster can also simply not include this app: not "no
+descriptor" and not "no epochs", but a roster whose recipients never wrapped a
+key to this app's key-agreement key at all. That is a different failure from the
+ones above. Building that collection's cipher raises `KeyUnwrapError` from
+inside `LocalStore.init`, and it is not absorbed per collection the way a
+missing descriptor is. The connected activation fails as a whole, and the
+session falls back to `local` with the error surfaced. It never dead-ends: the
+anonymous replica is what it lands on.
 
 `createDescriptorManager` (`src/storage/descriptorManager.ts`) owns where a
 descriptor comes from at each point of a bring-up, bound once to the app's

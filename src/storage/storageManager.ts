@@ -11,8 +11,9 @@
  *
  * It also owns the writer-id concern end to end: {@link getWriterId} resolves
  * the per-install id, {@link setWriterId} installs the session's resolved value,
- * and {@link stampLww} is the one place a payload's last-write-wins fields are
- * minted, so no caller has to remember to stamp.
+ * {@link clearWriterId} removes it (the clear-data wipe), and {@link stampLww}
+ * is the one place a payload's last-write-wins fields are minted, so no caller
+ * has to remember to stamp.
  */
 import { uuidv7 } from 'uuidv7'
 import { DEFAULT_STORAGE_KEY_PREFIX } from '../config.js'
@@ -177,6 +178,32 @@ export function requireWriterId(): string {
     )
   }
   return resolvedWriterId
+}
+
+/**
+ * Clears the persisted writer id (the clear-data grade of the wipe): removes
+ * both the current key and the pre-rename one, so nothing this library wrote
+ * survives in localStorage. A fresh id is installed in memory rather than the
+ * resolved one being dropped, because the session keeps running over its new
+ * anonymous replica and its write verbs still have to stamp; nothing persists
+ * it, so the next run resolves and stores an id of its own.
+ *
+ * @param [options] {object}
+ * @param [options.storageKeyPrefix] {string}   the localStorage key prefix
+ *   (defaults to {@link DEFAULT_STORAGE_KEY_PREFIX})
+ * @returns {void}
+ */
+export function clearWriterId({
+  storageKeyPrefix = DEFAULT_STORAGE_KEY_PREFIX
+}: { storageKeyPrefix?: string } = {}): void {
+  try {
+    localStorage.removeItem(`${storageKeyPrefix}writerId`)
+    localStorage.removeItem(`${storageKeyPrefix}clientId`)
+  } catch {
+    // No localStorage in this environment: nothing was persisted to clear.
+  }
+  fallbackWriterId = null
+  setWriterId(uuidv7())
 }
 
 /**

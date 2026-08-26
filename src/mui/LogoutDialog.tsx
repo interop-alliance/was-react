@@ -4,10 +4,13 @@
 /**
  * The logout confirmation dialog (connected mode). A dumb presentational
  * component over the store's `logout` action: it makes the keep-vs-wipe choice
- * explicit -- log out but leave the local replica on this device, or log out and
- * erase it -- since a shared machine and a personal one want opposite defaults.
- * Dismissing the dialog (backdrop / escape / Cancel) cancels logout entirely; no
- * action runs and the session stays connected.
+ * explicit -- log out but leave the connected replica on this browser, or log
+ * out and erase it -- since a shared machine and a personal one want opposite
+ * defaults. The copy names WHICH copy erasing removes: the connected replica
+ * only. The anonymous local-first replica and the writer id survive a logout of
+ * either grade, and removing everything is `ClearDataDialog`'s job. Dismissing
+ * the dialog (backdrop / escape / Cancel) cancels logout entirely; no action
+ * runs and the session stays connected.
  */
 import { Button } from '@mui/material'
 import { ConfirmDialog } from './ConfirmDialog.js'
@@ -41,10 +44,11 @@ export function LogoutDialog({
       onClose={onClose}
       title="Log out"
       body={
-        'Keep your data on this device for next time, or erase it now. ' +
-        'Erasing removes the local copy from this device only -- data ' +
-        'already synced to your storage stays there and returns when you ' +
-        'log back in.'
+        'Keep the copy on this browser for next time, or erase it now. ' +
+        'Erasing removes only the copy this browser holds of your Web Space ' +
+        '-- the data itself stays in your Web Space and comes back when you ' +
+        'log in again. To remove everything this app has stored here, use ' +
+        'Clear data instead.'
       }
       actions={
         <>
@@ -59,7 +63,7 @@ export function LogoutDialog({
             onClick={() => void handleLogout(true)}
             data-testid="logout-wipe"
           >
-            Log out, erase data
+            Log out, erase local copy
           </Button>
         </>
       }

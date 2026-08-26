@@ -9,4 +9,3 @@ minimumReleaseAgeExclude:
   - '@interop/*'
   - 'was-teaching-server*'
   - 'byoe-context*'
-  - '@fastify/static@10.1.3'

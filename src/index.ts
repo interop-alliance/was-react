@@ -133,6 +133,7 @@ export {
   getWriterId,
   setWriterId,
   requireWriterId,
+  clearWriterId,
   stampLww
 } from './storage/storageManager.js'
 export { createEntityStore, type EntityStore } from './storage/entityStore.js'
@@ -164,12 +165,17 @@ export {
 export { isAuthError, SyncController } from './storage/syncController.js'
 export { startWasSync, type WasSyncBootstrap } from './storage/wasSync.js'
 
-// Session lifecycle: the session auth store factory (the four-state machine).
+// Session lifecycle: the session auth store factory (the four-state machine),
+// and the wipe enumeration behind `clearLocalData`.
 export {
   createAuthStore,
+  executeLocalWipe,
+  snapshotWipeTargets,
   type SessionStatus,
   type AuthState,
-  type WasAuthStore
+  type WasAuthStore,
+  type LocalWipeReport,
+  type WipeTargets
 } from './session/index.js'
 
 // React: the session provider + hooks.

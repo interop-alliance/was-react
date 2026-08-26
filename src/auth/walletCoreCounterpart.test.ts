@@ -38,7 +38,11 @@ import {
   parseSeedCredential
 } from '../identity/seedCredential.js'
 import { buildAppConnectVpr } from './loginRequest.js'
-import { grantsOf, verifyLoginPresentation } from './verifyResponse.js'
+import {
+  checkGrants,
+  grantsOf,
+  verifyLoginPresentation
+} from './verifyResponse.js'
 import type { IAppConnectQuery } from './walletRequestTypes.js'
 
 const ORIGIN = 'https://app.example'
@@ -216,6 +220,139 @@ describe('the credential half, against wallet-core', () => {
       appUrl: APP_URL
     })
     expect(parsed.controllerDid).toBe(subjectDid)
+  })
+
+  /**
+   * The standing-credential arrangement, composed through the SAME real
+   * wallet-core path. Two things differ from the baseline case above, and
+   * this library deliberately inspects neither:
+   *
+   * - The holder is an ephemeral per-visit did:key, minted for this visit
+   *   alone. It is neither the account's did:webvh nor the transient
+   *   session's client-annex DID (app-connect-spec decision 0004).
+   * - The grant chains one link deeper. Its parent is the generation
+   *   delegation a transient session invokes under, so the chain is depth 3
+   *   -- Space root, generation delegation, app grant -- delegated by an
+   *   annex key that appears in no account document, and its expiry is
+   *   clamped to the delegation's. Chain validity is the storage server's
+   *   decision at invocation; the RP checks grant structure only.
+   *
+   * The adjacent did:webvh holder cases in
+   * `src/identity/documentLoader.test.ts` sign their VP from a local
+   * fixture rather than through wallet-core's composition, so they are
+   * document-loader coverage and not counterpart coverage.
+   */
+  it('accepts a wallet-composed response with an annex-shaped grant', async () => {
+    const { credential, subjectDid } = await mintAppKeyCredential({
+      app: { name: APP_NAME, appUrl: APP_URL },
+      origin: ORIGIN
+    })
+
+    // The per-visit holder: a fresh did:key, unrelated to any durable client
+    // and not stable across visits.
+    const visitSeed = crypto.getRandomValues(new Uint8Array(32))
+    const visitor = await agentsFromSeed({ seed: visitSeed })
+    const challenge = crypto.randomUUID()
+
+    // The account Space, its root capability id, and the annex DID the
+    // generation delegation is controlled by, in their wire serializations.
+    const spaceUrl = 'https://was.example/space/s1'
+    const spaceRootId = `urn:zcap:root:${encodeURIComponent(spaceUrl)}`
+    const annexDid =
+      'did:webvh:zSCID:was.example:space:annex-aux:gen-AbCdEfGhIjKlMnOp'
+
+    // Link two of the chain: the generation delegation, rooted directly in
+    // the Space root and targeting the Space's items subtree (the trailing
+    // slash is what keeps the bare Space URL outside it).
+    const delegationExpires = new Date(
+      Date.now() + 30 * 86_400_000
+    ).toISOString()
+    const generationDelegation = {
+      '@context': 'https://w3id.org/zcap/v1',
+      id: `urn:zcap:delegated:${crypto.randomUUID()}`,
+      controller: annexDid,
+      parentCapability: spaceRootId,
+      invocationTarget: `${spaceUrl}/`,
+      allowedAction: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE'],
+      expires: delegationExpires
+    }
+
+    // Link three: the app's own grant, parented on the delegation rather
+    // than on the Space root. The requested TTL outruns the delegation, so
+    // the minted expiry is the clamped one.
+    const requestedTtlMs = 365 * 86_400_000
+    const grantExpires = new Date(
+      Math.min(Date.now() + requestedTtlMs, Date.parse(delegationExpires))
+    ).toISOString()
+    const grant = {
+      '@context': 'https://w3id.org/zcap/v1',
+      id: `urn:zcap:delegated:${crypto.randomUUID()}`,
+      controller: subjectDid,
+      parentCapability: generationDelegation.id,
+      capabilityChain: [spaceRootId, generationDelegation],
+      invocationTarget: `${spaceUrl}/notes`,
+      allowedAction: ['GET', 'HEAD', 'POST', 'PUT', 'DELETE'],
+      expires: grantExpires
+    } as unknown as IZcap
+
+    const presentation = await composeVp({
+      presentationSigner: {
+        signer: visitor.keyAgent.getSigner(),
+        holder: visitor.controllerDid
+      },
+      selectedVcs: [credential],
+      challenge,
+      domain: ORIGIN,
+      didAuthRequested: true,
+      zcaps: [grant],
+      appConnect: { firstRun: false }
+    })
+
+    // The ephemeral holder verifies like any other: nothing about it is
+    // retained, and no check binds it to the account.
+    await verifyLoginPresentation({
+      presentation,
+      challenge,
+      domain: ORIGIN,
+      documentLoader: createDocumentLoader()
+    })
+    expect((presentation as { holder?: string }).holder).toBe(
+      visitor.controllerDid
+    )
+    expect(visitor.controllerDid.startsWith('did:key:')).toBe(true)
+
+    // The depth-3 chain survives composition and signing verbatim.
+    const returned = grantsOf(presentation)
+    expect(returned).toEqual([grant])
+    expect(
+      (returned[0] as unknown as { capabilityChain: unknown[] }).capabilityChain
+    ).toEqual([spaceRootId, generationDelegation])
+
+    // Locate and parse recover the app's identity, and the grant checks pass
+    // against it: a deeper chain and an annex delegator are non-events.
+    const located = findSeedCredential({ presentation, appUrl: APP_URL })
+    expect(located).not.toBeNull()
+    const parsed = await parseSeedCredential({
+      credential: located!,
+      origin: ORIGIN,
+      appUrl: APP_URL
+    })
+    expect(parsed.controllerDid).toBe(subjectDid)
+
+    const checked = checkGrants({
+      grants: returned,
+      controllerDid: parsed.controllerDid,
+      collections: [{ id: 'notes' }]
+    })
+    expect(checked.parsed.serverUrl).toBe('https://was.example')
+    expect(checked.parsed.spaceId).toBe('s1')
+    expect(checked.parsed.byCollectionId['notes']).toEqual(grant)
+    // The clamped expiry is what the session runs on, short of the TTL the
+    // app would have asked for.
+    expect(checked.expires).toBe(grantExpires)
+    expect(Date.parse(checked.expires)).toBeLessThan(
+      Date.now() + requestedTtlMs
+    )
   })
 
   it('preserves the identity across wallet-core legacy re-issuance', async () => {
