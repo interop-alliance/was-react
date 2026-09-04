@@ -295,9 +295,14 @@ same application at two URLs on one origin is two identities, and one URL can
 carry only one.
 
 `issueSeedCredential({ seed, origin, appUrl, appName, documentLoader })`
-self-issues that credential (used by the dev-grant path; the wallet mints it in
-production). The exported names `issueSeedCredential`, `parseSeedCredential`,
-and `findSeedCredential` predate the spec's term for the artifact -- read "seed
+self-issues that credential (for app-side or test self-issuance; the wallet
+mints it in production). It is a thin wrapper over wallet-core's
+`issueAppKeyCredential`, the same issuer the wallet mints with, so the
+credential's shape is maintained in one place; the wrapper enforces the 32-byte
+seed rule, injects this library's document loader, and returns the bare
+credential rather than wallet-core's `{ credential, subjectDid }` pair. The
+exported names `issueSeedCredential`, `parseSeedCredential`, and
+`findSeedCredential` predate the spec's term for the artifact -- read "seed
 credential" in an identifier as the spec's app-key credential.
 
 Historical note (pre-0.13 code and data only, nothing here acts on it): before
@@ -436,7 +441,8 @@ declared `edv` with its epoch zero installed to the app's identity key-agreement
 key; a public one left plaintext), and delegates per-collection zcaps to the
 app's controller DID, which `connectWithGrants({ seed, grants })` then adopts
 directly. `issueSeedCredential` stays exported for app-side or test
-self-issuance of the same credential shape.
+self-issuance; it signs the wallet's own credential shape by delegating to
+wallet-core's issuer rather than maintaining a copy of it.
 
 ## The three kinds of collection
 

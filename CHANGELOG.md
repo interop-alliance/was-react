@@ -35,6 +35,12 @@
 - `getWriterId` moved to `src/storage/writerId.ts` beside the new
   `clearPersistedWriterId` (localStorage only); the running session's id is
   replaced by `StorageContext.resetWriterId`.
+- `issueSeedCredential` delegates to wallet-core's `issueAppKeyCredential` (the
+  issuer the wallet mints with) instead of re-implementing the app-key
+  credential's shape; its signature and return value are unchanged. Requires
+  `@interop/wallet-core` >= 0.66.0. The test teaching server is bumped to
+  0.25.1, which verifies the `eddsa-jcs-2022` zcap proofs newer wallet-core
+  releases sign with.
 
 ### Added
 

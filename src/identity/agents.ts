@@ -91,6 +91,16 @@ export interface IdentityAgents {
 }
 
 /**
+ * Enforces the 32-byte master seed rule; the one check every seed consumer
+ * (identity derivation, credential self-issue) runs before touching the bytes.
+ */
+export function assertSeedLength(seed: Uint8Array): void {
+  if (seed.length !== 32) {
+    throw new Error(`Master seed must be 32 bytes (got ${seed.length}).`)
+  }
+}
+
+/**
  * Derives the master identity agents from the master seed. The did:key
  * controller is stable across devices for the same seed.
  *
@@ -107,9 +117,7 @@ export async function deriveIdentity({
   seed: Uint8Array
   identityHandle?: string
 }): Promise<IdentityAgents> {
-  if (seed.length !== 32) {
-    throw new Error(`Master seed must be 32 bytes (got ${seed.length}).`)
-  }
+  assertSeedLength(seed)
   const keyAgent = await CapabilityAgent.fromSeed({
     seed,
     handle: identityHandle,

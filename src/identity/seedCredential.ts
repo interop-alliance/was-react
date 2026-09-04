@@ -22,22 +22,22 @@
  * origin, `appUrl`).
  */
 import { base64urlnopad } from '@scure/base'
-import * as vc from '@interop/vc'
-import { Ed25519Signature2020 } from '@interop/ed25519-signature'
 import type {
   IVerifiableCredential,
   IVerifiablePresentation
 } from '@interop/data-integrity-core'
 import {
   APP_KEY_CREDENTIAL_TYPE,
-  APP_KEY_TYPE_ARRAY
+  APP_KEY_TYPE_ARRAY,
+  issueAppKeyCredential
 } from '@interop/wallet-core/request'
-import { CONTEXT_URL_V1 } from 'byoe-context'
 import { asArray } from '../jsonLd.js'
-import { deriveIdentity, type IdentityAgents } from './agents.js'
+import {
+  assertSeedLength,
+  deriveIdentity,
+  type IdentityAgents
+} from './agents.js'
 import type { DocumentLoader } from './documentLoader.js'
-
-const VC_1_CONTEXT_URL = 'https://www.w3.org/2018/credentials/v1'
 
 /**
  * The pinned wire constants of the app-key credential, owned by
@@ -87,7 +87,11 @@ export function base64urlToBytes(text: string): Uint8Array {
 
 /**
  * Self-issues the app-key credential for `seed`, signed Ed25519Signature2020 by
- * the seed-derived signer.
+ * the seed-derived signer. Delegates to wallet-core's `issueAppKeyCredential`,
+ * the same issuer the wallet mints with, so the credential's shape (context
+ * pair, type array, self-issued issuer/subject, seed claim) is maintained in
+ * one place; this wrapper only enforces the 32-byte seed rule up front and
+ * returns the bare credential.
  *
  * @param options {object}
  * @param options.seed {Uint8Array}   the 32-byte master seed
@@ -113,28 +117,15 @@ export async function issueSeedCredential({
   appName: string
   documentLoader: DocumentLoader
 }): Promise<IVerifiableCredential> {
-  // `deriveIdentity` enforces the 32-byte seed rule.
-  const { controllerDid, keyAgent } = await deriveIdentity({ seed })
-  const credential = {
-    '@context': [VC_1_CONTEXT_URL, CONTEXT_URL_V1],
-    id: `urn:uuid:${crypto.randomUUID()}`,
-    type: [...APP_KEY_TYPE_ARRAY],
-    name: `${appName} app key`,
-    description: `The ${appName} app keeps this key in your wallet so it can open your encrypted data on this and other devices.`,
-    issuer: controllerDid,
-    credentialSubject: {
-      id: controllerDid,
-      seed: bytesToBase64url(seed),
-      appUrl,
-      origin
-    }
-  }
-  const suite = new Ed25519Signature2020({ signer: keyAgent.getSigner() })
-  return (await vc.issue({
-    credential,
-    suite,
+  assertSeedLength(seed)
+  const { credential } = await issueAppKeyCredential({
+    seedBytes: seed,
+    appName,
+    appUrl,
+    origin,
     documentLoader
-  })) as IVerifiableCredential
+  })
+  return credential
 }
 
 /**
