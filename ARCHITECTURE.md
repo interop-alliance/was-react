@@ -201,7 +201,13 @@ remount runs the new provider's `useState` initializer before the old provider's
 cleanup has torn its session down, and a throw there would be a throw inside a
 React render. A context without a replica (created but not booted, or torn down)
 is inert and is replaced without complaint, which is what a React dev-mode
-double `useState` initializer needs.
+double `useState` initializer needs. The pointer is also released, not just left
+inert, whenever a session detaches its replica (`destroy`, logout, clear-data,
+the connected activation's fallback to `local`): from that moment until the next
+`openAndHydrate` claims, the facades throw rather than resolve a retired
+session. That closes the keyed-remount window, where the new store had skipped
+its creation-time claim and the old context would otherwise have kept answering
+the entity-store verbs after its own teardown.
 
 ### `writerId`
 

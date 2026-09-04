@@ -9,6 +9,14 @@
   now closes the replica it opened before failing, instead of leaving an open
   RxDB database behind that held its IndexedDB connection and counted toward
   RxDB's process-wide collection cap.
+- Tearing a session down (`destroy()`, logout, clear-data, and the connected
+  activation's fallback to `local`) now releases the active storage-context
+  pointer when that session holds it. Previously nothing released it, so after a
+  provider unmount the facades (`hasStorageContext`, `stampLww`, `requireStore`,
+  the entity-store verbs) kept resolving the retired context, and on a keyed
+  provider remount they stamped the old session's writer id and wrote into a
+  replica about to be closed. They now throw until the next boot claims a live
+  context.
 
 ## 0.20.0 - 2026-09-04
 

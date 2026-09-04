@@ -77,7 +77,11 @@ import {
   type LocalWipeReport,
   type WipeTargets
 } from './localWipe.js'
-import { activateStorageContext, hasStore } from '../storage/storageManager.js'
+import {
+  activateStorageContext,
+  deactivateStorageContext,
+  hasStore
+} from '../storage/storageManager.js'
 import { StorageContext } from '../storage/storageContext.js'
 import { getWriterId } from '../storage/writerId.js'
 import { mergeAdopted } from '../storage/adopt.js'
@@ -289,8 +293,11 @@ export function createAuthStore({
   // another session's replica is still attached, though: a keyed provider
   // remount renders the new provider (and so runs this factory) before the
   // old one's unmount cleanup has torn its session down, and throwing here
-  // would throw inside a React render. That session keeps the pointer, and
-  // this one fails at its own boot's attach instead.
+  // would throw inside a React render. That session keeps the pointer until
+  // its `destroy` detaches the replica and releases it (`deactivateStore`);
+  // from then until this session's boot claims at `openAndHydrate`, the
+  // facades throw rather than resolve the retired context. A boot that finds
+  // the old replica still attached fails at its own attach instead.
   const writerId = getWriterId({
     ...(config.storageKeyPrefix !== undefined && {
       storageKeyPrefix: config.storageKeyPrefix
@@ -733,9 +740,10 @@ export function createAuthStore({
 
   /**
    * Tears down the live replica + sync + entity stores WITHOUT touching either
-   * persisted seed (the anonymous seed and the session record survive). Closes
-   * the database by default; `deleteDb` deletes it instead (the wipe paths, via
-   * {@link resetToFreshLocal}).
+   * persisted seed (the anonymous seed and the session record survive), and
+   * releases the active storage-context pointer when this session holds it.
+   * Closes the database by default; `deleteDb` deletes it instead (the wipe
+   * paths, via {@link resetToFreshLocal}).
    *
    * @param [options] {object}
    * @param [options.deleteDb] {boolean}   delete the database rather than
@@ -753,6 +761,15 @@ export function createAuthStore({
     // off a pull just before this would otherwise fire during that wait and
     // query a replica about to close.
     const local = storageContext.detachStore()
+    // Release the process-wide pointer the moment the replica is gone (a
+    // no-op unless this context holds it). Left standing, the pointer would
+    // keep naming a retired context for the process lifetime: a keyed provider
+    // remount's entity-store verbs would stamp the OLD session's writer id and
+    // write into the replica about to be closed. Released, they throw until the
+    // next `openAndHydrate` claims a live context. Every re-open path below
+    // (`openLocal`, the connected activation) reclaims through
+    // `activateStorageContext`.
+    deactivateStorageContext(storageContext)
     await stopController()
     if (local) {
       try {

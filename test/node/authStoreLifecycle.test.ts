@@ -37,7 +37,13 @@ import {
   createSeedStore,
   type SeedStore
 } from '../../src/identity/seedStore.js'
-import { hasStore, requireStore } from '../../src/storage/storageManager.js'
+import {
+  hasStorageContext,
+  hasStore,
+  requireStorageContext,
+  requireStore,
+  stampLww
+} from '../../src/storage/storageManager.js'
 import {
   dbNameForController,
   LocalStore
@@ -280,6 +286,76 @@ describe('serialized boot/destroy lifecycle', () => {
     expect(await restoreAppSession({ store: seedStore })).toBeNull()
     const id = crypto.randomUUID()
     await requireStore().insertEntity('notes', { id, title: 'after-logout' })
+    expect(await requireStore().listEntities('notes')).toHaveLength(1)
+  })
+
+  it('destroy releases the active storage context, so the facades stop resolving the retired session', async () => {
+    const store = makeStore(baseConfig(), newSeedStore())
+    await store.getState().boot()
+    expect(hasStorageContext()).toBe(true)
+    expect(stampLww({ id: 'x' }).writerId).toBe(store.getState().writerId)
+
+    await store.getState().destroy()
+
+    // The pointer is released, not left naming a dead context: nothing an
+    // entity-store verb could stamp or write into remains reachable.
+    expect(hasStorageContext()).toBe(false)
+    expect(hasStore()).toBe(false)
+    expect(() => stampLww({ id: 'x' })).toThrow(/no storage context/i)
+    expect(() => requireStore()).toThrow(/no storage context/i)
+
+    // A re-boot of the same store reclaims it.
+    await store.getState().boot()
+    expect(hasStorageContext()).toBe(true)
+    expect(stampLww({ id: 'x' }).writerId).toBe(store.getState().writerId)
+  })
+
+  it('a keyed provider remount never resolves the retired session once it is torn down', async () => {
+    // The keyed `<WasSessionProvider key=...>` shape: the new store is minted
+    // (render-phase `useState`) while the old replica is still attached, so its
+    // creation-time claim is skipped; then the old provider's cleanup fires
+    // `destroy` and the new one's effect fires `boot`, on two independent
+    // lifecycle chains. (Without localStorage both stores resolve the same
+    // fallback writer id, so the probe tells the sessions apart by context.)
+    const oldStore = makeStore(baseConfig(), newSeedStore())
+    await oldStore.getState().boot()
+    const newStore = makeStore(baseConfig(), newSeedStore())
+    const oldContext = oldStore.getState().storageContext
+    const newContext = newStore.getState().storageContext
+    // The old session is still live and still the one the facades name.
+    expect(requireStorageContext()).toBe(oldContext)
+
+    const destroying = oldStore.getState().destroy()
+    const booting = newStore.getState().boot()
+    // Every facade call attempted while the swap is in flight resolves the
+    // OLD context only while its replica is still attached (the session is
+    // still live), else the NEW one, else throws; none may stamp into a
+    // replica that has been detached and is about to close.
+    const resolvedRetired: boolean[] = []
+    const probe = async (): Promise<void> => {
+      for (let round = 0; round < 50; round++) {
+        if (hasStorageContext()) {
+          const context = requireStorageContext()
+          if (context === oldContext) {
+            resolvedRetired.push(!oldContext.hasStore())
+          } else {
+            expect(context).toBe(newContext)
+          }
+          stampLww({ id: 'x' })
+        } else {
+          expect(() => stampLww({ id: 'x' })).toThrow(/no storage context/i)
+        }
+        await new Promise(resolve => setTimeout(resolve, 0))
+      }
+    }
+    await Promise.all([probe(), destroying, booting])
+
+    expect(resolvedRetired).not.toContain(true)
+    expect(newStore.getState().status).toBe('local')
+    expect(requireStorageContext()).toBe(newContext)
+    expect(hasStore()).toBe(true)
+    const id = crypto.randomUUID()
+    await requireStore().insertEntity('notes', { id, title: 'remounted' })
     expect(await requireStore().listEntities('notes')).toHaveLength(1)
   })
 
