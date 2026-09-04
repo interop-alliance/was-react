@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- A transient failure of a collection-description read (a dropped connection, a
+  5xx) is no longer taken for "no encryption descriptor".
+  `WasRemoteStore.readCollectionEncryption` answers `undefined` only for a
+  not-found response or a description with no `encryption` member; any other
+  failure is retried once and then thrown, wrapped with the collection id.
+  Previously the failure read as an unprovisioned collection: the connected
+  replica opened it under the fail-closed placeholder cipher, the default merge
+  login then failed its adoption write and dropped the user back to `local` with
+  a spurious error, a returning login failed the same way on decrypt, and the
+  sync bootstrap's best-effort descriptor PUT could write a bare descriptor over
+  a roster it never read. Now the login-time read fails the connected activation
+  (falling back to `local` with the anonymous replica intact for a retry), the
+  sync bootstrap skips the affected collection for the session with a warning,
+  and the unknown-epoch refresh warns and leaves the cipher as it was.
 - A session that loses the attach-time storage-context claim (two providers
   booting at once, or a keyed remount overlapping the old provider's teardown)
   now closes the replica it opened before failing, instead of leaving an open

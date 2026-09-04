@@ -195,13 +195,17 @@ export function createDescriptorManager({
    * private collection the cache does not cover. A first login has no cache at
    * all, and the connected replica must open epoch-aware BEFORE sync starts:
    * the adoption merge writes into it right after open, and epoch-from-birth
-   * leaves no single-key fallback to write under. Best-effort: a failed read
-   * leaves those collections fail-closed until the sync bootstrap's own
-   * descriptor read lands. Freshly fetched descriptors enter the offline cache
-   * immediately, and come back separately as `fresh` so the sync bootstrap can
-   * reuse them instead of re-issuing the same reads seconds later (cached
-   * descriptors are NOT passed on -- the bootstrap read is their freshness
-   * refresh).
+   * leaves no single-key fallback to write under. A live read that answers
+   * "no descriptor" leaves that collection fail-closed until the sync
+   * bootstrap's own read lands, but a read that FAILS rejects: the answer is
+   * unknown, not absent, and opening the replica over a guess would hand a
+   * correctly provisioned collection the placeholder cipher and fail the
+   * adoption merge on it. The caller falls back to `local` with the error,
+   * where the anonymous replica is intact for a retry. Freshly fetched
+   * descriptors enter the offline cache immediately (best-effort), and come
+   * back separately as `fresh` so the sync bootstrap can reuse them instead of
+   * re-issuing the same reads seconds later (cached descriptors are NOT passed
+   * on -- the bootstrap read is their freshness refresh).
    *
    * @param options {object}
    * @param [options.cached] {Record<string, CollectionEncryption>}
@@ -231,23 +235,23 @@ export function createDescriptorManager({
     if (missing.length === 0) {
       return { descriptors: cached, fresh: {} }
     }
-    try {
-      const fetched = await readRemoteDescriptors({
-        parsed,
-        zcapClient: identity.zcapClient,
-        collections: missing
-      })
-      if (Object.keys(fetched).length > 0) {
-        await cacheDescriptors({
-          descriptors: fetched,
-          controllerDid: identity.controllerDid
-        })
-        return { descriptors: { ...fetched, ...cached }, fresh: fetched }
-      }
-    } catch (err) {
-      console.warn('Failed to read encryption descriptors at login:', err)
+    const fetched = await readRemoteDescriptors({
+      parsed,
+      zcapClient: identity.zcapClient,
+      collections: missing
+    })
+    if (Object.keys(fetched).length === 0) {
+      return { descriptors: cached, fresh: {} }
     }
-    return { descriptors: cached, fresh: {} }
+    try {
+      await cacheDescriptors({
+        descriptors: fetched,
+        controllerDid: identity.controllerDid
+      })
+    } catch (err) {
+      console.warn('Failed to cache encryption descriptors at login:', err)
+    }
+    return { descriptors: { ...fetched, ...cached }, fresh: fetched }
   }
 
   return {

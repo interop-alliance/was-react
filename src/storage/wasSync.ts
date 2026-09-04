@@ -65,6 +65,14 @@ export interface WasSyncBootstrap {
  * read. Collections are processed concurrently, hook included, so one slow
  * collection never holds up the others.
  *
+ * A read that FAILS (rather than answering "no descriptor") is never taken
+ * for an absent descriptor. Without `onReadFailure` it rejects the whole pass,
+ * which is what the login-time read wants: the connected replica cannot open
+ * epoch-aware without the answer. With `onReadFailure` (the bootstrap) the
+ * failure is reported and that collection is skipped entirely, hook included,
+ * so neither a placeholder cipher nor a bare descriptor PUT is built on a
+ * guess about a collection whose roster could not be read.
+ *
  * @param options {object}
  * @param options.remoteStore {WasRemoteStore}
  * @param options.collections {WasCollectionConfig[]}
@@ -73,6 +81,8 @@ export interface WasSyncBootstrap {
  *   descriptors already read live in this bring-up, reused instead of re-read
  * @param [options.onCollection] {(options) => Promise<void>}   per granted
  *   collection, with its raw descriptor (absent for a public one)
+ * @param [options.onReadFailure] {(options) => void}   per collection whose
+ *   descriptor read failed; when absent the failure rejects the pass
  * @returns {Promise<Record<string, CollectionEncryption>>}   the epoch-bearing
  *   descriptors, keyed by WAS collection id
  */
@@ -81,7 +91,8 @@ async function readGrantedEncryption({
   collections,
   parsed,
   knownDescriptors = {},
-  onCollection
+  onCollection,
+  onReadFailure
 }: {
   remoteStore: WasRemoteStore
   collections: WasCollectionConfig[]
@@ -91,6 +102,10 @@ async function readGrantedEncryption({
     collection: WasCollectionConfig
     encryption?: CollectionEncryption
   }) => Promise<void>
+  onReadFailure?: (options: {
+    collection: WasCollectionConfig
+    err: unknown
+  }) => void
 }): Promise<Record<string, CollectionEncryption>> {
   const granted = collections.filter(
     collection => parsed.byCollectionId[collection.id] !== undefined
@@ -103,9 +118,19 @@ async function readGrantedEncryption({
       if (!isPublicCollection(collection)) {
         // A descriptor the caller read seconds ago is reused as-is; only ids it
         // did not cover (or a hot restore, which passes none) are read live.
-        encryption =
-          knownDescriptors[collectionId] ??
-          (await remoteStore.readCollectionEncryption(collectionId))
+        encryption = knownDescriptors[collectionId]
+        if (!encryption) {
+          try {
+            encryption =
+              await remoteStore.readCollectionEncryption(collectionId)
+          } catch (err) {
+            if (!onReadFailure) {
+              throw err
+            }
+            onReadFailure({ collection, err })
+            return
+          }
+        }
         if (hasKeyEpochs(encryption)) {
           descriptors[collectionId] = encryption
         }
@@ -268,6 +293,16 @@ export async function startWasSync({
     collections,
     parsed,
     knownDescriptors,
+    // A read that fails transiently degrades that one collection: it keeps
+    // the cipher it opened with (the cached descriptor, or fail-closed) and
+    // receives no description PUT this session. It is not "no descriptor".
+    onReadFailure: ({ collection, err }) => {
+      console.warn(
+        `Skipping the sync bootstrap of collection "${collection.id}": its ` +
+          `encryption descriptor could not be read.`,
+        err
+      )
+    },
     onCollection: async ({ collection, encryption }) => {
       const { id: collectionId } = collection
       if (!isPublicCollection(collection)) {

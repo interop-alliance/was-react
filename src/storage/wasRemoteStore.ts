@@ -32,7 +32,7 @@ import type {
   IKeyResolver,
   IZcap
 } from '@interop/data-integrity-core'
-import { WasClient } from '@interop/was-client'
+import { NotFoundError, WasClient, mapError } from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 import type { EncryptionDescriptorSource } from '@interop/wallet-core/descriptors'
@@ -89,6 +89,11 @@ type CollectionRouting = {
 }
 
 /**
+ * The pause before a failed descriptor read is retried.
+ */
+const DESCRIPTOR_RETRY_DELAY_MS = 500
+
+/**
  * Maps one configured index attribute name to the blinded-index attribute path
  * the EDV codec addresses it by. The codec walks the path from the stored
  * document's root, and a JSON payload is written as that document's `content`
@@ -99,6 +104,31 @@ type CollectionRouting = {
  */
 function blindedAttribute(name: string): string {
   return `content.${name}`
+}
+
+/**
+ * Runs one read, and on failure runs it once more after a short pause. A
+ * not-found answer is final and is not retried: it is a stable fact about the
+ * collection rather than a transient condition of the connection.
+ *
+ * @param read {() => Promise<T>}
+ * @returns {Promise<T>}
+ */
+async function retryOnce<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (err) {
+    const mapped = mapError(err)
+    if (mapped instanceof NotFoundError) {
+      throw mapped
+    }
+    await new Promise(resolve => setTimeout(resolve, DESCRIPTOR_RETRY_DELAY_MS))
+    try {
+      return await read()
+    } catch (retryErr) {
+      throw mapError(retryErr)
+    }
+  }
 }
 
 export class WasRemoteStore {
@@ -211,10 +241,16 @@ export class WasRemoteStore {
    * Reads one collection's `encryption` descriptor from its Collection Description,
    * invoked with that collection's delegated zcap. Returns the
    * {@link CollectionEncryption} block (a multi-recipient descriptor carries key
-   * epochs) or `undefined` when the collection carries no descriptor. Non-fatal like
-   * the descriptor PUTs: returns `undefined` rather than throwing when no capability
-   * covers the collection or the read fails (offline, unauthorized), so a caller
-   * can fall back to its cached copy.
+   * epochs), or `undefined` only when the answer is genuinely "no descriptor":
+   * no capability covers the collection, the collection is not found (which is
+   * also how WAS answers an unauthorized read), or the description carries no
+   * `encryption` member.
+   *
+   * Any other failure (a dropped connection, a 5xx) is retried once and then
+   * rethrown, wrapped with the collection id. It must NOT read as "no
+   * descriptor": a caller that takes it for one opens the collection under the
+   * fail-closed placeholder cipher, and a correctly provisioned collection then
+   * fails its first write or decrypt for a network hiccup.
    *
    * @param collectionId {string}   the WAS collection id
    * @returns {Promise<CollectionEncryption | undefined>}
@@ -226,7 +262,7 @@ export class WasRemoteStore {
     if (!capability) {
       return undefined
     }
-    try {
+    const read = async (): Promise<CollectionEncryption | undefined> => {
       const response = await this.was.request({
         capability,
         path: collectionPath(this.spaceId, collectionId),
@@ -235,8 +271,20 @@ export class WasRemoteStore {
       const description = response.data as
         { encryption?: CollectionEncryption } | undefined
       return description?.encryption
-    } catch {
-      return undefined
+    }
+    try {
+      return await retryOnce(read)
+    } catch (err) {
+      // `retryOnce` rethrows typed: a not-found (which is also how WAS answers
+      // an unauthorized read) is the one outcome that genuinely means "no
+      // descriptor visible to this app".
+      if (err instanceof NotFoundError) {
+        return undefined
+      }
+      throw new Error(
+        `Failed to read the encryption descriptor of collection "${collectionId}".`,
+        { cause: err }
+      )
     }
   }
 
@@ -707,9 +755,13 @@ export class WasRemoteStore {
  * Deliberately NOT `wasDescriptorSource` from the same subpath: that one
  * describes through the client's root capability, which a relying-party app
  * never holds. Every read here must invoke the per-collection grant, which is
- * exactly what {@link WasRemoteStore.readCollectionEncryption} does (and, like
- * the rest of the descriptor plumbing, it answers `undefined` rather than
- * throwing when the read is unauthorized or the app is offline).
+ * exactly what {@link WasRemoteStore.readCollectionEncryption} does.
+ *
+ * A read that fails for a transient reason is warned about and answered as
+ * `undefined` here: the refresh guard is already spent by the time the source
+ * is consulted, so the decrypt retry fails the same way it would under no
+ * refresh at all, and the caller sees the envelope's own unknown-epoch error
+ * rather than a network one.
  *
  * @param options {object}
  * @param options.remoteStore {WasRemoteStore}
@@ -722,7 +774,15 @@ export function remoteDescriptorSource({
 }): EncryptionDescriptorSource {
   return {
     async collectionEncryption({ collectionId }: { collectionId: string }) {
-      return await remoteStore.readCollectionEncryption(collectionId)
+      try {
+        return await remoteStore.readCollectionEncryption(collectionId)
+      } catch (err) {
+        console.warn(
+          `Descriptor refresh for collection "${collectionId}" failed:`,
+          err
+        )
+        return undefined
+      }
     }
   }
 }

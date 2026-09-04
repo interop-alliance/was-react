@@ -1,14 +1,15 @@
 /*!
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { ZcapClient } from '@interop/ezcap'
 import type {
   IKeyAgreementKey,
   IKeyResolver,
   IZcap
 } from '@interop/data-integrity-core'
-import { WasRemoteStore } from './wasRemoteStore.js'
+import { WasServerError } from '@interop/was-client'
+import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
 import type { ParsedGrants } from '../grants.js'
 
 const parsed: ParsedGrants = {
@@ -26,7 +27,9 @@ const zcapClient = {} as unknown as ZcapClient
  * A stub ZcapClient capturing every signed request and answering each with the
  * queued responses (the last one repeating).
  */
-function stubZcapClient(responses: Array<{ status: number; data?: unknown }>) {
+function stubZcapClient(
+  responses: Array<{ status: number; data?: unknown; error?: unknown }>
+) {
   const calls: Array<{
     url: string
     method?: string
@@ -41,6 +44,9 @@ function stubZcapClient(responses: Array<{ status: number; data?: unknown }>) {
       calls.push(options)
       const response = responses[Math.min(callIndex, responses.length - 1)]
       callIndex += 1
+      if (response?.error !== undefined) {
+        throw response.error
+      }
       return response
     }
   }
@@ -203,6 +209,98 @@ describe('WasRemoteStore.readCollectionEncryption', () => {
     // No delegated capability covers this id: no request, undefined.
     const bare = WasRemoteStore.fromGrants({ parsed, zcapClient })
     expect(await bare.readCollectionEncryption('ungranted')).toBeUndefined()
+  })
+
+  it('returns undefined for a not-found response, without retrying', async () => {
+    const notFound = Object.assign(new Error('Not Found'), { status: 404 })
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 404, error: notFound }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    expect(await store.readCollectionEncryption('notes')).toBeUndefined()
+    expect(calls).toHaveLength(1)
+  })
+
+  it('retries a transient failure once and then rethrows it', async () => {
+    vi.useFakeTimers()
+    try {
+      const badGateway = Object.assign(new Error('Bad Gateway'), {
+        status: 502
+      })
+      const { calls, zcapClient: stub } = stubZcapClient([
+        { status: 502, error: badGateway }
+      ])
+      const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+      const pending = store.readCollectionEncryption('notes')
+      // Attach the rejection handler before the timers run, so the eventual
+      // rejection is observed rather than reported as unhandled.
+      const outcome = pending.then(
+        () => undefined,
+        (err: unknown) => err
+      )
+      await vi.runAllTimersAsync()
+      const err = (await outcome) as Error
+      expect(err).toBeInstanceOf(Error)
+      expect(err.message).toContain('"notes"')
+      expect(err.cause).toBeInstanceOf(WasServerError)
+      expect((err.cause as WasServerError).status).toBe(502)
+      expect(calls).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns the descriptor when the retry succeeds', async () => {
+    vi.useFakeTimers()
+    try {
+      const descriptor = {
+        scheme: 'edv',
+        currentEpoch: 'did:key:zEpoch1',
+        epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
+      }
+      const { calls, zcapClient: stub } = stubZcapClient([
+        {
+          status: 502,
+          error: Object.assign(new Error('boom'), { status: 502 })
+        },
+        { status: 200, data: { id: 'notes', encryption: descriptor } }
+      ])
+      const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+      const pending = store.readCollectionEncryption('notes')
+      await vi.runAllTimersAsync()
+      expect(await pending).toEqual(descriptor)
+      expect(calls).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('remoteDescriptorSource', () => {
+  it('warns and answers undefined when the read fails', async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const { zcapClient: stub } = stubZcapClient([
+        {
+          status: 502,
+          error: Object.assign(new Error('boom'), { status: 502 })
+        }
+      ])
+      const remoteStore = WasRemoteStore.fromGrants({
+        parsed,
+        zcapClient: stub
+      })
+      const pending = remoteDescriptorSource({
+        remoteStore
+      }).collectionEncryption({ collectionId: 'notes' })
+      await vi.runAllTimersAsync()
+      expect(await pending).toBeUndefined()
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+      vi.useRealTimers()
+    }
   })
 })
 

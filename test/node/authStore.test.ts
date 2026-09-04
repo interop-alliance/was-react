@@ -33,7 +33,7 @@ import {
   createSeedStore,
   type SeedStore
 } from '../../src/identity/seedStore.js'
-import type { CollectionEncryption } from '@interop/was-client'
+import { WasServerError, type CollectionEncryption } from '@interop/was-client'
 import {
   deriveIdentity,
   type IdentityAgents
@@ -44,7 +44,10 @@ import {
   loginWithWallet,
   LoginCancelledError
 } from '../../src/auth/loginFlow.js'
-import { startWasSync } from '../../src/storage/wasSync.js'
+import {
+  readRemoteDescriptors,
+  startWasSync
+} from '../../src/storage/wasSync.js'
 import { mintRecordEncryption } from '../../src/index.js'
 import { hasStore, requireStore } from '../../src/storage/storageManager.js'
 import {
@@ -135,6 +138,7 @@ vi.mock('../../src/auth/loginFlow.js', async importOriginal => {
 
 const loginWithWalletMock = vi.mocked(loginWithWallet)
 const startWasSyncMock = vi.mocked(startWasSync)
+const readRemoteDescriptorsMock = vi.mocked(readRemoteDescriptors)
 
 const registry: StoreRegistry = {}
 
@@ -516,6 +520,53 @@ describe('adoption', () => {
       controllerDid: anonDid
     })
     expect(await reopened.listEntities('notes')).toHaveLength(0)
+  })
+
+  it('a transient descriptor-read failure fails the login and leaves local intact', async () => {
+    const config = baseConfig()
+    const store = makeStore(config, newSeedStore())
+    await store.getState().boot()
+    const anonDid = store.getState().controllerDid!
+    const note = { id: crypto.randomUUID(), title: 'survives' }
+    await requireStore().insertEntity('notes', note)
+
+    // The description GET answers 502 (after its retry), which must never be
+    // read as "no descriptor": the connected replica would open under the
+    // placeholder cipher and the adoption merge would fail on a correctly
+    // provisioned collection.
+    const badGateway = new WasServerError('Bad Gateway', { status: 502 })
+    readRemoteDescriptorsMock.mockRejectedValueOnce(
+      new Error(
+        'Failed to read the encryption descriptor of collection "notes".',
+        {
+          cause: badGateway
+        }
+      )
+    )
+    await mockWalletLogin()
+    await expect(store.getState().login()).rejects.toThrow(
+      /encryption descriptor of collection "notes"/
+    )
+
+    // Back on the anonymous replica, with nothing adopted and nothing lost.
+    expect(store.getState().status).toBe('local')
+    expect(store.getState().controllerDid).toBe(anonDid)
+    expect(store.getState().error).toMatch(/encryption descriptor/)
+    expect(
+      await requireStore().listEntities<{ id: string; title: string }>('notes')
+    ).toEqual([expect.objectContaining({ title: 'survives' })])
+
+    // A retry once the server answers lands connected and adopts the doc.
+    await mockWalletLogin()
+    await store.getState().login()
+    expect(store.getState().status).toBe('connected')
+    expect(
+      (
+        await requireStore().listEntities<{ id: string; title: string }>(
+          'notes'
+        )
+      ).map(doc => doc.title)
+    ).toEqual(['survives'])
   })
 
   it('leaves the anon replica intact under adopt "leave"', async () => {

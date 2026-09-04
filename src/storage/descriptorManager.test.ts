@@ -250,14 +250,37 @@ describe('completeDescriptors', () => {
     ).toEqual(cached)
   })
 
-  it('swallows a failed live read and returns the cached set', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  it('rejects when the live read fails, rather than answering "no descriptor"', async () => {
     const manager = createDescriptorManager({
       collections: [...collections, { key: 'tasks', id: 'tasks' }],
       sessionStore: fakeSeedStore(),
       anonStore: fakeSeedStore()
     })
-    readRemoteDescriptorsMock.mockRejectedValueOnce(new Error('offline'))
+    const failure = new Error('502 Bad Gateway')
+    readRemoteDescriptorsMock.mockRejectedValueOnce(failure)
+
+    await expect(
+      manager.completeDescriptors({
+        cached,
+        identity,
+        parsed: {
+          ...parsed,
+          byCollectionId: {
+            ...parsed.byCollectionId,
+            tasks: { id: 'urn:zcap:tasks' } as unknown as IZcap
+          }
+        }
+      })
+    ).rejects.toBe(failure)
+  })
+
+  it('returns the cached set when the live read answers no descriptor', async () => {
+    const manager = createDescriptorManager({
+      collections: [...collections, { key: 'tasks', id: 'tasks' }],
+      sessionStore: fakeSeedStore(),
+      anonStore: fakeSeedStore()
+    })
+    readRemoteDescriptorsMock.mockResolvedValueOnce({})
 
     const result = await manager.completeDescriptors({
       cached,
@@ -272,7 +295,5 @@ describe('completeDescriptors', () => {
     })
 
     expect(result).toEqual({ descriptors: cached, fresh: {} })
-    expect(warn).toHaveBeenCalled()
-    warn.mockRestore()
   })
 })

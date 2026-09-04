@@ -52,7 +52,10 @@ import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
 // Inert replication: the lifecycle logic runs without any network machinery.
 vi.mock('../../src/storage/wasSync.js', () => ({
-  startWasSync: vi.fn(async () => ({}))
+  startWasSync: vi.fn(async () => ({})),
+  // The login-time descriptor read answers "no descriptor" (an unprovisioned
+  // server); a read that FAILED would fail the activation instead.
+  readRemoteDescriptors: vi.fn(async () => ({}))
 }))
 
 const registry: StoreRegistry = {}

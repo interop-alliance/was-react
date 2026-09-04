@@ -42,7 +42,10 @@ import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
 // Replace the live replication bootstrap with an inert resolver.
 vi.mock('../../src/storage/wasSync.js', () => ({
-  startWasSync: vi.fn(async () => ({}))
+  startWasSync: vi.fn(async () => ({})),
+  // The login-time descriptor read answers "no descriptor" (an unprovisioned
+  // server); a read that FAILED would fail the activation instead.
+  readRemoteDescriptors: vi.fn(async () => ({}))
 }))
 
 // Keep the real login flow but make the re-grant request controllable per test.

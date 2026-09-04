@@ -609,6 +609,25 @@ keep only the epoch-bearing descriptors. The bootstrap hangs its own
 per-collection work off that pass, so the description PUTs and the cipher
 rebuild ride the same single read.
 
+A description read has two distinct non-answers, and the pass keeps them apart.
+"No descriptor" is a fact about the collection: the read answered not-found
+(which is also how WAS answers an unauthorized read), or the description carries
+no `encryption` member. `readCollectionEncryption` answers `undefined` for that
+alone. A read that fails for any other reason (a dropped connection, a 5xx) is
+retried once and then thrown, because the answer is unknown rather than absent,
+and a caller that took it for "no descriptor" would open a correctly provisioned
+collection under the fail-closed placeholder cipher, fail the adoption merge on
+it, and let the best-effort descriptor PUT write a bare descriptor over a roster
+it never saw. The two callers handle the throw differently. The login-time read
+rejects the whole connected activation, which falls back to `local` with the
+error surfaced and the anonymous replica intact for a retry. The bootstrap skips
+that one collection entirely, hook included, with a warning: it keeps whatever
+cipher it opened with (the cached descriptor, or fail-closed) and receives no
+PUT this session. The unknown-epoch refresh source is tolerant too, warning and
+answering `undefined`, since the refresh is already spent by the time it is
+consulted and the decrypt retry fails the same way it would under no refresh at
+all.
+
 A descriptor's epoch roster can also simply not include this app: not "no
 descriptor" and not "no epochs", but a roster whose recipients never wrapped a
 key to this app's key-agreement key at all. That is a different failure from the
@@ -624,9 +643,12 @@ collection registry and its two seed stores. It mints and persists the anonymous
 replica's descriptors at local birth, reads the offline cache before any remote
 exists, completes that set with live reads for a granted private collection the
 cache does not cover, and writes the sync bootstrap's fetched set back. The auth
-store only sequences those four operations. Each is best-effort in the same way:
-a failure warns and leaves the affected collections fail-closed rather than
-failing the session.
+store only sequences those four operations. Three of them are best-effort: a
+failure warns and leaves the affected collections fail-closed rather than
+failing the session. The live completion is the exception. A read that answers
+"no descriptor" leaves that collection fail-closed like the others, but a read
+that fails rejects the activation, for the reason given above: the connected
+replica must not open over a guess.
 
 `createDescriptorCache` (`src/identity/seedStore.ts`) presents the seed store's
 single persisted descriptor record as the `EncryptionDescriptorCache` seam
