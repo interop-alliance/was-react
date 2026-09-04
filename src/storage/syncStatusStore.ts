@@ -2,13 +2,14 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Zustand store holding per-collection replication status, mirroring the WAS
- * per-replica sync-status vocabulary, keyed by the registry's logical collection
- * key. The sync controller writes to it off the RxDB replication `active$` /
- * `error$` streams; UI (e.g. a header indicator or a settings page) reads from
- * it. In-memory only, like the session -- cleared on logout.
+ * The per-collection replication status store, mirroring the WAS per-replica
+ * sync-status vocabulary, keyed by the registry's logical collection key. One
+ * is created per {@link StorageContext} (so per session provider, never
+ * process-wide): the sync controller writes to it off the RxDB replication
+ * `active$` / `error$` streams, and `useSyncStatus` reads it through the
+ * provider. In-memory only, like the session -- reset on logout.
  */
-import { create } from 'zustand'
+import { createStore, type StoreApi } from 'zustand/vanilla'
 
 /**
  * A single collection's replication status:
@@ -19,7 +20,7 @@ import { create } from 'zustand'
  */
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error'
 
-export const useSyncStatusStore = create<{
+interface SyncStatusState {
   /**
    * Keyed by the registry's LOGICAL collection key (`WasCollectionConfig.key`,
    * e.g. `actionItems`), not the WAS wire id. Two registry entries may share one
@@ -30,14 +31,26 @@ export const useSyncStatusStore = create<{
   statuses: Record<string, SyncStatus>
   setStatus: (collectionKey: string, status: SyncStatus) => void
   reset: () => void
-}>()(set => ({
-  statuses: {},
-  setStatus: (collectionKey, status) =>
-    set(state => ({
-      statuses: { ...state.statuses, [collectionKey]: status }
-    })),
-  reset: () => set({ statuses: {} })
-}))
+}
+
+export type SyncStatusStore = StoreApi<SyncStatusState>
+
+/**
+ * Creates one session's sync status store (a vanilla zustand store; subscribe
+ * to it from React with zustand's `useStore`).
+ *
+ * @returns {SyncStatusStore}
+ */
+export function createSyncStatusStore(): SyncStatusStore {
+  return createStore<SyncStatusState>()(set => ({
+    statuses: {},
+    setStatus: (collectionKey, status) =>
+      set(state => ({
+        statuses: { ...state.statuses, [collectionKey]: status }
+      })),
+    reset: () => set({ statuses: {} })
+  }))
+}
 
 /**
  * The aggregate replication status derived from the per-collection statuses:

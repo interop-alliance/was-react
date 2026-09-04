@@ -2,223 +2,142 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The storage manager: a thin process-wide holder for the one {@link LocalStore}
- * instance, the per-session {@link WasRemoteStore}, plus the per-install writer
- * id. Entity stores reach for the stores through {@link requireStore} /
- * {@link requireRemoteStore} inside their verbs rather than importing them
- * directly, which keeps this module free of store imports (no cycle) and lets
- * the app own the init/hydrate ordering.
+ * The storage manager: the one remaining process-wide pointer, to the ACTIVE
+ * {@link StorageContext}, plus the app-facing facades over it. Entity stores
+ * are created at module level, before any session exists, so their verbs
+ * cannot hold a context of their own; they reach the live session through
+ * {@link requireStore} / {@link requireRemoteStore} / {@link stampLww} here,
+ * which resolve to whichever context is active. Keeping the facade free of
+ * store imports (no cycle) also lets the session store own the init/hydrate
+ * ordering.
  *
- * It also owns the writer-id concern end to end: {@link getWriterId} resolves
- * the per-install id, {@link setWriterId} installs the session's resolved value,
- * {@link clearWriterId} removes it (the clear-data wipe), and {@link stampLww}
- * is the one place a payload's last-write-wins fields are minted, so no caller
- * has to remember to stamp.
+ * Activation is deliberate about the two-providers case: a context with a
+ * replica attached is live, and a live context is never replaced -- a second
+ * session attaching a replica of its own throws instead of silently taking the
+ * facades over. A context without a replica (created but not booted, or torn
+ * down) is inert and is replaced without complaint, which is what a React
+ * dev-mode double `useState` initializer or a test's sequence of stores needs.
  */
-import { uuidv7 } from 'uuidv7'
-import { DEFAULT_STORAGE_KEY_PREFIX } from '../config.js'
 import type { LwwFields } from '../sync/lww.js'
 import type { LocalStore } from './localStore.js'
+import type { StorageContext } from './storageContext.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'
 
-let localStore: LocalStore | null = null
-let remoteStore: WasRemoteStore | null = null
+let active: StorageContext | null = null
 
 /**
- * Installs the opened store (called once by the app bootstrap).
+ * Makes `context` the active one (called by the session store at creation, so
+ * the facades resolve before any replica opens, again right before it opens a
+ * replica, and by {@link StorageContext.attachStore}). Idempotent for the
+ * context already active; throws while a DIFFERENT context still has a replica
+ * attached.
  *
- * @param store {LocalStore}
+ * @param context {StorageContext}
  * @returns {void}
  */
-export function setLocalStore(store: LocalStore): void {
-  localStore = store
+export function activateStorageContext(context: StorageContext): void {
+  if (active && active !== context && active.hasStore()) {
+    throw new Error(
+      'Another storage context still has a replica attached; ' +
+        'one process hosts one live session (one provider) at a time.'
+    )
+  }
+  active = context
 }
 
 /**
- * The opened store, or throws if the app has not bootstrapped yet.
+ * Releases the active pointer if `context` holds it (a torn-down session); a
+ * no-op for any other context.
+ *
+ * @param context {StorageContext}
+ * @returns {void}
+ */
+export function deactivateStorageContext(context: StorageContext): void {
+  if (active === context) {
+    active = null
+  }
+}
+
+/**
+ * Whether a storage context is active.
+ *
+ * @returns {boolean}
+ */
+export function hasStorageContext(): boolean {
+  return active !== null
+}
+
+/**
+ * The active storage context, or throws if no session store has been created.
+ *
+ * @returns {StorageContext}
+ */
+export function requireStorageContext(): StorageContext {
+  if (!active) {
+    throw new Error(
+      'No storage context is active; create the session store first.'
+    )
+  }
+  return active
+}
+
+/**
+ * The active session's opened replica, or throws if none is open.
  *
  * @returns {LocalStore}
  */
 export function requireStore(): LocalStore {
-  if (!localStore) {
-    throw new Error('LocalStore is not initialized; open it first.')
-  }
-  return localStore
+  return requireStorageContext().requireStore()
 }
 
 /**
- * Whether the store has been opened.
+ * Whether the active session has a replica open.
  *
  * @returns {boolean}
  */
 export function hasStore(): boolean {
-  return localStore !== null
+  return active?.hasStore() ?? false
 }
 
 /**
- * Releases the held store reference (logout; the caller closes the db).
- *
- * @returns {void}
- */
-export function clearLocalStore(): void {
-  localStore = null
-}
-
-/**
- * Installs the per-session delegated remote store (set once background sync
- * has bootstrapped it from the granted zcaps).
- *
- * @param store {WasRemoteStore}
- * @returns {void}
- */
-export function setRemoteStore(store: WasRemoteStore): void {
-  remoteStore = store
-}
-
-/**
- * The connected session's remote store, or throws while no wallet-connected
- * session is active (local-only mode, or sync has not bootstrapped yet).
+ * The active session's remote store, or throws while no wallet-connected
+ * session is active.
  *
  * @returns {WasRemoteStore}
  */
 export function requireRemoteStore(): WasRemoteStore {
-  if (!remoteStore) {
-    throw new Error(
-      'No WAS remote store is available; connect a wallet session first.'
-    )
-  }
-  return remoteStore
+  return requireStorageContext().requireRemoteStore()
 }
 
 /**
- * Whether a connected session's remote store is available.
+ * Whether the active session has a remote store available.
  *
  * @returns {boolean}
  */
 export function hasRemoteStore(): boolean {
-  return remoteStore !== null
+  return active?.hasRemoteStore() ?? false
 }
 
 /**
- * Releases the held remote store reference (logout / sync teardown).
- *
- * @returns {void}
- */
-export function clearRemoteStore(): void {
-  remoteStore = null
-}
-
-/**
- * The unpersisted fallback writer id for environments without `localStorage`
- * (tests, SSR): process-stable, so every stamp within one run agrees, minted
- * fresh on the next run.
- */
-let fallbackWriterId: string | null = null
-
-/**
- * A stable per-install writer id (the last-write-wins tiebreak stamped into
- * every payload), persisted in localStorage under `<prefix>writerId`. In an
- * environment without `localStorage` it falls back to a process-stable
- * unpersisted id instead of throwing.
- *
- * The id is an unkeyed, clearable attribution label -- never an identity. On a
- * miss it adopts a value left under the pre-rename `<prefix>clientId` key and
- * removes the old one, so an existing install keeps stamping the same id
- * across the rename rather than looking like a second writer.
- *
- * @param [options] {object}
- * @param [options.storageKeyPrefix] {string}   the localStorage key prefix
- *   (defaults to {@link DEFAULT_STORAGE_KEY_PREFIX})
- * @returns {string}
- */
-export function getWriterId({
-  storageKeyPrefix = DEFAULT_STORAGE_KEY_PREFIX
-}: { storageKeyPrefix?: string } = {}): string {
-  const writerIdKey = `${storageKeyPrefix}writerId`
-  const legacyKey = `${storageKeyPrefix}clientId`
-  try {
-    let id = localStorage.getItem(writerIdKey)
-    if (!id) {
-      id = localStorage.getItem(legacyKey) || uuidv7()
-      localStorage.setItem(writerIdKey, id)
-      localStorage.removeItem(legacyKey)
-    }
-    return id
-  } catch {
-    fallbackWriterId ??= uuidv7()
-    return fallbackWriterId
-  }
-}
-
-let resolvedWriterId: string | null = null
-
-/**
- * Installs the session's resolved writer id (called once by the session store,
- * under the app's configured `storageKeyPrefix`, before any replica opens).
- *
- * @param id {string}
- * @returns {void}
- */
-export function setWriterId(id: string): void {
-  resolvedWriterId = id
-}
-
-/**
- * The session's resolved writer id, or throws if it has not been installed
- * yet. Deliberately never falls back to {@link getWriterId}: that would resolve
- * under the DEFAULT key prefix, so an app with a custom `storageKeyPrefix`
- * would silently stamp a second writer id.
+ * The active session's writer id, or throws if no session store exists yet.
+ * Deliberately never falls back to `getWriterId`: that would resolve under the
+ * DEFAULT key prefix, so an app with a custom `storageKeyPrefix` would silently
+ * stamp a second writer id.
  *
  * @returns {string}
  */
 export function requireWriterId(): string {
-  if (!resolvedWriterId) {
-    throw new Error(
-      'Writer id is not resolved; create the session store first.'
-    )
-  }
-  return resolvedWriterId
+  return requireStorageContext().writerId
 }
 
 /**
- * Clears the persisted writer id (the clear-data grade of the wipe): removes
- * both the current key and the pre-rename one, so nothing this library wrote
- * survives in localStorage. A fresh id is installed in memory rather than the
- * resolved one being dropped, because the session keeps running over its new
- * anonymous replica and its write verbs still have to stamp; nothing persists
- * it, so the next run resolves and stores an id of its own.
- *
- * @param [options] {object}
- * @param [options.storageKeyPrefix] {string}   the localStorage key prefix
- *   (defaults to {@link DEFAULT_STORAGE_KEY_PREFIX})
- * @returns {void}
- */
-export function clearWriterId({
-  storageKeyPrefix = DEFAULT_STORAGE_KEY_PREFIX
-}: { storageKeyPrefix?: string } = {}): void {
-  try {
-    localStorage.removeItem(`${storageKeyPrefix}writerId`)
-    localStorage.removeItem(`${storageKeyPrefix}clientId`)
-  } catch {
-    // No localStorage in this environment: nothing was persisted to clear.
-  }
-  fallbackWriterId = null
-  setWriterId(uuidv7())
-}
-
-/**
- * Stamps a payload with fresh last-write-wins fields: the current instant as
- * `updatedAt` and the session's resolved writer id. Any values the caller
- * supplied are overwritten -- a stamp must describe THIS write, or a hydrated
- * doc's older `updatedAt` would ride a later edit and lose the conflict.
+ * Stamps a payload with fresh last-write-wins fields under the active session
+ * (see {@link StorageContext.stampLww}); the entity-store write verbs call it
+ * on every write, and an app writing through `LocalStore` directly does too.
  *
  * @param payload {object}
  * @returns {object}   the payload with the LWW fields set
  */
 export function stampLww<T extends { id: string }>(payload: T): T & LwwFields {
-  return {
-    ...payload,
-    updatedAt: new Date().toISOString(),
-    writerId: requireWriterId()
-  }
+  return requireStorageContext().stampLww(payload)
 }

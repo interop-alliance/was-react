@@ -1,18 +1,22 @@
 /*!
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+/**
+ * Unit tests for {@link StorageContext}: the hydrate/patch/schedule mechanism
+ * that used to be the module-level `rehydrate.ts` functions, plus the
+ * attach/detach/activation lifecycle that replaced the old process-wide
+ * holders (`setLocalStore` / `clearLocalStore`).
+ */
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import type { Json } from '../sync/index.js'
 import type { StoreRegistry } from '../config.js'
 import type { LocalStore } from './localStore.js'
-import { setLocalStore, clearLocalStore } from './storageManager.js'
+import { StorageContext } from './storageContext.js'
 import {
-  patchFromChange,
-  hydrateAll,
-  clearAllEntityStores,
-  scheduleRehydrate,
-  cancelScheduledRehydrates
-} from './rehydrate.js'
+  activateStorageContext,
+  deactivateStorageContext,
+  requireStorageContext
+} from './storageManager.js'
 
 // A fake LocalStore: `decryptEnvelope` unwraps `{ jwe: payload }` (mirroring the
 // lww handler test's fake cipher); the envelope index calls just record.
@@ -45,8 +49,8 @@ function makeFakeStore({
 }
 
 // A fake LocalStore whose `decryptEnvelope` only settles once the returned
-// `release` is called: it lets a test tear down (or swap) the process-wide
-// holder while a patch's decrypt is still in flight.
+// `release` is called: it lets a test detach (or swap) the attached store
+// while a patch's decrypt is still in flight.
 function makeGatedStore(): {
   store: LocalStore
   remembered: Array<[string, string, string]>
@@ -110,35 +114,49 @@ function envelope(payload: { id: string }): Json {
   return { jwe: payload } as unknown as Json
 }
 
+// Every context this test file creates, so `afterEach` can detach and
+// deactivate it regardless of which one ended up active -- `attachStore`
+// throws while a DIFFERENT context still has a store attached, so leaking one
+// across tests would break every later `attachStore` call.
+let contexts: StorageContext[] = []
+
+function makeContext(registry: StoreRegistry = {}): StorageContext {
+  const context = new StorageContext({ registry, writerId: 'test-writer' })
+  contexts.push(context)
+  return context
+}
+
 afterEach(() => {
-  clearLocalStore()
+  for (const context of contexts) {
+    context.detachStore()
+    deactivateStorageContext(context)
+  }
+  contexts = []
 })
 
-describe('rehydrate mechanism', () => {
+describe('StorageContext', () => {
   it('hydrateAll drives every registry entry', async () => {
     const { registry, calls } = makeRegistry()
-    await hydrateAll(registry)
+    const context = makeContext(registry)
+    await context.hydrateAll()
     expect(calls.hydrate).toBe(1)
   })
 
-  it('clearAllEntityStores drives every registry entry', () => {
+  it('clearEntityStores drives every registry entry', () => {
     const { registry, calls } = makeRegistry()
-    clearAllEntityStores(registry)
+    const context = makeContext(registry)
+    context.clearEntityStores()
     expect(calls.clear).toBe(1)
   })
 
   describe('patchFromChange', () => {
-    beforeEach(() => {
-      const { store } = makeFakeStore()
-      setLocalStore(store)
-    })
-
     it('upserts an inserted payload and remembers its envelope', async () => {
       const { store, remembered } = makeFakeStore()
-      setLocalStore(store)
       const { registry, calls } = makeRegistry()
+      const context = makeContext(registry)
+      context.attachStore(store)
       const payload = { id: 'note-1' }
-      await patchFromChange(registry, 'notes', {
+      await context.patchFromChange('notes', {
         operation: 'INSERT',
         documentData: { id: 'env-1', data: envelope(payload) }
       })
@@ -149,9 +167,10 @@ describe('rehydrate mechanism', () => {
 
     it('drops a deleted payload and forgets its envelope', async () => {
       const { store, forgotten } = makeFakeStore()
-      setLocalStore(store)
       const { registry, calls } = makeRegistry()
-      await patchFromChange(registry, 'notes', {
+      const context = makeContext(registry)
+      context.attachStore(store)
+      await context.patchFromChange('notes', {
         operation: 'DELETE',
         documentData: { id: 'env-1', data: envelope({ id: 'note-1' }) }
       })
@@ -167,9 +186,10 @@ describe('rehydrate mechanism', () => {
       const { store, forgotten } = makeFakeStore({
         index: { 'note-1': 'env-live' }
       })
-      setLocalStore(store)
       const { registry, calls } = makeRegistry()
-      await patchFromChange(registry, 'notes', {
+      const context = makeContext(registry)
+      context.attachStore(store)
+      await context.patchFromChange('notes', {
         operation: 'DELETE',
         documentData: { id: 'env-stale', data: envelope({ id: 'note-1' }) }
       })
@@ -181,9 +201,10 @@ describe('rehydrate mechanism', () => {
       const { store, forgotten } = makeFakeStore({
         index: { 'note-1': 'env-live' }
       })
-      setLocalStore(store)
       const { registry, calls } = makeRegistry()
-      await patchFromChange(registry, 'notes', {
+      const context = makeContext(registry)
+      context.attachStore(store)
+      await context.patchFromChange('notes', {
         operation: 'DELETE',
         documentData: { id: 'env-live', data: envelope({ id: 'note-1' }) }
       })
@@ -193,9 +214,10 @@ describe('rehydrate mechanism', () => {
 
     it('drops on a soft-delete (_deleted) row', async () => {
       const { store } = makeFakeStore()
-      setLocalStore(store)
       const { registry, calls } = makeRegistry()
-      await patchFromChange(registry, 'notes', {
+      const context = makeContext(registry)
+      context.attachStore(store)
+      await context.patchFromChange('notes', {
         operation: 'UPDATE',
         documentData: {
           id: 'env-1',
@@ -207,8 +229,11 @@ describe('rehydrate mechanism', () => {
     })
 
     it('is a no-op for an unregistered collection', async () => {
+      const { store } = makeFakeStore()
       const { registry, calls } = makeRegistry()
-      await patchFromChange(registry, 'unknown', {
+      const context = makeContext(registry)
+      context.attachStore(store)
+      await context.patchFromChange('unknown', {
         operation: 'INSERT',
         documentData: { id: 'env-1', data: envelope({ id: 'x' }) }
       })
@@ -216,10 +241,10 @@ describe('rehydrate mechanism', () => {
       expect(calls.drop).toEqual([])
     })
 
-    it('is a silent no-op when no store is set at entry', async () => {
-      clearLocalStore()
+    it('is a silent no-op when no store is attached', async () => {
       const { registry, calls } = makeRegistry()
-      await patchFromChange(registry, 'notes', {
+      const context = makeContext(registry)
+      await context.patchFromChange('notes', {
         operation: 'INSERT',
         documentData: { id: 'env-1', data: envelope({ id: 'note-1' }) }
       })
@@ -228,17 +253,18 @@ describe('rehydrate mechanism', () => {
       expect(calls.hydrate).toBe(0)
     })
 
-    it('writes nothing when the store is cleared across the decrypt await', async () => {
+    it('writes nothing when the store is detached across the decrypt await', async () => {
       const { store, remembered, release } = makeGatedStore()
-      setLocalStore(store)
       const { registry, calls } = makeRegistry()
+      const context = makeContext(registry)
+      context.attachStore(store)
       // Fired floating off the change stream, as replication does.
-      const patched = patchFromChange(registry, 'notes', {
+      const patched = context.patchFromChange('notes', {
         operation: 'INSERT',
         documentData: { id: 'env-1', data: envelope({ id: 'note-1' }) }
       })
-      // A logout tears the holder down mid-decrypt.
-      clearLocalStore()
+      // A logout tears the store down mid-decrypt.
+      context.detachStore()
       release()
       // Resolves rather than rejecting (no unhandled rejection off the stream).
       await expect(patched).resolves.toBeUndefined()
@@ -247,17 +273,21 @@ describe('rehydrate mechanism', () => {
       expect(remembered).toEqual([])
     })
 
-    it('writes nothing when the holder is SWAPPED across the decrypt await', async () => {
+    it('writes nothing when the store is replaced under a new context across the decrypt await', async () => {
       const previous = makeGatedStore()
-      setLocalStore(previous.store)
       const { registry, calls } = makeRegistry()
-      const patched = patchFromChange(registry, 'notes', {
+      const previousContext = makeContext(registry)
+      previousContext.attachStore(previous.store)
+      const patched = previousContext.patchFromChange('notes', {
         operation: 'INSERT',
         documentData: { id: 'env-1', data: envelope({ id: 'note-1' }) }
       })
-      // A logout/login re-bootstrap swaps in a NEW store for the new session.
+      // A logout/login re-bootstrap detaches the old replica, then a fresh
+      // session attaches a new one under its own context.
+      previousContext.detachStore()
       const next = makeFakeStore()
-      setLocalStore(next.store)
+      const nextContext = makeContext(registry)
+      nextContext.attachStore(next.store)
       previous.release()
       await expect(patched).resolves.toBeUndefined()
       // The previous session's payload never reaches the new session's replica.
@@ -269,8 +299,11 @@ describe('rehydrate mechanism', () => {
     it('schedules a re-hydrate when the envelope is missing', async () => {
       vi.useFakeTimers()
       try {
+        const { store } = makeFakeStore()
         const { registry, calls } = makeRegistry()
-        await patchFromChange(registry, 'notes', {
+        const context = makeContext(registry)
+        context.attachStore(store)
+        await context.patchFromChange('notes', {
           operation: 'INSERT',
           documentData: { id: 'env-1' }
         })
@@ -286,9 +319,10 @@ describe('rehydrate mechanism', () => {
       vi.useFakeTimers()
       try {
         const { store } = makeFakeStore({ failDecrypt: true })
-        setLocalStore(store)
         const { registry, calls } = makeRegistry()
-        await patchFromChange(registry, 'notes', {
+        const context = makeContext(registry)
+        context.attachStore(store)
+        await context.patchFromChange('notes', {
           operation: 'INSERT',
           documentData: { id: 'env-1', data: envelope({ id: 'note-1' }) }
         })
@@ -301,45 +335,147 @@ describe('rehydrate mechanism', () => {
     })
   })
 
-  it('scheduleRehydrate is a no-op for an unregistered collection', () => {
-    vi.useFakeTimers()
-    try {
-      const { registry, calls } = makeRegistry()
-      scheduleRehydrate(registry, 'unknown')
-      vi.advanceTimersByTime(60)
-      expect(calls.hydrate).toBe(0)
-    } finally {
-      vi.useRealTimers()
-    }
+  describe('scheduleRehydrate', () => {
+    it('is a no-op for an unregistered collection', () => {
+      vi.useFakeTimers()
+      try {
+        const { store } = makeFakeStore()
+        const { registry, calls } = makeRegistry()
+        const context = makeContext(registry)
+        context.attachStore(store)
+        context.scheduleRehydrate('unknown')
+        vi.advanceTimersByTime(60)
+        expect(calls.hydrate).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('is a no-op with no store attached', () => {
+      vi.useFakeTimers()
+      try {
+        const { registry, calls } = makeRegistry()
+        const context = makeContext(registry)
+        context.scheduleRehydrate('notes')
+        vi.advanceTimersByTime(60)
+        expect(calls.hydrate).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a scheduled re-hydrate that outlives detach is a no-op', async () => {
+      vi.useFakeTimers()
+      try {
+        const { store } = makeFakeStore()
+        const { registry, calls } = makeRegistry()
+        const context = makeContext(registry)
+        context.attachStore(store)
+        context.scheduleRehydrate('notes')
+        context.detachStore()
+        await vi.advanceTimersByTimeAsync(60)
+        expect(calls.hydrate).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('detachStore cancels every pending re-hydrate', async () => {
+      vi.useFakeTimers()
+      try {
+        const { store } = makeFakeStore()
+        const { registry, calls } = makeRegistry()
+        const context = makeContext(registry)
+        context.attachStore(store)
+        context.scheduleRehydrate('notes')
+        context.detachStore()
+        await vi.advanceTimersByTimeAsync(60)
+        expect(calls.hydrate).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
   })
 
-  it('a scheduled re-hydrate that outlives the store teardown is a no-op', async () => {
-    vi.useFakeTimers()
-    try {
+  describe('whileAttached', () => {
+    it('resolves undefined without calling op when no store is attached', async () => {
+      const context = makeContext()
+      let called = false
+      const result = await context.whileAttached(async () => {
+        called = true
+        return 'value'
+      })
+      expect(result).toBeUndefined()
+      expect(called).toBe(false)
+    })
+
+    it('resolves the result when the store is still attached', async () => {
       const { store } = makeFakeStore()
-      setLocalStore(store)
-      const { registry, calls } = makeRegistry()
-      scheduleRehydrate(registry, 'notes')
-      clearLocalStore()
-      await vi.advanceTimersByTimeAsync(60)
-      expect(calls.hydrate).toBe(0)
-    } finally {
-      vi.useRealTimers()
-    }
+      const context = makeContext()
+      context.attachStore(store)
+      const result = await context.whileAttached(async attached => {
+        expect(attached).toBe(store)
+        return 'value'
+      })
+      expect(result).toBe('value')
+    })
+
+    it('resolves undefined and swallows a rejection when detached mid-op', async () => {
+      let release = () => {}
+      const gate = new Promise<void>(resolve => {
+        release = resolve
+      })
+      const { store } = makeFakeStore()
+      const context = makeContext()
+      context.attachStore(store)
+      const pending = context.whileAttached(async () => {
+        await gate
+        throw new Error('torn read')
+      })
+      context.detachStore()
+      release()
+      await expect(pending).resolves.toBeUndefined()
+    })
+
+    it('rethrows a rejection when the store is still attached', async () => {
+      const { store } = makeFakeStore()
+      const context = makeContext()
+      context.attachStore(store)
+      await expect(
+        context.whileAttached(async () => {
+          throw new Error('read failed')
+        })
+      ).rejects.toThrow(/read failed/)
+    })
   })
 
-  it('cancelScheduledRehydrates drops every pending re-hydrate', async () => {
-    vi.useFakeTimers()
-    try {
-      const { store } = makeFakeStore()
-      setLocalStore(store)
-      const { registry, calls } = makeRegistry()
-      scheduleRehydrate(registry, 'notes')
-      cancelScheduledRehydrates()
-      await vi.advanceTimersByTimeAsync(60)
-      expect(calls.hydrate).toBe(0)
-    } finally {
-      vi.useRealTimers()
-    }
+  describe('attachStore', () => {
+    it('throws while another context still has a store attached', () => {
+      const first = makeContext()
+      first.attachStore(makeFakeStore().store)
+      const second = makeContext()
+      expect(() => second.attachStore(makeFakeStore().store)).toThrow(
+        /one live session/
+      )
+    })
+  })
+
+  describe('activateStorageContext', () => {
+    it('replaces an inert context silently', () => {
+      // `first` becomes active but never attaches a store, so it is inert;
+      // activating `second` in its place must not throw.
+      const first = makeContext()
+      activateStorageContext(first)
+      const second = makeContext()
+      expect(() => activateStorageContext(second)).not.toThrow()
+      expect(requireStorageContext()).toBe(second)
+    })
+
+    it('throws while the active context still has a store attached', () => {
+      const first = makeContext()
+      first.attachStore(makeFakeStore().store)
+      const second = makeContext()
+      expect(() => activateStorageContext(second)).toThrow(/one live session/)
+    })
   })
 })

@@ -1,5 +1,48 @@
 # @interop/was-react Changelog
 
+## 0.20.0 - TBD
+
+### Changed
+
+- **BREAKING:** The process-wide storage holders are replaced by a
+  session-scoped `StorageContext` (`src/storage/storageContext.ts`), created by
+  `createAuthStore` and exposed as `storageContext` on the auth store's state.
+  It owns the open replica, the remote store, the writer id, the sync status
+  store, and the re-hydrate timers, and its `whileAttached` is the one staleness
+  mechanism the change patches, the scheduled re-hydrates, and `hasLocalData`
+  run on. The app-facing facades (`requireStore`, `hasStore`,
+  `requireRemoteStore`, `hasRemoteStore`, `requireWriterId`, `stampLww`,
+  `publicUrlFor`, the entity-store verbs) now resolve the active context, and
+  opening a replica while another context still holds one throws (before the
+  database is opened) instead of clobbering it. `createAuthStore` skips its
+  creation-time activation while another session is live, so a keyed provider
+  remount fails the new provider's boot rather than throwing during render.
+- `hasLocalData()` keeps resolving `false` (with a warning) when a count fails
+  against the attached replica, rather than rejecting into the login handler.
+- Tearing down a session now cancels the pending re-hydrates before draining the
+  sync controller, so a debounced re-hydrate cannot fire against a replica that
+  is about to close.
+- **BREAKING:** Removed `setLocalStore`, `clearLocalStore`, `setRemoteStore`,
+  `clearRemoteStore`, `setWriterId`, `clearWriterId`, `useSyncStatusStore`,
+  `hydrateAll`, `clearAllEntityStores`, `patchFromChange`, `scheduleRehydrate`,
+  and `cancelScheduledRehydrates`. Test harnesses attach a store through
+  `new StorageContext({ registry, writerId }).attachStore(store)`; the
+  re-hydrate verbs are `StorageContext` methods; sync status is
+  `storageContext.syncStatus` (a vanilla zustand store,
+  `createSyncStatusStore`).
+- **BREAKING:** `SyncController` takes a `syncStatus` store in its constructor;
+  `mergeAdopted` takes the `writerId` explicitly.
+- `getWriterId` moved to `src/storage/writerId.ts` beside the new
+  `clearPersistedWriterId` (localStorage only); the running session's id is
+  replaced by `StorageContext.resetWriterId`.
+
+### Added
+
+- New exports: `StorageContext`, `activateStorageContext`,
+  `deactivateStorageContext`, `hasStorageContext`, `requireStorageContext`,
+  `createSyncStatusStore`, `clearPersistedWriterId`, and the `SyncStatusStore`
+  type.
+
 ## 0.19.0 - 2026-08-26
 
 ### Added

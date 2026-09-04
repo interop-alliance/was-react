@@ -14,7 +14,6 @@ import type { WasAuthStore } from '../session/authStore.js'
 import type { LocalWipeReport } from '../session/localWipe.js'
 import type { SharedCollectionReader } from '../storage/sharedCollectionReader.js'
 import {
-  useSyncStatusStore,
   deriveSyncRollup,
   type SyncRollup
 } from '../storage/syncStatusStore.js'
@@ -194,8 +193,9 @@ export type { SyncRollup }
 
 /**
  * The aggregate sync status over the per-collection replication statuses (the
- * sync-status store keys them by the registry's logical collection key). A thin
- * subscription over that store: it reads the collection statuses and defers the
+ * session's sync-status store keys them by the registry's logical collection
+ * key). A thin subscription over that store, reached through the provider's
+ * storage context: it reads the collection statuses and defers the
  * offline / error > syncing > synced precedence to {@link deriveSyncRollup}.
  *
  * @returns {{ state: SyncRollup, label: string, title: string }}
@@ -205,7 +205,11 @@ export function useSyncStatus(): {
   label: string
   title: string
 } {
-  const values = useSyncStatusStore(
+  // The context is set once at store creation and never replaced, so reading
+  // it outside a selector subscribes to nothing it would need to.
+  const { syncStatus } = useAuthStore().getState().storageContext
+  const values = useStore(
+    syncStatus,
     useShallow(state => Object.values(state.statuses))
   )
   return deriveSyncRollup(values)

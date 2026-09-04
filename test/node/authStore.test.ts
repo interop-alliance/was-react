@@ -51,7 +51,6 @@ import {
   LocalStore,
   dbNameForController
 } from '../../src/storage/localStore.js'
-import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
 // Inert replication: the machine's activate / persist / teardown logic runs
@@ -235,7 +234,6 @@ afterEach(async () => {
   while (liveStores.length > 0) {
     await liveStores.pop()!.getState().destroy()
   }
-  useSyncStatusStore.getState().reset()
   vi.restoreAllMocks()
 })
 

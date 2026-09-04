@@ -29,13 +29,16 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
 - `src/sync/` -- the collection-agnostic RxDB-to-WAS replication core (nothing
   here imports React): replication, doc cipher, LWW conflict handling, the
   `WasSyncPort`.
-- `src/storage/` -- the encrypted `LocalStore`, the process-wide store holder
-  (`storageManager.ts`, which also resolves the per-install `writerId`), generic
-  entity stores, the delegated remote store, the read-only
-  `SharedCollectionReader`, the replication bootstrap (`wasSync.ts`), the
-  session's encryption-descriptor policy (`descriptorManager.ts`), the sync
-  controller, sync status, the rehydrate mechanism, the local-to-connected
-  adoption merge (`adopt.ts`), and the public share-URL helper (`publicUrl.ts`).
+- `src/storage/` -- the encrypted `LocalStore`, the session-scoped
+  `StorageContext` (`storageContext.ts`: the open replica, the remote store, the
+  writer id, the sync status store, and the rehydrate mechanism), the
+  active-context pointer and its app-facing facades (`storageManager.ts`), the
+  per-install `writerId` persistence (`writerId.ts`), generic entity stores, the
+  delegated remote store, the read-only `SharedCollectionReader`, the
+  replication bootstrap (`wasSync.ts`), the session's encryption-descriptor
+  policy (`descriptorManager.ts`), the sync controller, sync status, the
+  local-to-connected adoption merge (`adopt.ts`), and the public share-URL
+  helper (`publicUrl.ts`).
 - `src/session/` -- the session auth store factory (`createAuthStore`): the
   four-state machine described below.
 - `src/react/` -- the `WasSessionProvider`, the hooks (`useSession`, `useLogin`,
@@ -109,9 +112,9 @@ otherwise replace only when the adopted payload wins the same
 `remotePayloadWins` last-write-wins rule replication runs, with a connected doc
 carrying no LWW fields always losing to a stamped adopted one. Adopted payloads
 missing `updatedAt` / `writerId` are stamped at adoption time with the session's
-resolved `writerId` (read from the same holder the write verbs stamp from), so
-the repair carries the same attribution identity as the app's own writes;
-payloads that already carry them keep their original values. That
+resolved `writerId` (the storage context's, the same value the write verbs stamp
+from), so the repair carries the same attribution identity as the app's own
+writes; payloads that already carry them keep their original values. That
 preserve-if-present rule is deliberately unlike the write verbs' fresh-always
 one: adoption repairs an edit already made, rather than recording a new one.
 
@@ -158,6 +161,48 @@ rather than counted toward a result that reads clean.
 `clearLocalData()` resolves with that report (`LocalWipeReport`), and
 `useClearData()` passes it through unchanged.
 
+### The storage context
+
+Everything a session's storage layer shares across its async consumers lives on
+one `StorageContext` (`src/storage/storageContext.ts`), created by
+`createAuthStore` beside the session store and exposed as
+`useAuthStore().getState().storageContext`: the open `LocalStore` replica, the
+connected session's `WasRemoteStore`, the resolved `writerId`, the sync status
+store, and the debounced re-hydrate timers. The auth store attaches and detaches
+the replica, the sync controller reports into the context's status store, and
+the per-doc change patches run on it. Nothing in the library reaches for a
+module global to find any of these.
+
+Staleness is one mechanism. Every attach and detach bumps the context's
+generation, and `whileAttached(op)` runs an async operation against the replica
+attached at its start and reports the result only if that same replica is still
+attached when the operation settles. A replica detached or swapped meanwhile
+turns the result into `undefined`, and a rejection raised after the swap is
+swallowed with it, since a read torn by its own teardown is expected noise. The
+per-doc change patch (`patchFromChange`, which decrypts an envelope floating off
+the RxDB change stream), the scheduled re-hydrates (timers bound to the
+generation that scheduled them, and cancelled wholesale on detach), and the
+`hasLocalData` probe (which runs off the serialized lifecycle chain) all rest on
+it; none carries a guard of its own.
+
+One process-wide pointer remains, deliberately: the active context
+(`src/storage/storageManager.ts`). Entity stores are created at module level,
+before any session exists, so their verbs cannot hold a context of their own;
+they and the other app-facing facades (`requireStore`, `requireRemoteStore`,
+`stampLww`, `requireWriterId`, `publicUrlFor`) resolve the active context on
+every call. Activation is fail-loud about two live sessions: the auth store
+claims the pointer right before it opens a replica, and the claim throws while a
+different context still has a replica attached, so a second provider in one
+process fails its boot (with no half-opened database left behind) instead of
+silently taking the facades over. `createAuthStore` also claims the pointer at
+creation, so the facades resolve before any replica opens, but that early claim
+is skipped rather than refused while another session is live: a keyed provider
+remount runs the new provider's `useState` initializer before the old provider's
+cleanup has torn its session down, and a throw there would be a throw inside a
+React render. A context without a replica (created but not booted, or torn down)
+is inert and is replaced without complaint, which is what a React dev-mode
+double `useState` initializer needs.
+
 ### `writerId`
 
 The per-install LWW attribution label, resolved once at store creation from
@@ -168,18 +213,20 @@ of an (app, user) pair is the app-key credential's subject DID.) `getWriterId`
 adopts a value left under the older `<prefix>clientId` key once and removes it,
 so an existing install keeps its id.
 
-Stamping is the library's job, not the app's. The resolved id is installed in
-the storage manager (`setWriterId`, at store creation and before any replica
-opens), and `stampLww` -- the one place a payload's `updatedAt` / `writerId` are
-minted -- reads it back through `requireWriterId`, which throws rather than
-falling back to a default-prefix resolution that would stamp a second id. The
-entity store's persisted write verbs (`insert`, `update`, `upsert`) call it on
-every write, always fresh and always overwriting whatever the caller passed: a
-fill-if-missing rule would let a hydrated doc's stale `updatedAt` ride a later
-edit and lose the conflict. `useSession().writerId` is therefore a display and
-debugging affordance; nothing an app writes depends on reading it.
-`LocalStore`'s own verbs do NOT stamp -- they are the raw layer the adoption
-merge and the sync path write through, both of which own their stamping rules.
+Stamping is the library's job, not the app's. The resolved id lives on the
+session's `StorageContext` (constructed with it at store creation, before any
+replica opens), and `StorageContext.stampLww` -- the one place a payload's
+`updatedAt` / `writerId` are minted -- reads it from there. The `stampLww` and
+`requireWriterId` facades resolve the active context and throw when there is
+none, rather than falling back to a default-prefix resolution that would stamp a
+second id. The entity store's persisted write verbs (`insert`, `update`,
+`upsert`) call it on every write, always fresh and always overwriting whatever
+the caller passed: a fill-if-missing rule would let a hydrated doc's stale
+`updatedAt` ride a later edit and lose the conflict. `useSession().writerId` is
+therefore a display and debugging affordance; nothing an app writes depends on
+reading it. `LocalStore`'s own verbs do NOT stamp -- they are the raw layer the
+adoption merge and the sync path write through, both of which own their stamping
+rules.
 
 ## Login With Wallet: the App Connect protocol
 
@@ -593,10 +640,11 @@ replica and this package's own tests use.
 `publicUrlFor({ collectionKey, id })` (`src/storage/publicUrl.ts`) composes the
 stable, world-readable resource URL of a document in a public (plaintext)
 collection -- the publish-copy share pattern. It routes the logical key to its
-WAS collection id through the same process-wide holders `EntityStore.query`
-uses, so it needs an open `LocalStore` and a wallet-connected session, and it
-fails closed on a non-public or unprovisioned collection or an empty id. The URL
-resolves publicly only once the document has replicated.
+WAS collection id through the active storage context, exactly as
+`EntityStore.query` does, so it needs an open `LocalStore` and a
+wallet-connected session, and it fails closed on a non-public or unprovisioned
+collection or an empty id. The URL resolves publicly only once the document has
+replicated.
 
 `createDocumentLoader` (`src/identity/documentLoader.ts`) is the app's one
 JSON-LD document loader: `@interop/security-document-loader`'s static security

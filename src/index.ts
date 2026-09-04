@@ -113,29 +113,28 @@ export type {
 // The collection-agnostic RxDB-WAS replication core.
 export * from './sync/index.js'
 
-// Storage: local encrypted replica, the process-wide store holder, entity
-// stores, the delegated remote store, sync status, rehydrate mechanism, and the
-// replication controller.
+// Storage: local encrypted replica, the session-scoped storage context and
+// the app-facing facades over the active one, entity stores, the delegated
+// remote store, sync status, and the replication controller.
 export { LocalStore } from './storage/localStore.js'
 // Re-exported beside `LocalStore` (with `deriveIdentity` and
 // `createDescriptorCache` above) so a consumer handed the store directly is
 // also handed everything needed to provision one under epoch-from-birth.
 export { mintRecordEncryption } from '@interop/wallet-core/keyring'
+export { StorageContext } from './storage/storageContext.js'
 export {
-  setLocalStore,
+  activateStorageContext,
+  deactivateStorageContext,
+  hasStorageContext,
+  requireStorageContext,
   requireStore,
   hasStore,
-  clearLocalStore,
-  setRemoteStore,
   requireRemoteStore,
   hasRemoteStore,
-  clearRemoteStore,
-  getWriterId,
-  setWriterId,
   requireWriterId,
-  clearWriterId,
   stampLww
 } from './storage/storageManager.js'
+export { getWriterId, clearPersistedWriterId } from './storage/writerId.js'
 export { createEntityStore, type EntityStore } from './storage/entityStore.js'
 export {
   WasRemoteStore,
@@ -151,17 +150,11 @@ export {
 } from './storage/sharedCollectionReader.js'
 export { publicUrlFor } from './storage/publicUrl.js'
 export {
-  useSyncStatusStore,
+  createSyncStatusStore,
   deriveSyncRollup,
-  type SyncStatus
+  type SyncStatus,
+  type SyncStatusStore
 } from './storage/syncStatusStore.js'
-export {
-  hydrateAll,
-  clearAllEntityStores,
-  patchFromChange,
-  scheduleRehydrate,
-  cancelScheduledRehydrates
-} from './storage/rehydrate.js'
 export { isAuthError, SyncController } from './storage/syncController.js'
 export { startWasSync, type WasSyncBootstrap } from './storage/wasSync.js'
 

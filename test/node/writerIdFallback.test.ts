@@ -10,7 +10,7 @@
  * @vitest-environment node
  */
 import { describe, expect, it } from 'vitest'
-import { getWriterId } from '../../src/storage/storageManager.js'
+import { getWriterId } from '../../src/storage/writerId.js'
 
 describe('getWriterId without localStorage', () => {
   it('falls back to one process-stable id instead of throwing', () => {

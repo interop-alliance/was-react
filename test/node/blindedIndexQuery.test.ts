@@ -24,14 +24,11 @@ import { parseGrants, type ParsedGrants } from '../../src/grants.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { createEntityStore } from '../../src/storage/entityStore.js'
-import {
-  clearLocalStore,
-  clearRemoteStore,
-  setLocalStore,
-  setRemoteStore
-} from '../../src/storage/storageManager.js'
+import { deactivateStorageContext } from '../../src/storage/storageManager.js'
+import { StorageContext } from '../../src/storage/storageContext.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
 import { SyncController } from '../../src/storage/syncController.js'
+import { createSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
 import type { ZcapClient } from '@interop/ezcap'
 import type {
@@ -161,6 +158,7 @@ beforeAll(async () => {
   })
   syncController = new SyncController({
     collections: REGISTRY,
+    syncStatus: createSyncStatusStore(),
     sync: { pollMs: 500, retryMs: 500 }
   })
   // The bootstrap is what declares the registry's index attributes into the
@@ -316,6 +314,7 @@ describe('blinded-index query against was-teaching-server', () => {
 
     const watchedController = new SyncController({
       collections: REGISTRY,
+      syncStatus: createSyncStatusStore(),
       sync: { pollMs: 500, retryMs: 500 }
     })
     const watchedStore = await LocalStore.init({
@@ -362,6 +361,7 @@ describe('blinded-index query against was-teaching-server', () => {
 
     const watchedController = new SyncController({
       collections: REGISTRY,
+      syncStatus: createSyncStatusStore(),
       sync: { pollMs: 500, retryMs: 500 }
     })
     const watchedStore = await LocalStore.init({
@@ -397,10 +397,14 @@ describe('blinded-index query against was-teaching-server', () => {
   }, 60000)
 
   it('answers the entity-store query verb end to end', async () => {
-    // The app-facing verb, through the process-wide holders: key routing, the
+    // The app-facing verb, through the storage context: key routing, the
     // blinded query, and the decrypted-payload mapping.
-    setLocalStore(localStore)
-    setRemoteStore(remoteStore)
+    const context = new StorageContext({
+      registry: {},
+      writerId: 'test-writer'
+    })
+    context.attachStore(localStore)
+    context.attachRemoteStore(remoteStore)
     try {
       const notes = createEntityStore<NoteDoc>('notes')
       const result = await notes
@@ -410,8 +414,9 @@ describe('blinded-index query against was-teaching-server', () => {
       expect(result.docs).toEqual(expect.arrayContaining(matching))
       expect(result.docs).toHaveLength(matching.length)
     } finally {
-      clearLocalStore()
-      clearRemoteStore()
+      context.detachStore()
+      context.detachRemoteStore()
+      deactivateStorageContext(context)
     }
   }, 60000)
 })

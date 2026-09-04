@@ -24,14 +24,11 @@ import { deriveIdentity } from '../../src/identity/agents.js'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { createEntityStore } from '../../src/storage/entityStore.js'
 import { publicUrlFor } from '../../src/storage/publicUrl.js'
-import {
-  clearLocalStore,
-  clearRemoteStore,
-  setLocalStore,
-  setRemoteStore
-} from '../../src/storage/storageManager.js'
+import { deactivateStorageContext } from '../../src/storage/storageManager.js'
+import { StorageContext } from '../../src/storage/storageContext.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
 import { SyncController } from '../../src/storage/syncController.js'
+import { createSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
 import type { ZcapClient } from '@interop/ezcap'
 import type { WasCollectionConfig } from '../../src/config.js'
@@ -171,6 +168,7 @@ async function openSyncedReplica(dbName: string): Promise<LocalStore> {
   stores.push(store)
   const controller = new SyncController({
     collections: REGISTRY,
+    syncStatus: createSyncStatusStore(),
     sync: { pollMs: 500, retryMs: 500 }
   })
   controllers.push(controller)
@@ -260,10 +258,14 @@ describe('plaintext-collection sync against was-teaching-server', () => {
       })
     ).rejects.toThrow(/not declared/)
 
-    // The app-facing entity-store verb, end-to-end through the process-wide
-    // holders: key routing, the GET filter, and the payload mapping.
-    setLocalStore(stores[0]!)
-    setRemoteStore(remoteStore)
+    // The app-facing entity-store verb, end-to-end through the storage
+    // context: key routing, the GET filter, and the payload mapping.
+    const queryContext = new StorageContext({
+      registry: {},
+      writerId: 'test-writer'
+    })
+    queryContext.attachStore(stores[0]!)
+    queryContext.attachRemoteStore(remoteStore)
     try {
       const posts = createEntityStore<PostDoc>('posts')
       const viaStore = await posts
@@ -271,8 +273,9 @@ describe('plaintext-collection sync against was-teaching-server', () => {
         .query({ equals: { title: post.title } })
       expect(viaStore).toEqual({ docs: [post], hasMore: false })
     } finally {
-      clearLocalStore()
-      clearRemoteStore()
+      queryContext.detachStore()
+      queryContext.detachRemoteStore()
+      deactivateStorageContext(queryContext)
     }
   }, 60000)
 
@@ -312,16 +315,21 @@ describe('plaintext-collection sync against was-teaching-server', () => {
       json: { type: 'PublicCanRead' }
     })
 
-    // The root helper routes the logical key through the process-wide holders;
-    // it must agree with the remote store's own composition.
-    setLocalStore(store)
-    setRemoteStore(remoteStore)
+    // The root helper routes the logical key through the storage context; it
+    // must agree with the remote store's own composition.
+    const urlContext = new StorageContext({
+      registry: {},
+      writerId: 'test-writer'
+    })
+    urlContext.attachStore(store)
+    urlContext.attachRemoteStore(remoteStore)
     let url: string
     try {
       url = publicUrlFor({ collectionKey: 'posts', id: shared.id })
     } finally {
-      clearLocalStore()
-      clearRemoteStore()
+      urlContext.detachStore()
+      urlContext.detachRemoteStore()
+      deactivateStorageContext(urlContext)
     }
     expect(url).toBe(
       remoteStore.publicUrlFor({ collectionId: PUBLIC_ID, id: shared.id })

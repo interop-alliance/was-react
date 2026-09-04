@@ -77,28 +77,13 @@ import {
   type LocalWipeReport,
   type WipeTargets
 } from './localWipe.js'
-import {
-  clearLocalStore,
-  clearRemoteStore,
-  getWriterId,
-  hasStore,
-  requireStore,
-  requireWriterId,
-  setLocalStore,
-  setRemoteStore,
-  setWriterId
-} from '../storage/storageManager.js'
-import {
-  cancelScheduledRehydrates,
-  clearAllEntityStores,
-  hydrateAll,
-  patchFromChange
-} from '../storage/rehydrate.js'
+import { activateStorageContext, hasStore } from '../storage/storageManager.js'
+import { StorageContext } from '../storage/storageContext.js'
+import { getWriterId } from '../storage/writerId.js'
 import { mergeAdopted } from '../storage/adopt.js'
 import { startWasSync } from '../storage/wasSync.js'
 import { errorMessage } from '../sync/index.js'
 import { SyncController } from '../storage/syncController.js'
-import { useSyncStatusStore } from '../storage/syncStatusStore.js'
 
 /**
  * The four session states:
@@ -138,6 +123,14 @@ export interface AuthState {
    * is an attribution label, never an identity.
    */
   writerId: string
+  /**
+   * This session's storage context: the open replica, the remote store, the
+   * writer id the write verbs stamp with, and the sync status store, all
+   * scoped to this session store rather than to the process. Set once at
+   * creation and never replaced; the `useSyncStatus` hook subscribes to its
+   * `syncStatus` store through the provider.
+   */
+  storageContext: StorageContext
   /**
    * The current login phase, for the login page's progress line, and the single
    * source of truth for "a Login With Wallet flow is in flight" (non-`null`
@@ -290,14 +283,23 @@ export function createAuthStore({
   const onboarding = config.onboarding ?? DEFAULT_ONBOARDING
   // Resolve the per-install LWW writer id ONCE, honoring the configured
   // localStorage prefix, so every stamp -- the app's own writes and the
-  // adoption repair -- carries the same attribution identity. Installing it
-  // here, before any replica opens, is what lets the write verbs stamp.
+  // adoption repair -- carries the same attribution identity. It lives on the
+  // session's storage context, which is made the active one here, before any
+  // replica opens, so the write verbs can stamp from the start. Not while
+  // another session's replica is still attached, though: a keyed provider
+  // remount renders the new provider (and so runs this factory) before the
+  // old one's unmount cleanup has torn its session down, and throwing here
+  // would throw inside a React render. That session keeps the pointer, and
+  // this one fails at its own boot's attach instead.
   const writerId = getWriterId({
     ...(config.storageKeyPrefix !== undefined && {
       storageKeyPrefix: config.storageKeyPrefix
     })
   })
-  setWriterId(writerId)
+  const storageContext = new StorageContext({ registry, writerId })
+  if (!hasStore()) {
+    activateStorageContext(storageContext)
+  }
   const sessionStore =
     seedStore ?? createSeedStore({ dbName: `${dbName}-session` })
   // The anonymous-seed persistence for `local` mode: only a raw 32-byte seed,
@@ -442,16 +444,17 @@ export function createAuthStore({
     const { controllerDid, zcapClient, keyAgreementKey, keyResolver } = identity
     controller = new SyncController({
       collections: config.collections,
+      syncStatus: storageContext.syncStatus,
       ...(config.sync && { sync: config.sync })
     })
     const { remoteStore, sharedCollections } = await startWasSync({
       parsed,
       zcapClient,
       collections: config.collections,
-      localStore: requireStore(),
+      localStore: storageContext.requireStore(),
       syncController: controller,
       onRemoteChange: (key, event) =>
-        void patchFromChange(registry, key, event),
+        void storageContext.patchFromChange(key, event),
       ...(config.sharedCollections && {
         sharedCollections: config.sharedCollections
       }),
@@ -465,7 +468,7 @@ export function createAuthStore({
           ),
       ...(knownDescriptors && { knownDescriptors })
     })
-    setRemoteStore(remoteStore)
+    storageContext.attachRemoteStore(remoteStore)
     store.setState({ sharedCollections })
   }
 
@@ -558,14 +561,14 @@ export function createAuthStore({
     // The remote store belongs to the session that just stopped (a reconnect
     // re-grant installs a fresh one via `beginSync`). The shared-collection
     // readers hold that same store and its delegated zcaps, so they go with it.
-    clearRemoteStore()
+    storageContext.detachRemoteStore()
     store.setState({ sharedCollections: {} })
   }
 
   /**
    * Opens the encrypted replica under `identity` (its identity KAK encrypts
-   * every private collection; its controller DID names the database), installs
-   * it as the process-wide store, and hydrates every entity store.
+   * every private collection; its controller DID names the database), attaches
+   * it to the session's storage context, and hydrates every entity store.
    * Shared by `openLocal` and the connected activation. When `adopt` is given
    * (a connected activation following a merge login), the collected anonymous
    * payloads are LWW-merged in BEFORE the hydrate -- and before sync starts --
@@ -588,6 +591,12 @@ export function createAuthStore({
     adopt?: AdoptSource
     descriptors?: Record<string, CollectionEncryption>
   }): Promise<void> {
+    // Claim the active pointer BEFORE opening the replica: the claim is what
+    // throws while another session's replica is attached, and refusing before
+    // `LocalStore.init` leaves no freshly opened database behind (an open
+    // RxDB database that nothing would close also counts toward RxDB's
+    // process-wide open-collection cap). `attachStore` re-claims idempotently.
+    activateStorageContext(storageContext)
     const local = await LocalStore.init({
       keyAgreementKey: identity.keyAgreementKey,
       keyResolver: identity.keyResolver,
@@ -602,11 +611,15 @@ export function createAuthStore({
       ...(descriptors && { descriptors }),
       ...(storage && { storage })
     })
-    setLocalStore(local)
+    storageContext.attachStore(local)
     if (adopt) {
-      await mergeAdopted({ store: local, entities: adopt.entities })
+      await mergeAdopted({
+        store: local,
+        entities: adopt.entities,
+        writerId: storageContext.writerId
+      })
     }
-    await hydrateAll(registry)
+    await storageContext.hydrateAll()
   }
 
   /**
@@ -721,22 +734,27 @@ export function createAuthStore({
     deleteDb = false
   }: { deleteDb?: boolean } = {}): Promise<void> {
     disarmExpiryWatch()
-    cancelScheduledRehydrates()
+    // Detach first (cancelling the pending re-hydrates and retiring every
+    // in-flight consumer of this replica), then drain the controller, then
+    // close what was attached. The detach goes before the drain: stopping the
+    // controller awaits the in-flight sync cycle, and a re-hydrate debounced
+    // off a pull just before this would otherwise fire during that wait and
+    // query a replica about to close.
+    const local = storageContext.detachStore()
     await stopController()
-    if (hasStore()) {
+    if (local) {
       try {
         if (deleteDb) {
-          await requireStore().remove()
+          await local.remove()
         } else {
-          await requireStore().close()
+          await local.close()
         }
       } catch (err) {
         console.warn('Error tearing down the local store:', err)
       }
-      clearLocalStore()
     }
-    clearAllEntityStores(registry)
-    useSyncStatusStore.getState().reset()
+    storageContext.clearEntityStores()
+    storageContext.syncStatus.getState().reset()
   }
 
   /**
@@ -1072,6 +1090,7 @@ export function createAuthStore({
       status: 'boot',
       onboarding,
       writerId,
+      storageContext,
       phase: null,
       error: null,
       controllerDid: null,
@@ -1280,38 +1299,41 @@ export function createAuthStore({
             targets,
             ...(storage && { storage })
           })
+          // The persisted id is gone; mint the fresh in-memory one the write
+          // verbs stamp under from here on, and let the displayed value follow.
+          const writerId = storageContext.resetWriterId()
           await openLocal()
-          // The cleared id is gone from localStorage; the write verbs stamp
-          // under the fresh in-memory one, so the displayed value follows it.
-          set({
-            phase: null,
-            reconnecting: false,
-            writerId: requireWriterId()
-          })
+          set({ phase: null, reconnecting: false, writerId })
           return report
         }),
 
       hasLocalData: async () => {
-        if (get().status !== 'local' || !hasStore()) {
+        if (get().status !== 'local') {
           return false
         }
+        // This probe runs off the serialized boot/destroy lifecycle chain (the
+        // login page calls it while in `local`), so a concurrent provider
+        // unmount can close the replica mid-read; `whileAttached` reports that
+        // as `undefined`, read as "no data". A count that fails against a
+        // replica still attached (a corrupt collection, an IndexedDB error)
+        // is warned about and read the same way: `false` only skips the
+        // adoption prompt, and login's `'merge'` default still collects
+        // (through a fresh handle) whatever exists, so the probe never rejects
+        // into a login-button click handler. Counted in parallel: this runs
+        // on that click, so the probe costs one round of counts rather than
+        // one per collection.
+        let counts: number[] | undefined
         try {
-          // Counted in parallel: this runs on a login-button click, so the
-          // probe costs one round of counts rather than one per collection.
-          const counts = await Promise.all(
-            config.collections.map(({ key }) =>
-              requireStore().countEntities(key)
+          counts = await storageContext.whileAttached(local =>
+            Promise.all(
+              config.collections.map(({ key }) => local.countEntities(key))
             )
           )
-          return counts.some(count => count > 0)
-        } catch {
-          // A defensive guard: this probe runs off the serialized boot/destroy
-          // lifecycle chain (the login page calls it while in `local`), so a
-          // concurrent provider unmount could close the holder mid-read. `false`
-          // only skips the adoption prompt, and login's `'merge'` default still
-          // collects (through a fresh handle) whatever exists.
+        } catch (err) {
+          console.warn('Could not probe the local replica for data:', err)
           return false
         }
+        return counts?.some(count => count > 0) ?? false
       },
 
       notifyAccessExpired: () => {

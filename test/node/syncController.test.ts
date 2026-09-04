@@ -11,14 +11,15 @@
  *
  * @vitest-environment jsdom
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   SyncController,
   isAuthError
 } from '../../src/storage/syncController.js'
 import {
+  createSyncStatusStore,
   deriveSyncRollup,
-  useSyncStatusStore
+  type SyncStatusStore
 } from '../../src/storage/syncStatusStore.js'
 import { WasSyncAuthError } from '../../src/sync/index.js'
 import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
@@ -46,14 +47,22 @@ function fakeRemoteStore(capabilityFor: (id: string) => object | undefined): {
   return { remoteStore, collectionCapability }
 }
 
+let syncStatus: SyncStatusStore
+
+beforeEach(() => {
+  syncStatus = createSyncStatusStore()
+})
+
 afterEach(() => {
-  useSyncStatusStore.getState().reset()
   vi.restoreAllMocks()
 })
 
 describe('SyncController stop-then-start latch', () => {
   it('never starts after stop() (stop is terminal)', async () => {
-    const controller = new SyncController({ collections: COLLECTIONS })
+    const controller = new SyncController({
+      collections: COLLECTIONS,
+      syncStatus
+    })
     // A logout stops the controller before the bootstrap ever calls start().
     await controller.stop()
 
@@ -67,7 +76,7 @@ describe('SyncController stop-then-start latch', () => {
     // The latch short-circuits before any per-collection wiring runs.
     expect(collectionCapability).not.toHaveBeenCalled()
     expect(rxCollection).not.toHaveBeenCalled()
-    expect(useSyncStatusStore.getState().statuses).toEqual({})
+    expect(syncStatus.getState().statuses).toEqual({})
   })
 })
 
@@ -127,6 +136,7 @@ describe('SyncController failed bring-up', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const controller = new SyncController({
       collections: COLLECTIONS,
+      syncStatus,
       sync: { pollMs: 0 }
     })
     const { remoteStore } = fakeRemoteStore(() => ({}))
@@ -145,7 +155,7 @@ describe('SyncController failed bring-up', () => {
 
     // Every configured collection reads as 'error', so the rollup reports the
     // failure rather than "Local only".
-    const { statuses } = useSyncStatusStore.getState()
+    const { statuses } = syncStatus.getState()
     expect(statuses.notes).toBe('error')
     expect(deriveSyncRollup(Object.values(statuses)).state).toBe('error')
 
@@ -162,6 +172,7 @@ describe('SyncController uncovered-collection skip', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const controller = new SyncController({
       collections: COLLECTIONS,
+      syncStatus,
       // Disable the poll timer so the test leaves no interval behind.
       sync: { pollMs: 0 }
     })
@@ -174,7 +185,7 @@ describe('SyncController uncovered-collection skip', () => {
     })
 
     // The uncovered collection is flagged and never wired to a replication.
-    expect(useSyncStatusStore.getState().statuses.notes).toBe('error')
+    expect(syncStatus.getState().statuses.notes).toBe('error')
     expect(rxCollection).not.toHaveBeenCalled()
     expect(warn).toHaveBeenCalled()
 

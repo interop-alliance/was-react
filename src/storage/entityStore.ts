@@ -22,6 +22,9 @@
  * local writes stay immediate so a single edit is snappy.
  */
 import { create, type UseBoundStore, type StoreApi } from 'zustand'
+// The verbs resolve the ACTIVE session's context on every call rather than
+// capturing one: an entity store is created at module level, before any
+// session exists, and outlives every session it serves.
 import { requireStore, requireRemoteStore, stampLww } from './storageManager.js'
 import { lwwFields, remotePayloadWins } from '../sync/lww.js'
 

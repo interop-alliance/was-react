@@ -24,7 +24,6 @@
  */
 import { lwwFields, remotePayloadWins } from '../sync/lww.js'
 import type { LocalStore } from './localStore.js'
-import { requireWriterId } from './storageManager.js'
 
 /**
  * Merges the collected anonymous-replica payloads into `store` (the already
@@ -41,14 +40,18 @@ import { requireWriterId } from './storageManager.js'
  * @param options.store {LocalStore}   the open connected replica
  * @param options.entities {Record<string, Array<{ id: string }>>}   decrypted
  *   payloads per collection key, as collected from the anonymous replica
+ * @param options.writerId {string}   the session's writer id, stamped onto
+ *   adopted payloads that carry no LWW fields
  * @returns {Promise<void>}
  */
 export async function mergeAdopted({
   store,
-  entities
+  entities,
+  writerId
 }: {
   store: LocalStore
   entities: Record<string, Array<{ id: string }>>
+  writerId: string
 }): Promise<void> {
   let stamp: { updatedAt: string; writerId: string } | null = null
   // Collections are separate RxDB collections and each logical uuid appears at
@@ -66,7 +69,7 @@ export async function mergeAdopted({
           if (!adoptedLww) {
             stamp ??= {
               updatedAt: new Date().toISOString(),
-              writerId: requireWriterId()
+              writerId
             }
             adopted = { ...payload, ...stamp }
             adoptedLww = stamp

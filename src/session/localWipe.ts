@@ -34,7 +34,7 @@
 import type { RxStorage } from 'rxdb/plugins/core'
 import { DEFAULT_STORAGE_KEY_PREFIX } from '../config.js'
 import { LocalStore, dbNameForController } from '../storage/localStore.js'
-import { clearWriterId } from '../storage/storageManager.js'
+import { clearPersistedWriterId } from '../storage/writerId.js'
 
 /**
  * Every durable local target of a wipe, derived up front.
@@ -294,7 +294,7 @@ export async function executeLocalWipe({
   }
 
   if (targets.storageKeyPrefix !== null) {
-    clearWriterId({ storageKeyPrefix: targets.storageKeyPrefix })
+    clearPersistedWriterId({ storageKeyPrefix: targets.storageKeyPrefix })
   }
 
   const remaining = await listDatabaseNames(idb)

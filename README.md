@@ -537,9 +537,10 @@ Hooks:
 - **Status.** `useSyncStatus()` rolls the per-collection replication states up
   to an aggregate: `offline` (no replication running / local-only), or
   `error > syncing > synced`. The `SyncStatusChip` MUI component renders it. The
-  underlying `useSyncStatusStore().statuses` map is keyed by the registry's
-  logical collection `key`, like every other layer (two entries may share one
-  WAS collection `id`, so the id is not a unique status key).
+  underlying per-session status store (`storageContext.syncStatus` on the auth
+  store's state) keys its `statuses` map by the registry's logical collection
+  `key`, like every other layer (two entries may share one WAS collection `id`,
+  so the id is not a unique status key).
 
 ## Entry points
 

@@ -4,12 +4,10 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import type { LocalStore } from './localStore.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'
+import { StorageContext } from './storageContext.js'
 import {
-  setLocalStore,
-  clearLocalStore,
-  setRemoteStore,
-  clearRemoteStore,
-  setWriterId
+  activateStorageContext,
+  deactivateStorageContext
 } from './storageManager.js'
 import { createEntityStore } from './entityStore.js'
 
@@ -32,14 +30,18 @@ function flushMicrotasks(): Promise<void> {
   return Promise.resolve()
 }
 
+let context: StorageContext
+
 beforeEach(() => {
-  // The persisted write verbs stamp from the session's resolved writer id.
-  setWriterId(WRITER_ID)
+  // The persisted write verbs stamp from the active context's writer id.
+  context = new StorageContext({ registry: {}, writerId: WRITER_ID })
+  activateStorageContext(context)
 })
 
 afterEach(() => {
-  clearLocalStore()
-  clearRemoteStore()
+  context.detachStore()
+  context.detachRemoteStore()
+  deactivateStorageContext(context)
 })
 
 describe('createEntityStore', () => {
@@ -176,7 +178,7 @@ describe('createEntityStore', () => {
   it('applies interactive local writes immediately (unbatched)', async () => {
     const inserted: Array<[string, LwwNote]> = []
     const store = createEntityStore<LwwNote>('notes')
-    setLocalStore({
+    context.attachStore({
       insertEntity: async (key: string, doc: LwwNote) => {
         inserted.push([key, doc])
       }
@@ -194,7 +196,7 @@ describe('createEntityStore', () => {
   it('upsert persists through upsertEntity and sets the doc immediately', async () => {
     const upserted: Array<[string, LwwNote]> = []
     const store = createEntityStore<LwwNote>('notes')
-    setLocalStore({
+    context.attachStore({
       upsertEntity: async (key: string, doc: LwwNote) => {
         upserted.push([key, doc])
       }
@@ -220,7 +222,7 @@ describe('createEntityStore', () => {
     const persist = async (_key: string, doc: LwwNote) => {
       persisted.push(doc)
     }
-    setLocalStore({
+    context.attachStore({
       insertEntity: persist,
       updateEntity: persist,
       upsertEntity: persist
@@ -246,7 +248,7 @@ describe('createEntityStore', () => {
   it('overwrites caller-supplied LWW fields with a fresh stamp', async () => {
     const persisted: LwwNote[] = []
     const store = createEntityStore<LwwNote>('notes')
-    setLocalStore({
+    context.attachStore({
       insertEntity: async (_key: string, doc: LwwNote) => {
         persisted.push(doc)
       }
@@ -265,7 +267,7 @@ describe('createEntityStore', () => {
 
   it('query routes key to WAS id and maps the page to payloads', async () => {
     const store = createEntityStore<Note>('notes')
-    setLocalStore({
+    context.attachStore({
       collectionConfig: (key: string) => ({
         key,
         id: 'shared-notes',
@@ -274,7 +276,7 @@ describe('createEntityStore', () => {
       })
     } as unknown as LocalStore)
     const queries: unknown[] = []
-    setRemoteStore({
+    context.attachRemoteStore({
       queryCollectionByEquality: async (query: unknown) => {
         queries.push(query)
         return {
@@ -307,7 +309,7 @@ describe('createEntityStore', () => {
 
   it('query throws while no wallet-connected session holds a remote store', async () => {
     const store = createEntityStore<Note>('notes')
-    setLocalStore({
+    context.attachStore({
       collectionConfig: () => ({ id: 'shared-notes' })
     } as unknown as LocalStore)
 

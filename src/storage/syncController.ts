@@ -45,7 +45,7 @@ import {
 } from '../config.js'
 import type { LocalStore } from './localStore.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'
-import { useSyncStatusStore } from './syncStatusStore.js'
+import type { SyncStatusStore } from './syncStatusStore.js'
 
 /**
  * The subset of an RxJS `Subscription` we hold (rxjs is a transitive dep).
@@ -106,6 +106,7 @@ export function isAuthError(err: unknown): boolean {
 export class SyncController {
   #collections: WasCollectionConfig[]
   #sync: WasSyncConfig
+  #syncStatus: SyncStatusStore
   #replications: Array<{
     state: RxReplicationState<SyncedDoc, SyncCheckpoint>
     subscriptions: Unsubscribable[]
@@ -115,14 +116,24 @@ export class SyncController {
   #started = false
   #stopped = false
 
+  /**
+   * @param options {object}
+   * @param options.collections {WasCollectionConfig[]}
+   * @param options.syncStatus {SyncStatusStore}   the session's per-collection
+   *   status store this controller reports into
+   * @param [options.sync] {WasSyncConfig}
+   */
   constructor({
     collections,
+    syncStatus,
     sync
   }: {
     collections: WasCollectionConfig[]
+    syncStatus: SyncStatusStore
     sync?: WasSyncConfig
   }) {
     this.#collections = collections
+    this.#syncStatus = syncStatus
     this.#sync = sync ?? {}
   }
 
@@ -161,7 +172,7 @@ export class SyncController {
       return
     }
     this.#started = true
-    const setStatus = useSyncStatusStore.getState().setStatus
+    const setStatus = this.#syncStatus.getState().setStatus
     const batchSize = this.#sync.batchSize
     const retryMs = this.#sync.retryMs
     const pollMs = this.#sync.pollMs ?? DEFAULT_SYNC_POLL_MS
@@ -304,7 +315,7 @@ export class SyncController {
     // bootstrap) sees the controller as terminally stopped and bails.
     this.#stopped = true
     await this.#teardownReplications()
-    useSyncStatusStore.getState().reset()
+    this.#syncStatus.getState().reset()
     this.#started = false
   }
 }

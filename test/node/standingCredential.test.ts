@@ -73,7 +73,6 @@ import {
 import { startWasSync } from '../../src/storage/wasSync.js'
 import { isAuthError } from '../../src/storage/syncController.js'
 import { requireStore } from '../../src/storage/storageManager.js'
-import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import {
   createDocCipher,
   createUnprovisionedDocCipher,
@@ -414,7 +413,6 @@ afterEach(async () => {
   while (liveStores.length > 0) {
     await liveStores.pop()!.getState().destroy()
   }
-  useSyncStatusStore.getState().reset()
   vi.restoreAllMocks()
 })
 

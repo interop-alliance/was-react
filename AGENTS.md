@@ -32,7 +32,7 @@ The spec's term for the wire artifact is "app-key credential"; use it in prose.
 `ParsedSeedCredential`, and the file `src/identity/seedCredential.ts`) -- keep
 those names, do not spread the phrase into new prose or new APIs.
 
-`writerId` (`getWriterId`, `setWriterId` / `requireWriterId`,
+`writerId` (`getWriterId`, `StorageContext.writerId` / `requireWriterId`,
 `useSession().writerId`, the LWW payload field, and the `<prefix>writerId`
 localStorage key) is an unkeyed, clearable, unrecoverable attribution label
 whose only jobs are history attribution and breaking last-write-wins ties. It is
@@ -40,8 +40,9 @@ never an identity. The keyed client identity of an (app, user) pair is the
 app-key credential's subject DID. Do not call either one a "device": one machine
 hosts many clients, and neither concept is tied to hardware.
 
-Apps never stamp it: `stampLww` in `src/storage/storageManager.ts` is the one
-place `updatedAt` / `writerId` are minted, and the entity store's persisted
+Apps never stamp it: `StorageContext.stampLww` (`src/storage/storageContext.ts`,
+reached through the `stampLww` facade in `src/storage/storageManager.ts`) is the
+one place `updatedAt` / `writerId` are minted, and the entity store's persisted
 write verbs call it on every write. `useSession().writerId` is exposed for
 display and debugging, not as a value a caller has to thread into payloads.
 
@@ -191,9 +192,9 @@ Rules:
   the top of `_spec/ROADMAP.md` is the sole source of the next id: filing an
   item takes `n` and rewrites the line to `n + 1`, in the same edit. Never
   derive the next id by scanning the roadmap; the highest id usually lives in
-  `_spec/archive/archived-roadmap.md`, not in the open roadmap. If the
-  counter's id already appears in either file, the counter is stale: reset it
-  to one past the highest id across both files, then take it.
+  `_spec/archive/archived-roadmap.md`, not in the open roadmap. If the counter's
+  id already appears in either file, the counter is stale: reset it to one past
+  the highest id across both files, then take it.
 - Every non-draft item needs acceptance criteria before it may be moved to
   `in-progress`.
 - Statuses are edited in place (change the `status:` field); acceptance

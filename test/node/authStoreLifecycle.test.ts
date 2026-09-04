@@ -7,14 +7,14 @@
  * `boot` -> `destroy` -> `boot` while the first boot is still opening the
  * replica. Before serialization, the first boot's continuations (open, hydrate,
  * start sync) raced the destroy's teardown: an aborted boot could resurrect a
- * torn-down session, install a closed/duplicate replica as the process-wide
- * holder, or hydrate against a store that was being torn down.
+ * torn-down session, attach a closed/duplicate replica to the storage context,
+ * or hydrate against a store that was being torn down.
  *
  * These tests drive that interleaving deterministically with an INJECTED
  * storage whose first RxDB open is deferrable: parking a boot inside
- * `LocalStore.init` (before it installs the holder) lets a `destroy` -- and then
- * a second `boot` -- run at a precisely controlled point, exactly the window the
- * provider's mount/cleanup/mount effect opens.
+ * `LocalStore.init` (before it attaches the replica to the storage context)
+ * lets a `destroy` -- and then a second `boot` -- run at a precisely controlled
+ * point, exactly the window the provider's mount/cleanup/mount effect opens.
  *
  * @vitest-environment node
  */
@@ -38,7 +38,6 @@ import {
   type SeedStore
 } from '../../src/identity/seedStore.js'
 import { hasStore, requireStore } from '../../src/storage/storageManager.js'
-import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
 // Inert replication: the lifecycle logic runs without any network machinery.
@@ -69,9 +68,10 @@ function newSeedStore(): SeedStore {
 
 /**
  * Wraps the real Dexie storage so the FIRST `createStorageInstance` call (the
- * first boot's `LocalStore.init`, before it installs the holder) parks on a
- * release gate. `entered` resolves once the boot is parked; `release()` lets it
- * proceed. Every later open passes straight through.
+ * first boot's `LocalStore.init`, before it attaches the replica to the
+ * storage context) parks on a release gate. `entered` resolves once the boot
+ * is parked; `release()` lets it proceed. Every later open passes straight
+ * through.
  */
 function gatedStorage(): {
   storage: RxStorage<unknown, unknown>
@@ -122,7 +122,6 @@ afterEach(async () => {
   while (liveStores.length > 0) {
     await liveStores.pop()!.getState().destroy()
   }
-  useSyncStatusStore.getState().reset()
   vi.restoreAllMocks()
 })
 
@@ -132,8 +131,8 @@ describe('serialized boot/destroy lifecycle', () => {
     const { storage, entered, release } = gatedStorage()
     const store = makeStore(config, newSeedStore(), storage)
 
-    // Mount: boot begins and parks inside `LocalStore.init`, before it installs
-    // the process-wide holder.
+    // Mount: boot begins and parks inside `LocalStore.init`, before it
+    // attaches the replica to the storage context.
     const booting = store.getState().boot()
     await entered
 

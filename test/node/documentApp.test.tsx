@@ -5,11 +5,12 @@
  * Tier-1 facade tests (jsdom): `defineDocumentApp` builds a one-collection
  * local-first config plus a singleton-document registry, and `useAppDocument`
  * reads/writes the document through the storage seam. The LocalStore is a
- * Map-backed fake installed via `setLocalStore` (the repo convention: real
- * encryption never runs under jsdom -- node:crypto Buffers fail @scure/base's
- * byte check once jsdom swaps the global Uint8Array -- so the encrypted
- * round trip lives in the node-environment localStore tests and the example
- * apps' Playwright tiers). Covers the initial-value contract, LWW stamping on
+ * Map-backed fake attached to the session store's own storage context (the
+ * repo convention: real encryption never runs under jsdom -- node:crypto
+ * Buffers fail @scure/base's byte check once jsdom swaps the global
+ * Uint8Array -- so the encrypted round trip lives in the node-environment
+ * localStore tests and the example apps' Playwright tiers). Covers the
+ * initial-value contract, LWW stamping on
  * patch and updater writes, registry hydration, the export/import round trip
  * (including rejection of non-export files), and the connect/disconnect
  * wiring.
@@ -30,10 +31,6 @@ import {
   createAuthStore,
   type WasAuthStore
 } from '../../src/session/authStore.js'
-import {
-  setLocalStore,
-  clearLocalStore
-} from '../../src/storage/storageManager.js'
 import type { LocalStore } from '../../src/storage/localStore.js'
 
 interface SaveFile {
@@ -55,7 +52,7 @@ const INITIAL: SaveFile = { score: 0, playerName: 'anonymous' }
  */
 function fakeLocalStore() {
   const rows = new Map<string, StoredSave>()
-  const store = {
+  return {
     rows,
     upsertEntity: async (_key: string, payload: StoredSave) => {
       rows.set(payload.id, payload)
@@ -65,13 +62,14 @@ function fakeLocalStore() {
       return first ?? null
     }
   }
-  setLocalStore(store as unknown as LocalStore)
-  return store
 }
+
+const liveStores: WasAuthStore[] = []
 
 /**
  * A fresh facade + session store, driven to `local` directly (no boot: the
- * fake storage layer stands in for the replica a real boot would open).
+ * fake storage layer stands in for the replica a real boot would open),
+ * with the fake attached to THIS store's own storage context.
  */
 function localApp() {
   const app = defineDocumentApp<SaveFile>({
@@ -81,8 +79,11 @@ function localApp() {
     appUrl: 'http://localhost:5173/test-app'
   })
   const store = createAuthStore({ config: app.config, registry: app.registry })
+  liveStores.push(store)
+  const fake = fakeLocalStore()
+  store.getState().storageContext.attachStore(fake as unknown as LocalStore)
   store.setState({ status: 'local' })
-  return { app, store }
+  return { app, store, fake }
 }
 
 /**
@@ -118,7 +119,9 @@ function wrapperFor(store: WasAuthStore) {
 
 afterEach(() => {
   cleanup()
-  clearLocalStore()
+  while (liveStores.length > 0) {
+    liveStores.pop()!.getState().storageContext.detachStore()
+  }
 })
 
 describe('defineDocumentApp', () => {
@@ -137,8 +140,7 @@ describe('defineDocumentApp', () => {
   })
 
   it('hydrates the singleton winner into the document store', async () => {
-    const fake = fakeLocalStore()
-    const { app, store } = localApp()
+    const { app, store, fake } = localApp()
     fake.rows.set('main', {
       id: 'main',
       updatedAt: '2026-07-19T00:00:00.000Z',
@@ -156,7 +158,6 @@ describe('defineDocumentApp', () => {
 
 describe('useAppDocument', () => {
   it('hides the doc during boot, then serves initial and merges writes', async () => {
-    fakeLocalStore()
     const { app, store } = localApp()
     store.setState({ status: 'boot' })
     const { result } = renderHook(() => app.useAppDocument(), {
@@ -188,8 +189,7 @@ describe('useAppDocument', () => {
   })
 
   it('persists under the fixed id with fresh LWW stamps on every write', async () => {
-    const fake = fakeLocalStore()
-    const { app, store } = localApp()
+    const { app, store, fake } = localApp()
     const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
     })
@@ -211,7 +211,6 @@ describe('useAppDocument', () => {
   })
 
   it('round-trips the document through exportFile / importFile', async () => {
-    fakeLocalStore()
     const { app, store } = localApp()
     const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
@@ -243,7 +242,6 @@ describe('useAppDocument', () => {
   })
 
   it('rejects a file that is not a document export', async () => {
-    fakeLocalStore()
     const { app, store } = localApp()
     const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)
@@ -264,7 +262,6 @@ describe('useAppDocument', () => {
   })
 
   it('wires connect/disconnect to the session login/logout', () => {
-    fakeLocalStore()
     const { app, store } = localApp()
     const { result } = renderHook(() => app.useAppDocument(), {
       wrapper: wrapperFor(store)

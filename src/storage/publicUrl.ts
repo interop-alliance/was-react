@@ -6,9 +6,9 @@
  * logical collection key and a document id, composes the stable,
  * world-readable resource URL of that document in a public (plaintext)
  * collection. It routes the logical key to its WAS collection id through the
- * process-wide holders exactly as {@link EntityStore.query} does, so it
- * requires an open {@link LocalStore} and a wallet-connected session (the
- * remote-store holder), and fails closed on non-public collections.
+ * active session's storage context exactly as {@link EntityStore.query} does,
+ * so it requires an open {@link LocalStore} and a wallet-connected session
+ * (a remote store), and fails closed on non-public collections.
  */
 import { requireStore, requireRemoteStore } from './storageManager.js'
 

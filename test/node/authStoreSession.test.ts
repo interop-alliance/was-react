@@ -38,7 +38,6 @@ import { requestGrants } from '../../src/auth/loginFlow.js'
 import { parseGrants } from '../../src/grants.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
 import { hasStore } from '../../src/storage/storageManager.js'
-import { useSyncStatusStore } from '../../src/storage/syncStatusStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
 // Replace the live replication bootstrap with an inert resolver.
@@ -122,7 +121,6 @@ afterEach(async () => {
   while (liveStores.length > 0) {
     await liveStores.pop()!.getState().destroy()
   }
-  useSyncStatusStore.getState().reset()
   vi.restoreAllMocks()
 })
 
