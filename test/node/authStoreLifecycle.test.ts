@@ -22,7 +22,7 @@ import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { IDBFactory } from 'fake-indexeddb'
 import { getRxStorageDexie } from 'rxdb/plugins/storage-dexie'
-import type { RxStorage } from 'rxdb/plugins/core'
+import { dbCount, type RxStorage } from 'rxdb/plugins/core'
 import type { IZcap } from '@interop/data-integrity-core'
 import {
   createAuthStore,
@@ -38,6 +38,10 @@ import {
   type SeedStore
 } from '../../src/identity/seedStore.js'
 import { hasStore, requireStore } from '../../src/storage/storageManager.js'
+import {
+  dbNameForController,
+  LocalStore
+} from '../../src/storage/localStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
 // Inert replication: the lifecycle logic runs without any network machinery.
@@ -277,5 +281,53 @@ describe('serialized boot/destroy lifecycle', () => {
     const id = crypto.randomUUID()
     await requireStore().insertEntity('notes', { id, title: 'after-logout' })
     expect(await requireStore().listEntities('notes')).toHaveLength(1)
+  })
+
+  it('a session that loses the attach-time claim closes the replica it opened', async () => {
+    // Two providers booting at once (or a keyed remount overlapping the old
+    // provider's teardown): both pass the creation-time claim, since neither
+    // has a replica attached yet, and both open a database. The second
+    // `attachStore` throws; the loser must close what it opened rather than
+    // leave an open RxDB database holding its IndexedDB connection.
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const openBefore = dbCount()
+    const loserConfig = baseConfig()
+    const { storage, entered, release } = gatedStorage()
+    const loser = makeStore(loserConfig, newSeedStore(), storage)
+    const winner = makeStore(baseConfig(), newSeedStore())
+
+    // The loser is parked inside `LocalStore.init`, past the creation-time
+    // claim, while the winner boots to completion and attaches its replica.
+    const losing = loser.getState().boot()
+    await entered
+    await winner.getState().boot()
+    expect(winner.getState().status).toBe('local')
+    release()
+    await losing
+
+    // The loser's boot failed outright (the local fallback loses the same
+    // claim), so it never left `boot`; the winner's replica is the active one.
+    expect(loser.getState().status).toBe('boot')
+    expect(loser.getState().error).toMatch(/another storage context/i)
+    expect(hasStore()).toBe(true)
+
+    // Exactly one RxDB database is open: the winner's. A leaked loser replica
+    // would count here too (`closeDuplicates` hides it from a re-open probe,
+    // but not from the process-wide count the collection cap is charged to).
+    expect(dbCount()).toBe(openBefore + 1)
+
+    // And the loser's database is removable by name, as a later wipe needs.
+    const seed = await createSeedStore({
+      dbName: `${loserConfig.dbName}-anon`
+    }).loadSeed()
+    const identity = await deriveIdentity({ seed: seed! })
+    await expect(
+      LocalStore.removeDatabase({
+        dbName: dbNameForController({
+          dbName: loserConfig.dbName!,
+          controllerDid: identity.controllerDid
+        })
+      })
+    ).resolves.toBeUndefined()
   })
 })

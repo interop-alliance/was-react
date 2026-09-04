@@ -611,7 +611,19 @@ export function createAuthStore({
       ...(descriptors && { descriptors }),
       ...(storage && { storage })
     })
-    storageContext.attachStore(local)
+    try {
+      storageContext.attachStore(local)
+    } catch (err) {
+      // Two sessions can both pass the creation-time claim (neither had a
+      // replica attached yet) and both open a database; the attach-time claim
+      // is where the loser learns it lost. Nothing else holds `local`, so close
+      // it here, or the open database keeps its IndexedDB connection, counts
+      // toward RxDB's process-wide cap, and blocks a later `remove()`.
+      await local.close().catch((closeErr: unknown) => {
+        console.warn('Error closing the losing replica:', closeErr)
+      })
+      throw err
+    }
     if (adopt) {
       await mergeAdopted({
         store: local,

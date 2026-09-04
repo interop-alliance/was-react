@@ -1,5 +1,15 @@
 # @interop/was-react Changelog
 
+## 0.20.1 - TBD
+
+### Fixed
+
+- A session that loses the attach-time storage-context claim (two providers
+  booting at once, or a keyed remount overlapping the old provider's teardown)
+  now closes the replica it opened before failing, instead of leaving an open
+  RxDB database behind that held its IndexedDB connection and counted toward
+  RxDB's process-wide collection cap.
+
 ## 0.20.0 - 2026-09-04
 
 ### Changed
