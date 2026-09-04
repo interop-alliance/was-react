@@ -17,12 +17,12 @@
   to on this class of collection.
 - Test coverage for connecting to a wallet account anchored by a standing unlock
   credential with no enrolled durable clients: a deeper delegation chain, an
-  ephemeral, non-stable presentation holder, a clamped grant expiry, a mid-life
-  authorization failure routing to `reconnect`, and a key epoch this app cannot
-  open degrading a shared read to a warn-and-skip and a descriptor-less private
-  collection to its fail-closed cipher. A wallet-composed counterpart case now
-  exercises the same annex-shaped grant against `@interop/wallet-core`'s real
-  request/response composition.
+  ephemeral, non-stable presentation holder, a grant expiry shortened to its
+  parent's, a mid-life authorization failure routing to `reconnect`, and a key
+  epoch this app cannot open degrading a shared read to a warn-and-skip and a
+  descriptor-less private collection to its fail-closed cipher. A
+  wallet-composed counterpart case now exercises the same annex-shaped grant
+  against `@interop/wallet-core`'s real request/response composition.
 
 ### Fixed
 

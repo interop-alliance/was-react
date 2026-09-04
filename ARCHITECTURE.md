@@ -153,7 +153,7 @@ reached again. Delete by known name, computed through `dbNameForController`,
 rather than relying on enumeration. Treat `indexedDB.databases()` as discovery
 and verification, not as the deletion gate, since some engines do not implement
 it; what a wipe could not confirm removed is reported on its `unverified` list
-rather than folded into a result that reads clean.
+rather than counted toward a result that reads clean.
 
 `clearLocalData()` resolves with that report (`LocalWipeReport`), and
 `useClearData()` passes it through unchanged.

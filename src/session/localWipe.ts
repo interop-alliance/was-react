@@ -19,7 +19,7 @@
  * - Treat `indexedDB.databases()` as discovery and verification, never as the
  *   deletion gate. An engine that does not implement it still gets every named
  *   database deleted; what it cannot confirm is reported as `unverified` rather
- *   than folded into an outcome that reads clean.
+ *   than counted toward an outcome that reads clean.
  *
  * What the prefix sweep reaches beyond the snapshot: anonymous replicas that
  * earlier versions of this library already orphaned, and the replicas of other

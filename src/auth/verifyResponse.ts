@@ -28,11 +28,16 @@
  *    server's decision. ARCHITECTURE.md's "Grant checks and the skip
  *    condition" section states that intent and its consequences.
  *
- * Note on holder binding: the wallet signs the VP as ITS holder DID (did:web
- * or the wallet's did:key) -- not as this app's controller DID, which never
- * leaves this app. The seed-to-identity binding is enforced instead by
- * `parseSeedCredential` (issuer === subject === DID derived from the embedded
- * seed) and by every grant's `controller` being the requested controller DID.
+ * Note on holder binding: for an ordinary DIDAuth request the wallet signs
+ * the VP as ITS holder DID -- did:webvh, did:web (the did:webvh log's
+ * projection id, same key), or did:key -- chosen by the wallet from the
+ * request's `acceptedMethods`. An App Connect response is pinned to the
+ * wallet client's did:key by construction, so it never dispatches on
+ * `acceptedMethods`. Either way the holder is not this app's controller DID,
+ * which never leaves this app. The seed-to-identity binding is enforced
+ * instead by `parseSeedCredential` (issuer === subject === DID derived from
+ * the embedded seed) and by every grant's `controller` being the requested
+ * controller DID.
  */
 import { verifyPresentation } from '@interop/verifier-core'
 import type {
