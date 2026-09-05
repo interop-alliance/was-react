@@ -8,29 +8,31 @@
   5xx) is no longer taken for "no encryption descriptor".
   `WasRemoteStore.readCollectionEncryption` answers `undefined` only for a
   not-found response or a description with no `encryption` member; any other
-  failure is retried once and then thrown, wrapped with the collection id.
-  Previously the failure read as an unprovisioned collection: the connected
-  replica opened it under the fail-closed placeholder cipher, the default merge
-  login then failed its adoption write and dropped the user back to `local` with
-  a spurious error, a returning login failed the same way on decrypt, and the
-  sync bootstrap's best-effort descriptor PUT could write a bare descriptor over
-  a roster it never read. Now the login-time read fails the connected activation
-  (falling back to `local` with the anonymous replica intact for a retry), the
-  sync bootstrap skips the affected collection for the session with a warning,
-  and the unknown-epoch refresh warns and leaves the cipher as it was.
+  failure is thrown, wrapped with the collection id. A login fails its connected
+  activation on it (falling back to `local` with the anonymous replica intact
+  for a retry), a hot restore opens that collection fail-closed and still lands
+  connected, the sync bootstrap skips the collection for the session with a
+  warning, and the unknown-epoch refresh warns and leaves the cipher as it was.
+- A transient failure of a collection's `/meta` read is no longer taken for "no
+  metadata". `WasRemoteStore.readCollectionMeta` answers `undefined` only for a
+  not-found response or a backend without metadata support (`501`); any other
+  failure is thrown, wrapped with the collection id, and the sync bootstrap's
+  blinded-index schema install warns and skips that collection.
+- Neither read retries on its own: the HTTP client underneath already retries
+  transient status codes and network errors, so a second retry layer only
+  multiplied the attempts and the delay before a failure surfaced.
 - A session that loses the attach-time storage-context claim (two providers
   booting at once, or a keyed remount overlapping the old provider's teardown)
   now closes the replica it opened before failing, instead of leaving an open
-  RxDB database behind that held its IndexedDB connection and counted toward
-  RxDB's process-wide collection cap.
-- Tearing a session down (`destroy()`, logout, clear-data, and the connected
-  activation's fallback to `local`) now releases the active storage-context
-  pointer when that session holds it. Previously nothing released it, so after a
-  provider unmount the facades (`hasStorageContext`, `stampLww`, `requireStore`,
-  the entity-store verbs) kept resolving the retired context, and on a keyed
-  provider remount they stamped the old session's writer id and wrote into a
-  replica about to be closed. They now throw until the next boot claims a live
-  context.
+  RxDB database behind.
+- `StorageContext.detachStore` now releases the active storage-context pointer
+  when that context holds it, so every teardown (`destroy()`, logout,
+  clear-data, the connected activation's fallback to `local`) releases it.
+  Previously nothing did, and after a provider unmount the facades kept
+  resolving the retired context; they now throw until the next boot claims a
+  live one.
+- A connected activation that fails and whose fallback to `local` also fails now
+  surfaces the activation's own error; the fallback's is warned about.
 
 ## 0.20.0 - 2026-09-04
 

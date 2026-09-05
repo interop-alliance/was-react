@@ -32,7 +32,12 @@ import type {
   IKeyResolver,
   IZcap
 } from '@interop/data-integrity-core'
-import { NotFoundError, WasClient, mapError } from '@interop/was-client'
+import {
+  NotFoundError,
+  NotImplementedError,
+  WasClient,
+  mapError
+} from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 import type { EncryptionDescriptorSource } from '@interop/wallet-core/descriptors'
@@ -89,11 +94,6 @@ type CollectionRouting = {
 }
 
 /**
- * The pause before a failed descriptor read is retried.
- */
-const DESCRIPTOR_RETRY_DELAY_MS = 500
-
-/**
  * Maps one configured index attribute name to the blinded-index attribute path
  * the EDV codec addresses it by. The codec walks the path from the stored
  * document's root, and a JSON payload is written as that document's `content`
@@ -107,27 +107,40 @@ function blindedAttribute(name: string): string {
 }
 
 /**
- * Runs one read, and on failure runs it once more after a short pause. A
- * not-found answer is final and is not retried: it is a stable fact about the
- * collection rather than a transient condition of the connection.
+ * Runs one read whose failure may mean "absent" rather than "unknown". An
+ * error `isAbsent` accepts answers `undefined`; any other failure is rethrown,
+ * wrapped with `description`, so the caller cannot mistake an unknown answer
+ * (a dropped connection, a 5xx) for an absent one. Retrying is not this
+ * layer's job: the HTTP client underneath already retries the transient
+ * status codes and network errors on every GET.
  *
- * @param read {() => Promise<T>}
- * @returns {Promise<T>}
+ * @param options {object}
+ * @param options.read {() => Promise<T>}
+ * @param options.isAbsent {(err: Error) => boolean}   which mapped errors mean
+ *   "absent"
+ * @param options.description {string}   what was being read, for the wrap
+ * @returns {Promise<T | undefined>}
  */
-async function retryOnce<T>(read: () => Promise<T>): Promise<T> {
+async function readOrAbsent<T>({
+  read,
+  isAbsent,
+  description
+}: {
+  read: () => Promise<T>
+  isAbsent: (err: Error) => boolean
+  description: string
+}): Promise<T | undefined> {
   try {
     return await read()
   } catch (err) {
     const mapped = mapError(err)
-    if (mapped instanceof NotFoundError) {
-      throw mapped
+    if (isAbsent(mapped)) {
+      return undefined
     }
-    await new Promise(resolve => setTimeout(resolve, DESCRIPTOR_RETRY_DELAY_MS))
-    try {
-      return await read()
-    } catch (retryErr) {
-      throw mapError(retryErr)
-    }
+    // The mapped (typed) error carries the caught one as its own `cause`, so
+    // the chain is intact; the typed one is what callers match on.
+    // eslint-disable-next-line preserve-caught-error
+    throw new Error(`Failed to read ${description}.`, { cause: mapped })
   }
 }
 
@@ -246,11 +259,11 @@ export class WasRemoteStore {
    * also how WAS answers an unauthorized read), or the description carries no
    * `encryption` member.
    *
-   * Any other failure (a dropped connection, a 5xx) is retried once and then
-   * rethrown, wrapped with the collection id. It must NOT read as "no
-   * descriptor": a caller that takes it for one opens the collection under the
-   * fail-closed placeholder cipher, and a correctly provisioned collection then
-   * fails its first write or decrypt for a network hiccup.
+   * Any other failure (a dropped connection, a 5xx) is thrown, wrapped with
+   * the collection id. It must NOT read as "no descriptor": a caller that takes
+   * it for one opens the collection under the fail-closed placeholder cipher,
+   * and a correctly provisioned collection then fails its first write or
+   * decrypt for a network hiccup.
    *
    * @param collectionId {string}   the WAS collection id
    * @returns {Promise<CollectionEncryption | undefined>}
@@ -262,30 +275,23 @@ export class WasRemoteStore {
     if (!capability) {
       return undefined
     }
-    const read = async (): Promise<CollectionEncryption | undefined> => {
-      const response = await this.was.request({
-        capability,
-        path: collectionPath(this.spaceId, collectionId),
-        method: 'GET'
-      })
-      const description = response.data as
-        { encryption?: CollectionEncryption } | undefined
-      return description?.encryption
-    }
-    try {
-      return await retryOnce(read)
-    } catch (err) {
-      // `retryOnce` rethrows typed: a not-found (which is also how WAS answers
-      // an unauthorized read) is the one outcome that genuinely means "no
-      // descriptor visible to this app".
-      if (err instanceof NotFoundError) {
-        return undefined
-      }
-      throw new Error(
-        `Failed to read the encryption descriptor of collection "${collectionId}".`,
-        { cause: err }
-      )
-    }
+    return await readOrAbsent({
+      read: async () => {
+        const response = await this.was.request({
+          capability,
+          path: collectionPath(this.spaceId, collectionId),
+          method: 'GET'
+        })
+        const description = response.data as
+          { encryption?: CollectionEncryption } | undefined
+        return description?.encryption
+      },
+      // A not-found (which is also how WAS answers an unauthorized read) is
+      // the one outcome that genuinely means "no descriptor visible to this
+      // app".
+      isAbsent: err => err instanceof NotFoundError,
+      description: `the encryption descriptor of collection "${collectionId}"`
+    })
   }
 
   /**
@@ -297,9 +303,13 @@ export class WasRemoteStore {
    * NOT `Collection.meta()`: that one DECODES `custom` to plaintext, which
    * `applyMeta` cannot consume.
    *
-   * Non-fatal like the descriptor read: answers `undefined` rather than
-   * throwing when no capability covers the collection, the read is unauthorized,
-   * the app is offline, or the backend has no metadata support.
+   * Answers `undefined` for exactly the outcomes that mean "no metadata": no
+   * capability covers the collection, the read answered not-found (which is
+   * also how WAS answers an unauthorized read), or the backend has no metadata
+   * support (`501`). Any other failure is thrown, wrapped with the collection
+   * id, like {@link readCollectionEncryption}: a dropped connection is an
+   * unknown answer, not an absent one, and a caller that took it for "no
+   * schema" would skip the blinded-index install over a guess.
    *
    * @param collectionId {string}   the WAS collection id
    * @returns {Promise<{ custom?: unknown } | undefined>}
@@ -311,17 +321,20 @@ export class WasRemoteStore {
     if (!capability) {
       return undefined
     }
-    try {
-      const response = await this.was.request({
-        capability,
-        path: collectionMeta(this.spaceId, collectionId),
-        method: 'GET'
-      })
-      const stored = response.data as { custom?: unknown } | undefined
-      return { custom: stored?.custom }
-    } catch {
-      return undefined
-    }
+    return await readOrAbsent({
+      read: async () => {
+        const response = await this.was.request({
+          capability,
+          path: collectionMeta(this.spaceId, collectionId),
+          method: 'GET'
+        })
+        const stored = response.data as { custom?: unknown } | undefined
+        return { custom: stored?.custom }
+      },
+      isAbsent: err =>
+        err instanceof NotFoundError || err instanceof NotImplementedError,
+      description: `the metadata of collection "${collectionId}"`
+    })
   }
 
   /**

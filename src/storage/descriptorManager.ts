@@ -41,6 +41,7 @@ export interface DescriptorManager {
     cached?: Record<string, CollectionEncryption>
     identity: IdentityAgents
     parsed: ParsedGrants
+    onReadFailure: 'reject' | 'skip'
   }): Promise<{
     descriptors?: Record<string, CollectionEncryption>
     fresh: Record<string, CollectionEncryption>
@@ -197,31 +198,38 @@ export function createDescriptorManager({
    * the adoption merge writes into it right after open, and epoch-from-birth
    * leaves no single-key fallback to write under. A live read that answers
    * "no descriptor" leaves that collection fail-closed until the sync
-   * bootstrap's own read lands, but a read that FAILS rejects: the answer is
-   * unknown, not absent, and opening the replica over a guess would hand a
-   * correctly provisioned collection the placeholder cipher and fail the
-   * adoption merge on it. The caller falls back to `local` with the error,
-   * where the anonymous replica is intact for a retry. Freshly fetched
-   * descriptors enter the offline cache immediately (best-effort), and come
-   * back separately as `fresh` so the sync bootstrap can reuse them instead of
-   * re-issuing the same reads seconds later (cached descriptors are NOT passed
-   * on -- the bootstrap read is their freshness refresh).
+   * bootstrap's own read lands. A read that FAILS is an unknown answer, not an
+   * absent one, and `onReadFailure` decides what it costs. `'reject'` (login)
+   * rejects the whole completion: opening the replica over a guess would hand
+   * a correctly provisioned collection the placeholder cipher and fail the
+   * adoption merge on it, so the caller falls back to `local` with the error,
+   * where the anonymous replica is intact for a retry. `'skip'` (a hot
+   * restore, which adopts nothing) warns and leaves that collection
+   * fail-closed for the sync bootstrap to repair, so a reload while offline
+   * still restores the connected session. Freshly fetched descriptors enter
+   * the offline cache immediately (best-effort), and come back separately as
+   * `fresh` so the sync bootstrap can reuse them instead of re-issuing the
+   * same reads seconds later (cached descriptors are NOT passed on -- the
+   * bootstrap read is their freshness refresh).
    *
    * @param options {object}
    * @param [options.cached] {Record<string, CollectionEncryption>}
    * @param options.identity {IdentityAgents}
    * @param options.parsed {ParsedGrants}
+   * @param options.onReadFailure {'reject' | 'skip'}
    * @returns {Promise<object>}   `descriptors` (the completed set, or
    *   undefined when there are none) and `fresh` (the live-read subset)
    */
   async function completeDescriptors({
     cached,
     identity,
-    parsed
+    parsed,
+    onReadFailure
   }: {
     cached?: Record<string, CollectionEncryption>
     identity: IdentityAgents
     parsed: ParsedGrants
+    onReadFailure: 'reject' | 'skip'
   }): Promise<{
     descriptors?: Record<string, CollectionEncryption>
     fresh: Record<string, CollectionEncryption>
@@ -235,11 +243,23 @@ export function createDescriptorManager({
     if (missing.length === 0) {
       return { descriptors: cached, fresh: {} }
     }
-    const fetched = await readRemoteDescriptors({
+    const { descriptors: fetched, failures } = await readRemoteDescriptors({
       parsed,
       zcapClient: identity.zcapClient,
       collections: missing
     })
+    if (failures.length > 0) {
+      if (onReadFailure === 'reject') {
+        throw failures[0]?.err
+      }
+      for (const { collection, err } of failures) {
+        console.warn(
+          `Opening collection "${collection.id}" fail-closed: its encryption ` +
+            `descriptor could not be read at restore.`,
+          err
+        )
+      }
+    }
     if (Object.keys(fetched).length === 0) {
       return { descriptors: cached, fresh: {} }
     }

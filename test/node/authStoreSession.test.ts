@@ -45,7 +45,7 @@ vi.mock('../../src/storage/wasSync.js', () => ({
   startWasSync: vi.fn(async () => ({})),
   // The login-time descriptor read answers "no descriptor" (an unprovisioned
   // server); a read that FAILED would fail the activation instead.
-  readRemoteDescriptors: vi.fn(async () => ({}))
+  readRemoteDescriptors: vi.fn(async () => ({ descriptors: {}, failures: [] }))
 }))
 
 // Keep the real login flow but make the re-grant request controllable per test.
@@ -210,6 +210,50 @@ describe('activateConnected fallback on failure', () => {
     expect(store.getState().status).toBe('local')
     expect(hasStore()).toBe(true)
     expect(store.getState().error).toBeTruthy()
+  })
+
+  it('keeps the activation error when the local fallback fails too', async () => {
+    // Hydrate succeeds for the boot (a clean `local`), then throws on every
+    // later call: the connected activation fails, and so does the fallback's
+    // re-open of the anonymous replica, with a different message.
+    let hydrateCalls = 0
+    const brokenRegistry: StoreRegistry = {
+      notes: {
+        hydrate: async () => {
+          hydrateCalls++
+          if (hydrateCalls === 1) {
+            return
+          }
+          throw new Error(
+            hydrateCalls === 2 ? 'connected hydrate boom' : 'local hydrate boom'
+          )
+        },
+        upsert: () => {},
+        drop: () => {},
+        clear: () => {}
+      }
+    }
+    const store = createAuthStore({
+      config: baseConfig([{ key: 'notes', id: 'notes' }]),
+      registry: brokenRegistry,
+      seedStore: newSeedStore()
+    })
+    liveStores.push(store)
+    await store.getState().boot()
+    expect(store.getState().status).toBe('local')
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const seed = crypto.getRandomValues(new Uint8Array(32))
+    await expect(
+      store.getState().connectWithGrants({ seed, grants: noteGrants() })
+    ).rejects.toThrow(/connected hydrate boom/)
+
+    // The fallback's own failure is warned about, not surfaced in its place.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('local replica after a connected activation'),
+      expect.any(Error)
+    )
+    expect(store.getState().error).toMatch(/connected hydrate boom/)
   })
 })
 

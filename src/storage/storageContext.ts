@@ -24,7 +24,10 @@ import type { StoreRegistry } from '../config.js'
 import type { Json } from '../sync/index.js'
 import type { LwwFields } from '../sync/lww.js'
 import type { LocalStore } from './localStore.js'
-import { activateStorageContext } from './storageManager.js'
+import {
+  activateStorageContext,
+  deactivateStorageContext
+} from './storageManager.js'
 import {
   createSyncStatusStore,
   type SyncStatusStore
@@ -129,9 +132,12 @@ export class StorageContext {
   }
 
   /**
-   * Releases the replica (the caller closes or deletes it) and cancels every
-   * pending re-hydrate; anything still in flight against the old replica sees
-   * the generation change and ends as a no-op.
+   * Releases the replica (the caller closes or deletes it), cancels every
+   * pending re-hydrate, and releases the process-wide active pointer when this
+   * context holds it -- the mirror of {@link attachStore}'s claim. Anything
+   * still in flight against the old replica sees the generation change and
+   * ends as a no-op; the facades throw until the next attach claims a live
+   * context, rather than resolving a retired one.
    *
    * @returns {LocalStore | null}   the replica that was attached, if any
    */
@@ -143,6 +149,7 @@ export class StorageContext {
     const store = this.#localStore
     this.#localStore = null
     this.#generation += 1
+    deactivateStorageContext(this)
     return store
   }
 

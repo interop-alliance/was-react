@@ -68,7 +68,9 @@ function stubRemoteStore(
       ok: true,
       skipped: true
     })),
-    readCollectionMeta: vi.fn(async () => undefined)
+    readCollectionMeta: vi.fn(async (): Promise<{ custom?: unknown }> => {
+      throw new Error('meta read failed')
+    })
   }
   vi.spyOn(WasRemoteStore, 'fromGrants').mockReturnValue(
     stub as unknown as WasRemoteStore
@@ -81,13 +83,16 @@ afterEach(() => {
 })
 
 describe('readRemoteDescriptors', () => {
-  it('rejects when one collection description read fails', async () => {
+  it('reports a failed collection read on failures, beside the readable ones', async () => {
     const failure = new Error('descriptor read failed')
     stubRemoteStore({ notes: descriptor, tasks: failure })
 
-    await expect(
-      readRemoteDescriptors({ parsed, zcapClient, collections })
-    ).rejects.toBe(failure)
+    expect(
+      await readRemoteDescriptors({ parsed, zcapClient, collections })
+    ).toEqual({
+      descriptors: { notes: descriptor },
+      failures: [{ collection: collections[1], err: failure }]
+    })
   })
 
   it('keeps only the epoch-bearing descriptors when every read answers', async () => {
@@ -95,7 +100,7 @@ describe('readRemoteDescriptors', () => {
 
     expect(
       await readRemoteDescriptors({ parsed, zcapClient, collections })
-    ).toEqual({ notes: descriptor })
+    ).toEqual({ descriptors: { notes: descriptor }, failures: [] })
   })
 })
 
@@ -143,6 +148,44 @@ describe('startWasSync descriptor read failure', () => {
       expect.any(Error)
     )
     // Replication still starts.
+    expect(syncController.start).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('startWasSync metadata read failure', () => {
+  it('warns and skips the schema install rather than reading it as no schema', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const blinded = {
+      ...descriptor,
+      hmac: { id: 'urn:hmac', type: 'Sha256HmacKey2019' }
+    } as unknown as CollectionEncryption
+    const remote = stubRemoteStore({ notes: blinded, tasks: undefined })
+    const localStore = {
+      applyRemoteDescriptor: vi.fn(async () => {}),
+      applyCollectionMeta: vi.fn(async () => {}),
+      setDescriptorSource: vi.fn()
+    }
+    const syncController = { start: vi.fn(async () => {}) }
+
+    await startWasSync({
+      parsed,
+      zcapClient,
+      collections,
+      localStore: localStore as unknown as LocalStore,
+      syncController: syncController as unknown as SyncController,
+      onRemoteChange: () => {}
+    })
+
+    expect(remote.readCollectionMeta).toHaveBeenCalledWith('notes')
+    expect(localStore.applyCollectionMeta).not.toHaveBeenCalled()
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('schema install failed for "notes"'),
+      expect.any(Error)
+    )
+    // The rest of the pass and replication are untouched.
+    expect(
+      remote.declareCollectionIndexes.mock.calls.map(([id]) => id).sort()
+    ).toEqual(['notes', 'tasks'])
     expect(syncController.start).toHaveBeenCalledTimes(1)
   })
 })

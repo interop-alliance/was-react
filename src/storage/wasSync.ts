@@ -66,12 +66,12 @@ export interface WasSyncBootstrap {
  * collection never holds up the others.
  *
  * A read that FAILS (rather than answering "no descriptor") is never taken
- * for an absent descriptor. Without `onReadFailure` it rejects the whole pass,
- * which is what the login-time read wants: the connected replica cannot open
- * epoch-aware without the answer. With `onReadFailure` (the bootstrap) the
- * failure is reported and that collection is skipped entirely, hook included,
- * so neither a placeholder cipher nor a bare descriptor PUT is built on a
- * guess about a collection whose roster could not be read.
+ * for an absent descriptor. The collection is skipped entirely, hook included,
+ * and reported on `failures`, so neither a placeholder cipher nor a bare
+ * descriptor PUT is built on a guess about a collection whose roster could not
+ * be read. Every collection settles: an outage affecting several reports each
+ * of them, and the caller decides what a non-empty `failures` means (the
+ * login-time read rejects on it, the bootstrap warns and skips).
  *
  * @param options {object}
  * @param options.remoteStore {WasRemoteStore}
@@ -81,18 +81,15 @@ export interface WasSyncBootstrap {
  *   descriptors already read live in this bring-up, reused instead of re-read
  * @param [options.onCollection] {(options) => Promise<void>}   per granted
  *   collection, with its raw descriptor (absent for a public one)
- * @param [options.onReadFailure] {(options) => void}   per collection whose
- *   descriptor read failed; when absent the failure rejects the pass
- * @returns {Promise<Record<string, CollectionEncryption>>}   the epoch-bearing
- *   descriptors, keyed by WAS collection id
+ * @returns {Promise<DescriptorReadOutcome>}   the epoch-bearing descriptors,
+ *   keyed by WAS collection id, and the collections whose read failed
  */
 async function readGrantedEncryption({
   remoteStore,
   collections,
   parsed,
   knownDescriptors = {},
-  onCollection,
-  onReadFailure
+  onCollection
 }: {
   remoteStore: WasRemoteStore
   collections: WasCollectionConfig[]
@@ -102,15 +99,12 @@ async function readGrantedEncryption({
     collection: WasCollectionConfig
     encryption?: CollectionEncryption
   }) => Promise<void>
-  onReadFailure?: (options: {
-    collection: WasCollectionConfig
-    err: unknown
-  }) => void
-}): Promise<Record<string, CollectionEncryption>> {
+}): Promise<DescriptorReadOutcome> {
   const granted = collections.filter(
     collection => parsed.byCollectionId[collection.id] !== undefined
   )
   const descriptors: Record<string, CollectionEncryption> = {}
+  const failures: DescriptorReadOutcome['failures'] = []
   await Promise.all(
     granted.map(async collection => {
       const { id: collectionId } = collection
@@ -124,10 +118,7 @@ async function readGrantedEncryption({
             encryption =
               await remoteStore.readCollectionEncryption(collectionId)
           } catch (err) {
-            if (!onReadFailure) {
-              throw err
-            }
-            onReadFailure({ collection, err })
+            failures.push({ collection, err })
             return
           }
         }
@@ -143,25 +134,38 @@ async function readGrantedEncryption({
       }
     })
   )
-  return descriptors
+  return { descriptors, failures }
+}
+
+/**
+ * What one pass of descriptor reads settled to: the epoch-bearing descriptors
+ * (a rosterless one cannot build a cipher) and, apart from them, every
+ * collection whose read failed rather than answering "no descriptor".
+ */
+export type DescriptorReadOutcome = {
+  descriptors: Record<string, CollectionEncryption>
+  failures: Array<{ collection: WasCollectionConfig; err: unknown }>
 }
 
 /**
  * One live encryption-descriptor read per granted private collection, invoked
- * with the grants' delegated zcaps and keyed by WAS collection id. Only
- * epoch-bearing descriptors are returned (a rosterless one cannot build a
- * cipher). Used at login time, BEFORE any replication exists: the connected
- * replica must open epoch-aware -- epoch-from-birth leaves no single-key
- * fallback, and the adoption merge writes into it before sync starts. The
- * sync bootstrap reuses these reads (its `knownDescriptors` input) rather
- * than re-issuing them.
+ * with the grants' delegated zcaps and keyed by WAS collection id. Used at
+ * login time, BEFORE any replication exists: the connected replica must open
+ * epoch-aware -- epoch-from-birth leaves no single-key fallback, and the
+ * adoption merge writes into it before sync starts. The sync bootstrap reuses
+ * these reads (its `knownDescriptors` input) rather than re-issuing them.
+ *
+ * A failed read is reported on `failures` rather than rejecting, so the caller
+ * chooses: a login rejects on any failure (the adoption merge would write
+ * into a replica opened over a guess), while a hot restore skips the
+ * collection fail-closed and leaves the sync bootstrap to repair it.
  *
  * @param options {object}
  * @param options.parsed {ParsedGrants}
  * @param options.zcapClient {ZcapClient}   invocation signer = grants' controller
  * @param options.collections {WasCollectionConfig[]}   the collections to read
  *   descriptors for (public ones are skipped)
- * @returns {Promise<Record<string, CollectionEncryption>>}
+ * @returns {Promise<DescriptorReadOutcome>}
  */
 export async function readRemoteDescriptors({
   parsed,
@@ -171,7 +175,7 @@ export async function readRemoteDescriptors({
   parsed: ParsedGrants
   zcapClient: ZcapClient
   collections: WasCollectionConfig[]
-}): Promise<Record<string, CollectionEncryption>> {
+}): Promise<DescriptorReadOutcome> {
   const remoteStore = WasRemoteStore.fromGrants({
     parsed,
     zcapClient,
@@ -288,21 +292,11 @@ export async function startWasSync({
   // SHARED collections never appear here: they are wallet-owned, absent from
   // the app-owned registry, and a read-only grant would draw nothing but a
   // pointless 403.
-  const descriptors = await readGrantedEncryption({
+  const { descriptors, failures } = await readGrantedEncryption({
     remoteStore,
     collections,
     parsed,
     knownDescriptors,
-    // A read that fails transiently degrades that one collection: it keeps
-    // the cipher it opened with (the cached descriptor, or fail-closed) and
-    // receives no description PUT this session. It is not "no descriptor".
-    onReadFailure: ({ collection, err }) => {
-      console.warn(
-        `Skipping the sync bootstrap of collection "${collection.id}": its ` +
-          `encryption descriptor could not be read.`,
-        err
-      )
-    },
     onCollection: async ({ collection, encryption }) => {
       const { id: collectionId } = collection
       if (!isPublicCollection(collection)) {
@@ -347,20 +341,24 @@ export async function startWasSync({
         // now on carry blinded `indexed` entries. A descriptor with no `hmac`
         // carries no blinding key at all, so the install could only be a no-op:
         // the metadata read is skipped rather than spent.
+        // A read that fails (rather than answering "no metadata") skips the
+        // install for this session with a warning: the answer is unknown, and
+        // an install skipped over a guess is the same outcome either way, but
+        // the warning says why.
         if (hasKeyEpochs(encryption) && encryption.hmac) {
-          const meta = await remoteStore.readCollectionMeta(collectionId)
-          if (meta) {
-            try {
+          try {
+            const meta = await remoteStore.readCollectionMeta(collectionId)
+            if (meta) {
               await localStore.applyCollectionMeta({
                 collectionId,
                 custom: meta.custom
               })
-            } catch (err) {
-              console.warn(
-                `Blinded-index schema install failed for "${collectionId}":`,
-                err
-              )
             }
+          } catch (err) {
+            console.warn(
+              `Blinded-index schema install failed for "${collectionId}":`,
+              err
+            )
           }
         }
       }
@@ -372,6 +370,16 @@ export async function startWasSync({
       }
     }
   })
+  // A read that failed degrades that one collection: it keeps the cipher it
+  // opened with (the cached descriptor, or fail-closed) and receives no
+  // description PUT this session. It is not "no descriptor".
+  for (const { collection, err } of failures) {
+    console.warn(
+      `Skipping the sync bootstrap of collection "${collection.id}": its ` +
+        `encryption descriptor could not be read.`,
+      err
+    )
+  }
   // Install the encryption-descriptor source so a decrypt that meets an unseen
   // epoch (a rotation on another device) re-reads the descriptor and rebuilds
   // the cipher -- once per collection per session.

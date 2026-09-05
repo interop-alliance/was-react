@@ -50,7 +50,7 @@ import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 // public collection needs no descriptor read.
 vi.mock('../../src/storage/wasSync.js', () => ({
   startWasSync: vi.fn(async () => ({})),
-  readRemoteDescriptors: vi.fn(async () => ({}))
+  readRemoteDescriptors: vi.fn(async () => ({ descriptors: {}, failures: [] }))
 }))
 
 const registry: StoreRegistry = {}

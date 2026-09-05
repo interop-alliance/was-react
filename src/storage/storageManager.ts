@@ -46,11 +46,12 @@ export function activateStorageContext(context: StorageContext): void {
 }
 
 /**
- * Releases the active pointer if `context` holds it (called by the session
- * store whenever it detaches its replica: `destroy`, logout, clear-data, and
- * the connected activation's fallback to `local`, each of which re-claims on
- * re-open); a no-op for any other context. Until the next claim the facades
- * throw rather than resolve a retired session.
+ * Releases the active pointer if `context` holds it (called by
+ * `StorageContext.detachStore`, so every path that detaches a replica --
+ * `destroy`, logout, clear-data, the connected activation's fallback to
+ * `local` -- releases it and re-claims on re-attach); a no-op for any other
+ * context. Until the next claim the facades throw rather than resolve a
+ * retired session.
  *
  * @param context {StorageContext}
  * @returns {void}

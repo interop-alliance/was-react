@@ -102,7 +102,10 @@ const remoteDescriptors = vi.hoisted(() => ({
 // runs without opening any network or `window`-backed replication machinery.
 vi.mock('../../src/storage/wasSync.js', () => ({
   startWasSync: vi.fn(async () => ({})),
-  readRemoteDescriptors: vi.fn(async () => remoteDescriptors.value)
+  readRemoteDescriptors: vi.fn(async () => ({
+    descriptors: remoteDescriptors.value,
+    failures: []
+  }))
 }))
 
 const ORIGIN = 'http://localhost:5173'

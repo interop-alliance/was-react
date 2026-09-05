@@ -8,7 +8,7 @@ import type {
   IKeyResolver,
   IZcap
 } from '@interop/data-integrity-core'
-import { WasServerError } from '@interop/was-client'
+import { NotImplementedError, WasServerError } from '@interop/was-client'
 import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
 import type { ParsedGrants } from '../grants.js'
 
@@ -211,7 +211,7 @@ describe('WasRemoteStore.readCollectionEncryption', () => {
     expect(await bare.readCollectionEncryption('ungranted')).toBeUndefined()
   })
 
-  it('returns undefined for a not-found response, without retrying', async () => {
+  it('returns undefined for a not-found response', async () => {
     const notFound = Object.assign(new Error('Not Found'), { status: 404 })
     const { calls, zcapClient: stub } = stubZcapClient([
       { status: 404, error: notFound }
@@ -221,64 +221,27 @@ describe('WasRemoteStore.readCollectionEncryption', () => {
     expect(calls).toHaveLength(1)
   })
 
-  it('retries a transient failure once and then rethrows it', async () => {
-    vi.useFakeTimers()
-    try {
-      const badGateway = Object.assign(new Error('Bad Gateway'), {
-        status: 502
-      })
-      const { calls, zcapClient: stub } = stubZcapClient([
-        { status: 502, error: badGateway }
-      ])
-      const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
-      const pending = store.readCollectionEncryption('notes')
-      // Attach the rejection handler before the timers run, so the eventual
-      // rejection is observed rather than reported as unhandled.
-      const outcome = pending.then(
-        () => undefined,
-        (err: unknown) => err
-      )
-      await vi.runAllTimersAsync()
-      const err = (await outcome) as Error
-      expect(err).toBeInstanceOf(Error)
-      expect(err.message).toContain('"notes"')
-      expect(err.cause).toBeInstanceOf(WasServerError)
-      expect((err.cause as WasServerError).status).toBe(502)
-      expect(calls).toHaveLength(2)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('returns the descriptor when the retry succeeds', async () => {
-    vi.useFakeTimers()
-    try {
-      const descriptor = {
-        scheme: 'edv',
-        currentEpoch: 'did:key:zEpoch1',
-        epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
-      }
-      const { calls, zcapClient: stub } = stubZcapClient([
-        {
-          status: 502,
-          error: Object.assign(new Error('boom'), { status: 502 })
-        },
-        { status: 200, data: { id: 'notes', encryption: descriptor } }
-      ])
-      const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
-      const pending = store.readCollectionEncryption('notes')
-      await vi.runAllTimersAsync()
-      expect(await pending).toEqual(descriptor)
-      expect(calls).toHaveLength(2)
-    } finally {
-      vi.useRealTimers()
-    }
+  it('rethrows a transient failure, wrapped with the collection id', async () => {
+    const badGateway = Object.assign(new Error('Bad Gateway'), { status: 502 })
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 502, error: badGateway }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    const err = (await store.readCollectionEncryption('notes').then(
+      () => undefined,
+      (err: unknown) => err
+    )) as Error
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toContain('"notes"')
+    expect(err.cause).toBeInstanceOf(WasServerError)
+    expect((err.cause as WasServerError).status).toBe(502)
+    // Retrying is the HTTP client's job, not this layer's.
+    expect(calls).toHaveLength(1)
   })
 })
 
 describe('remoteDescriptorSource', () => {
   it('warns and answers undefined when the read fails', async () => {
-    vi.useFakeTimers()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const { zcapClient: stub } = stubZcapClient([
@@ -291,15 +254,14 @@ describe('remoteDescriptorSource', () => {
         parsed,
         zcapClient: stub
       })
-      const pending = remoteDescriptorSource({
-        remoteStore
-      }).collectionEncryption({ collectionId: 'notes' })
-      await vi.runAllTimersAsync()
-      expect(await pending).toBeUndefined()
+      expect(
+        await remoteDescriptorSource({ remoteStore }).collectionEncryption({
+          collectionId: 'notes'
+        })
+      ).toBeUndefined()
       expect(warn).toHaveBeenCalledTimes(1)
     } finally {
       warn.mockRestore()
-      vi.useRealTimers()
     }
   })
 })
@@ -329,16 +291,40 @@ describe('WasRemoteStore.readCollectionMeta', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('returns undefined when the read fails', async () => {
-    const store = WasRemoteStore.fromGrants({
-      parsed,
-      zcapClient: {
-        request: async () => {
-          throw new Error('offline')
-        }
-      } as unknown as ZcapClient
-    })
+  it('returns undefined for a not-found response', async () => {
+    const notFound = Object.assign(new Error('Not Found'), { status: 404 })
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 404, error: notFound }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
     expect(await store.readCollectionMeta('notes')).toBeUndefined()
+    expect(calls).toHaveLength(1)
+  })
+
+  it('returns undefined for a backend without metadata support', async () => {
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 501, error: new NotImplementedError('no meta') }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    expect(await store.readCollectionMeta('notes')).toBeUndefined()
+    expect(calls).toHaveLength(1)
+  })
+
+  it('rethrows a transient failure, wrapped with the collection id', async () => {
+    const badGateway = Object.assign(new Error('Bad Gateway'), { status: 502 })
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 502, error: badGateway }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    const err = (await store.readCollectionMeta('notes').then(
+      () => undefined,
+      (err: unknown) => err
+    )) as Error
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toContain('"notes"')
+    expect(err.cause).toBeInstanceOf(WasServerError)
+    expect((err.cause as WasServerError).status).toBe(502)
+    expect(calls).toHaveLength(1)
   })
 })
 

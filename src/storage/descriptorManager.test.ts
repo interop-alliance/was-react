@@ -17,12 +17,13 @@ import { createDescriptorCache, type SeedStore } from '../identity/seedStore.js'
 import type { ParsedGrants } from '../grants.js'
 import type { WasCollectionConfig } from '../config.js'
 import { createDescriptorManager } from './descriptorManager.js'
-import { readRemoteDescriptors } from './wasSync.js'
+import { readRemoteDescriptors, type DescriptorReadOutcome } from './wasSync.js'
 
 vi.mock('./wasSync.js', () => ({
-  readRemoteDescriptors: vi.fn(
-    async (): Promise<Record<string, CollectionEncryption>> => ({})
-  )
+  readRemoteDescriptors: vi.fn(async (): Promise<DescriptorReadOutcome> => ({
+    descriptors: {},
+    failures: []
+  }))
 }))
 
 const readRemoteDescriptorsMock = vi.mocked(readRemoteDescriptors)
@@ -214,7 +215,8 @@ describe('completeDescriptors', () => {
     const result = await manager.completeDescriptors({
       cached,
       identity,
-      parsed
+      parsed,
+      onReadFailure: 'reject'
     })
 
     expect(result).toEqual({ descriptors: cached, fresh: {} })
@@ -228,9 +230,16 @@ describe('completeDescriptors', () => {
       sessionStore,
       anonStore: fakeSeedStore()
     })
-    readRemoteDescriptorsMock.mockResolvedValueOnce(cached)
+    readRemoteDescriptorsMock.mockResolvedValueOnce({
+      descriptors: cached,
+      failures: []
+    })
 
-    const result = await manager.completeDescriptors({ identity, parsed })
+    const result = await manager.completeDescriptors({
+      identity,
+      parsed,
+      onReadFailure: 'reject'
+    })
 
     expect(result).toEqual({ descriptors: cached, fresh: cached })
     // Only the missing private collection is read; the public one carries no
@@ -250,48 +259,85 @@ describe('completeDescriptors', () => {
     ).toEqual(cached)
   })
 
-  it('rejects when the live read fails, rather than answering "no descriptor"', async () => {
+  const tasks = { key: 'tasks', id: 'tasks' }
+  const parsedWithTasks = {
+    ...parsed,
+    byCollectionId: {
+      ...parsed.byCollectionId,
+      tasks: { id: 'urn:zcap:tasks' } as unknown as IZcap
+    }
+  }
+
+  it('rejects a login when the live read fails, rather than answering "no descriptor"', async () => {
     const manager = createDescriptorManager({
-      collections: [...collections, { key: 'tasks', id: 'tasks' }],
+      collections: [...collections, tasks],
       sessionStore: fakeSeedStore(),
       anonStore: fakeSeedStore()
     })
     const failure = new Error('502 Bad Gateway')
-    readRemoteDescriptorsMock.mockRejectedValueOnce(failure)
+    readRemoteDescriptorsMock.mockResolvedValueOnce({
+      descriptors: {},
+      failures: [{ collection: tasks, err: failure }]
+    })
 
     await expect(
       manager.completeDescriptors({
         cached,
         identity,
-        parsed: {
-          ...parsed,
-          byCollectionId: {
-            ...parsed.byCollectionId,
-            tasks: { id: 'urn:zcap:tasks' } as unknown as IZcap
-          }
-        }
+        parsed: parsedWithTasks,
+        onReadFailure: 'reject'
       })
     ).rejects.toBe(failure)
   })
 
+  it('warns and leaves the collection fail-closed on a restore when the live read fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const manager = createDescriptorManager({
+        collections: [...collections, tasks],
+        sessionStore: fakeSeedStore(),
+        anonStore: fakeSeedStore()
+      })
+      const failure = new Error('502 Bad Gateway')
+      readRemoteDescriptorsMock.mockResolvedValueOnce({
+        descriptors: {},
+        failures: [{ collection: tasks, err: failure }]
+      })
+
+      const result = await manager.completeDescriptors({
+        cached,
+        identity,
+        parsed: parsedWithTasks,
+        onReadFailure: 'skip'
+      })
+
+      // The cached set opens as-is; `tasks` is simply not in it.
+      expect(result).toEqual({ descriptors: cached, fresh: {} })
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('"tasks"'),
+        failure
+      )
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('returns the cached set when the live read answers no descriptor', async () => {
     const manager = createDescriptorManager({
-      collections: [...collections, { key: 'tasks', id: 'tasks' }],
+      collections: [...collections, tasks],
       sessionStore: fakeSeedStore(),
       anonStore: fakeSeedStore()
     })
-    readRemoteDescriptorsMock.mockResolvedValueOnce({})
+    readRemoteDescriptorsMock.mockResolvedValueOnce({
+      descriptors: {},
+      failures: []
+    })
 
     const result = await manager.completeDescriptors({
       cached,
       identity,
-      parsed: {
-        ...parsed,
-        byCollectionId: {
-          ...parsed.byCollectionId,
-          tasks: { id: 'urn:zcap:tasks' } as unknown as IZcap
-        }
-      }
+      parsed: parsedWithTasks,
+      onReadFailure: 'reject'
     })
 
     expect(result).toEqual({ descriptors: cached, fresh: {} })

@@ -77,11 +77,7 @@ import {
   type LocalWipeReport,
   type WipeTargets
 } from './localWipe.js'
-import {
-  activateStorageContext,
-  deactivateStorageContext,
-  hasStore
-} from '../storage/storageManager.js'
+import { activateStorageContext, hasStore } from '../storage/storageManager.js'
 import { StorageContext } from '../storage/storageContext.js'
 import { getWriterId } from '../storage/writerId.js'
 import { mergeAdopted } from '../storage/adopt.js'
@@ -694,6 +690,8 @@ export function createAuthStore({
    *
    * @param session {object}   the session to open: its seed, identity, parsed
    *   grants and expiry, plus the payloads to adopt (merge logins only)
+   * @param [session.restore] {boolean}   a hot restore rather than a login: a
+   *   descriptor read that fails degrades that collection instead of rejecting
    * @returns {Promise<void>}
    */
   async function activateConnected(session: {
@@ -703,19 +701,24 @@ export function createAuthStore({
     grants: IZcap[]
     expires: string
     adopt?: AdoptSource
+    restore?: boolean
   }): Promise<void> {
     try {
       // Load the cached encryption descriptors so the connected replica opens
       // epoch-aware: an offline hot restore then decrypts multi-recipient
       // envelopes with no live description read, while a first login (no cache
-      // yet) completes the set with live reads before the replica opens.
+      // yet) completes the set with live reads before the replica opens. A
+      // read that fails rejects a login (the adoption merge would write over
+      // a guess) but only degrades a restore, which adopts nothing: a reload
+      // while offline must not drop a connected user into `local`.
       const { descriptors, fresh } =
         await descriptorManager.completeDescriptors({
           cached: await descriptorManager.loadCachedDescriptors({
             controllerDid: session.identity.controllerDid
           }),
           identity: session.identity,
-          parsed: session.parsed
+          parsed: session.parsed,
+          onReadFailure: session.restore ? 'skip' : 'reject'
         })
       await openAndHydrate({
         identity: session.identity,
@@ -732,7 +735,16 @@ export function createAuthStore({
       })
     } catch (err) {
       await deactivateStore()
-      await openLocal()
+      // A fallback that fails is warned about, not surfaced: the error the
+      // caller sees is the activation's own, never the one hiding behind it.
+      try {
+        await openLocal()
+      } catch (localErr) {
+        console.warn(
+          'Failed to re-open the local replica after a connected activation failure:',
+          localErr
+        )
+      }
       store.setState({ error: errorMessage(err) })
       throw err
     }
@@ -760,16 +772,13 @@ export function createAuthStore({
     // controller awaits the in-flight sync cycle, and a re-hydrate debounced
     // off a pull just before this would otherwise fire during that wait and
     // query a replica about to close.
+    // The detach also releases the process-wide pointer the moment the
+    // replica is gone. Left standing, it would keep naming a retired context
+    // for the process lifetime: a keyed provider remount's entity-store verbs
+    // would stamp the OLD session's writer id and write into the replica
+    // about to be closed. Every re-open path below (`openLocal`, the
+    // connected activation) reclaims on attach.
     const local = storageContext.detachStore()
-    // Release the process-wide pointer the moment the replica is gone (a
-    // no-op unless this context holds it). Left standing, the pointer would
-    // keep naming a retired context for the process lifetime: a keyed provider
-    // remount's entity-store verbs would stamp the OLD session's writer id and
-    // write into the replica about to be closed. Released, they throw until the
-    // next `openAndHydrate` claims a live context. Every re-open path below
-    // (`openLocal`, the connected activation) reclaims through
-    // `activateStorageContext`.
-    deactivateStorageContext(storageContext)
     await stopController()
     if (local) {
       try {
@@ -1070,7 +1079,8 @@ export function createAuthStore({
           identity,
           parsed,
           grants: restored.grants,
-          expires: restored.expires
+          expires: restored.expires,
+          restore: true
         })
         set({
           status: uncovered.length > 0 ? 'reconnect' : 'connected',

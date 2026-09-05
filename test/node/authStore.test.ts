@@ -64,8 +64,10 @@ import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 vi.mock('../../src/storage/wasSync.js', () => ({
   startWasSync: vi.fn(async () => ({})),
   readRemoteDescriptors: vi.fn(
-    async (options: Parameters<typeof serveRemoteDescriptors>[0]) =>
-      await serveRemoteDescriptors(options)
+    async (options: Parameters<typeof serveRemoteDescriptors>[0]) => ({
+      descriptors: await serveRemoteDescriptors(options),
+      failures: []
+    })
   )
 }))
 
@@ -312,6 +314,38 @@ describe('boot()', () => {
     expect(hasStore()).toBe(true)
   })
 
+  it('still lands connected when a descriptor read fails during the restore', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const seedStore = newSeedStore()
+    const { controllerDid } = await persistSession({ seedStore })
+    const store = makeStore(baseConfig(), seedStore)
+    // No cached descriptor yet, and the live read fails (a reload while
+    // offline, or a 5xx). A restore adopts nothing, so the collection opens
+    // fail-closed for the sync bootstrap to repair, rather than dropping a
+    // connected user into `local`.
+    readRemoteDescriptorsMock.mockResolvedValueOnce({
+      descriptors: {},
+      failures: [
+        {
+          collection: { key: 'notes', id: 'notes' },
+          err: new Error(
+            'Failed to read the encryption descriptor of collection "notes".'
+          )
+        }
+      ]
+    })
+
+    await store.getState().boot()
+
+    expect(store.getState().status).toBe('connected')
+    expect(store.getState().controllerDid).toBe(controllerDid)
+    expect(store.getState().error).toBeNull()
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"notes"'),
+      expect.any(Error)
+    )
+  })
+
   it('reuses the persisted anonymous seed/DID across a second boot', async () => {
     const config = baseConfig()
     const first = makeStore(config, newSeedStore())
@@ -530,19 +564,23 @@ describe('adoption', () => {
     const note = { id: crypto.randomUUID(), title: 'survives' }
     await requireStore().insertEntity('notes', note)
 
-    // The description GET answers 502 (after its retry), which must never be
-    // read as "no descriptor": the connected replica would open under the
-    // placeholder cipher and the adoption merge would fail on a correctly
-    // provisioned collection.
+    // The description GET answers 502, which must never be read as "no
+    // descriptor": the connected replica would open under the placeholder
+    // cipher and the adoption merge would fail on a correctly provisioned
+    // collection.
     const badGateway = new WasServerError('Bad Gateway', { status: 502 })
-    readRemoteDescriptorsMock.mockRejectedValueOnce(
-      new Error(
-        'Failed to read the encryption descriptor of collection "notes".',
+    readRemoteDescriptorsMock.mockResolvedValueOnce({
+      descriptors: {},
+      failures: [
         {
-          cause: badGateway
+          collection: { key: 'notes', id: 'notes' },
+          err: new Error(
+            'Failed to read the encryption descriptor of collection "notes".',
+            { cause: badGateway }
+          )
         }
-      )
-    )
+      ]
+    })
     await mockWalletLogin()
     await expect(store.getState().login()).rejects.toThrow(
       /encryption descriptor of collection "notes"/

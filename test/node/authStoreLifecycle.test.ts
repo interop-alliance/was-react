@@ -55,7 +55,7 @@ vi.mock('../../src/storage/wasSync.js', () => ({
   startWasSync: vi.fn(async () => ({})),
   // The login-time descriptor read answers "no descriptor" (an unprovisioned
   // server); a read that FAILED would fail the activation instead.
-  readRemoteDescriptors: vi.fn(async () => ({}))
+  readRemoteDescriptors: vi.fn(async () => ({ descriptors: {}, failures: [] }))
 }))
 
 const registry: StoreRegistry = {}

@@ -581,20 +581,23 @@ adoption merge's pre-sync writes) carries no entries until it is rewritten. All
 of it is non-fatal and warns on refusal, including a private collection
 provisioned without a blinded-index key (no `hmac` member on its descriptor),
 which also skips the meta read outright: an unqueryable collection still
-replicates in full. The remote store is built with this app's identity keys when
-they are available, which is what lets the client's EDV keystore construct the
-codec the blinded-index verbs need; replication itself still moves envelopes
-verbatim and never goes through that codec. A private collection whose
-descriptor carries no key epochs stays fail-closed, warned about plainly rather
-than surfacing later as per-row decrypt failures. The fetched descriptors are
-handed to `onDescriptorsFetched` (the offline descriptor cache) and a live
-descriptor source is installed on the local store, so a decrypt that meets an
-unseen epoch (a rotation elsewhere) re-reads and rebuilds once per collection
-per session. An unseen epoch is the only signal that spends that refresh; a
-decrypt that fails because this app holds no key for an epoch the descriptor
-already lists surfaces as `KeyUnwrapError` and leaves the refresh untouched.
-Shared collections are handled apart from all of that: they never enter
-replication and never receive a description PUT, and instead one
+replicates in full. The meta read keeps the same two non-answers apart as the
+description read below: not-found and a backend without metadata support mean
+"no schema", while any other failure is thrown, which the bootstrap warns about
+and skips the install for that session. The remote store is built with this
+app's identity keys when they are available, which is what lets the client's EDV
+keystore construct the codec the blinded-index verbs need; replication itself
+still moves envelopes verbatim and never goes through that codec. A private
+collection whose descriptor carries no key epochs stays fail-closed, warned
+about plainly rather than surfacing later as per-row decrypt failures. The
+fetched descriptors are handed to `onDescriptorsFetched` (the offline descriptor
+cache) and a live descriptor source is installed on the local store, so a
+decrypt that meets an unseen epoch (a rotation elsewhere) re-reads and rebuilds
+once per collection per session. An unseen epoch is the only signal that spends
+that refresh; a decrypt that fails because this app holds no key for an epoch
+the descriptor already lists surfaces as `KeyUnwrapError` and leaves the refresh
+untouched. Shared collections are handled apart from all of that: they never
+enter replication and never receive a description PUT, and instead one
 `SharedCollectionReader` is opened per configured shared collection the grants
 cover, concurrently, each failure a warn-and-skip.
 
@@ -614,19 +617,24 @@ A description read has two distinct non-answers, and the pass keeps them apart.
 (which is also how WAS answers an unauthorized read), or the description carries
 no `encryption` member. `readCollectionEncryption` answers `undefined` for that
 alone. A read that fails for any other reason (a dropped connection, a 5xx) is
-retried once and then thrown, because the answer is unknown rather than absent,
-and a caller that took it for "no descriptor" would open a correctly provisioned
-collection under the fail-closed placeholder cipher, fail the adoption merge on
-it, and let the best-effort descriptor PUT write a bare descriptor over a roster
-it never saw. The two callers handle the throw differently. The login-time read
-rejects the whole connected activation, which falls back to `local` with the
-error surfaced and the anonymous replica intact for a retry. The bootstrap skips
-that one collection entirely, hook included, with a warning: it keeps whatever
-cipher it opened with (the cached descriptor, or fail-closed) and receives no
-PUT this session. The unknown-epoch refresh source is tolerant too, warning and
-answering `undefined`, since the refresh is already spent by the time it is
-consulted and the decrypt retry fails the same way it would under no refresh at
-all.
+thrown, because the answer is unknown rather than absent, and a caller that took
+it for "no descriptor" would open a correctly provisioned collection under the
+fail-closed placeholder cipher, fail the adoption merge on it, and let the
+best-effort descriptor PUT write a bare descriptor over a roster it never saw.
+Neither read retries on its own; the HTTP client underneath already retries
+transient status codes and network errors on every GET. The pass settles every
+collection and reports the failed ones beside the descriptors, and each caller
+decides what a failure costs. A login rejects the whole connected activation,
+which falls back to `local` with the error surfaced and the anonymous replica
+intact for a retry. A hot restore adopts nothing, so it warns and opens that
+collection fail-closed instead, and a reload while offline still restores the
+connected session. The bootstrap skips that one collection entirely, hook
+included, with a warning: it keeps whatever cipher it opened with (the cached
+descriptor, or fail-closed) and receives no PUT this session, and when the read
+succeeds on a later session it repairs the cipher then. The unknown-epoch
+refresh source is tolerant too, warning and answering `undefined`, since the
+refresh is already spent by the time it is consulted and the decrypt retry fails
+the same way it would under no refresh at all.
 
 A descriptor's epoch roster can also simply not include this app: not "no
 descriptor" and not "no epochs", but a roster whose recipients never wrapped a
@@ -645,10 +653,12 @@ exists, completes that set with live reads for a granted private collection the
 cache does not cover, and writes the sync bootstrap's fetched set back. The auth
 store only sequences those four operations. Three of them are best-effort: a
 failure warns and leaves the affected collections fail-closed rather than
-failing the session. The live completion is the exception. A read that answers
-"no descriptor" leaves that collection fail-closed like the others, but a read
-that fails rejects the activation, for the reason given above: the connected
-replica must not open over a guess.
+failing the session. The live completion at login is the exception. A read that
+answers "no descriptor" leaves that collection fail-closed like the others, but
+a read that fails rejects the activation, for the reason given above: the
+connected replica must not open over a guess the adoption merge would write
+through. The same completion on a hot restore is best-effort like the rest,
+since a restore adopts nothing.
 
 `createDescriptorCache` (`src/identity/seedStore.ts`) presents the seed store's
 single persisted descriptor record as the `EncryptionDescriptorCache` seam
