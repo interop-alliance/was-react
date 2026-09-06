@@ -27,6 +27,8 @@ import { issueSeedCredential } from '../identity/seedCredential.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
 import { deriveIdentity } from '../identity/agents.js'
 import type { LoginConfig } from './loginFlow.js'
+import { captureLogger } from '@interop/logger'
+import { setLogger } from '../log.js'
 
 // The login flow reads `window.location.origin` for the request domain; this
 // suite runs in the default node environment (crypto/VP signing), so stub a
@@ -244,7 +246,8 @@ describe('App Connect grant checking', () => {
     mockGet.mockImplementation(async ({ vpr }) =>
       walletVp({ challenge: vpr.challenge as string, credential })
     )
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
 
     const outcome = await loginWithWallet({
       config: {
@@ -263,7 +266,15 @@ describe('App Connect grant checking', () => {
     })
     // A nominal far-future expiry, so the near-expiry watch never fires.
     expect(new Date(outcome.expires).getTime()).toBeGreaterThan(Date.now())
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('wallet-notes'))
+    expect(
+      capture.events.some(
+        event =>
+          event.level === 'warn' &&
+          Array.isArray(event.data?.sharedCollections) &&
+          (event.data.sharedCollections as string[]).includes('wallet-notes')
+      )
+    ).toBe(true)
+    setLogger(previous)
   })
 
   it('completes a login that requests nothing, without warning', async () => {
@@ -271,17 +282,18 @@ describe('App Connect grant checking', () => {
     mockGet.mockImplementation(async ({ vpr }) =>
       walletVp({ challenge: vpr.challenge as string, credential })
     )
-    // Cleared explicitly: `console.warn` may already be spied (and carry calls)
-    // from an earlier test in this file.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    warn.mockClear()
+    // A capture logger of this test's own, so an earlier test's events cannot
+    // reach the assertion below.
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
 
     const outcome = await loginWithWallet({
       config: { ...loginConfig, collections: [] }
     })
 
     expect(outcome.grants).toEqual([])
-    expect(warn).not.toHaveBeenCalled()
+    expect(capture.events).toEqual([])
+    setLogger(previous)
   })
 
   it('still rejects when app-owned collections came back with no grants', async () => {

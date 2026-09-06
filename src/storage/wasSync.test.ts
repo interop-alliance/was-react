@@ -15,6 +15,8 @@ import type { LocalStore } from './localStore.js'
 import type { SyncController } from './syncController.js'
 import { WasRemoteStore } from './wasRemoteStore.js'
 import { readRemoteDescriptors, startWasSync } from './wasSync.js'
+import { captureLogger } from '@interop/logger'
+import { setLogger } from '../log.js'
 
 const collections: WasCollectionConfig[] = [
   { key: 'notes', id: 'notes' },
@@ -106,7 +108,8 @@ describe('readRemoteDescriptors', () => {
 
 describe('startWasSync descriptor read failure', () => {
   it('skips the failed collection entirely and bootstraps the rest', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     const remote = stubRemoteStore({
       notes: descriptor,
       tasks: new Error('descriptor read failed')
@@ -143,10 +146,15 @@ describe('startWasSync descriptor read failure', () => {
     // The failed one received neither a cipher rebuild nor any PUT, and did
     // not enter the offline cache as "no descriptor".
     expect(fetched).toHaveBeenCalledWith({ notes: descriptor })
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('"tasks"'),
-      expect.any(Error)
-    )
+    expect(
+      capture.events.some(
+        event =>
+          event.level === 'warn' &&
+          event.data?.collectionId === 'tasks' &&
+          event.err instanceof Error
+      )
+    ).toBe(true)
+    setLogger(previous)
     // Replication still starts.
     expect(syncController.start).toHaveBeenCalledTimes(1)
   })
@@ -154,7 +162,8 @@ describe('startWasSync descriptor read failure', () => {
 
 describe('startWasSync metadata read failure', () => {
   it('warns and skips the schema install rather than reading it as no schema', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     const blinded = {
       ...descriptor,
       hmac: { id: 'urn:hmac', type: 'Sha256HmacKey2019' }
@@ -178,10 +187,16 @@ describe('startWasSync metadata read failure', () => {
 
     expect(remote.readCollectionMeta).toHaveBeenCalledWith('notes')
     expect(localStore.applyCollectionMeta).not.toHaveBeenCalled()
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('schema install failed for "notes"'),
-      expect.any(Error)
-    )
+    expect(
+      capture.events.some(
+        event =>
+          event.level === 'warn' &&
+          event.msg.includes('Blinded-index schema install failed') &&
+          event.data?.collectionId === 'notes' &&
+          event.err instanceof Error
+      )
+    ).toBe(true)
+    setLogger(previous)
     // The rest of the pass and replication are untouched.
     expect(
       remote.declareCollectionIndexes.mock.calls.map(([id]) => id).sort()

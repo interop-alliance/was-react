@@ -35,6 +35,7 @@ import type { RxStorage } from 'rxdb/plugins/core'
 import { DEFAULT_STORAGE_KEY_PREFIX } from '../config.js'
 import { LocalStore, dbNameForController } from '../storage/localStore.js'
 import { clearPersistedWriterId } from '../storage/writerId.js'
+import { log } from '../log.js'
 
 /**
  * Every durable local target of a wipe, derived up front.
@@ -161,7 +162,7 @@ async function listDatabaseNames(idb: IDBFactory): Promise<string[] | null> {
     const listed = await idb.databases()
     return listed.map(entry => entry.name).filter(name => !!name) as string[]
   } catch (err) {
-    console.warn('Could not enumerate IndexedDB databases:', err)
+    log.warn('Could not enumerate IndexedDB databases', { err })
     return null
   }
 }
@@ -237,7 +238,7 @@ export async function executeLocalWipe({
       })
       issued.add(name)
     } catch (err) {
-      console.warn(`Could not remove the replica database ${name}:`, err)
+      log.warn('Could not remove a replica database', { dbName: name, err })
       failed.add(name)
     }
   }
@@ -251,7 +252,7 @@ export async function executeLocalWipe({
         unverified.add(name)
       }
     } catch (err) {
-      console.warn(`Could not delete the seed store ${name}:`, err)
+      log.warn('Could not delete a seed store', { dbName: name, err })
       failed.add(name)
     }
   }
@@ -287,7 +288,7 @@ export async function executeLocalWipe({
           unverified.add(name)
         }
       } catch (err) {
-        console.warn(`Could not delete the database ${name}:`, err)
+        log.warn('Could not delete a database', { dbName: name, err })
         failed.add(name)
       }
     }

@@ -51,6 +51,7 @@ import {
 import { errorStatus, errorMessage } from '@interop/was-client/sync'
 import type { WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
+import { log } from '../log.js'
 
 /**
  * The outcome of a best-effort declaration write (an encryption-descriptor PUT,
@@ -790,10 +791,10 @@ export function remoteDescriptorSource({
       try {
         return await remoteStore.readCollectionEncryption(collectionId)
       } catch (err) {
-        console.warn(
-          `Descriptor refresh for collection "${collectionId}" failed:`,
+        log.warn('Descriptor refresh for a collection failed.', {
+          collectionId,
           err
-        )
+        })
         return undefined
       }
     }

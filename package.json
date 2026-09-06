@@ -13,8 +13,9 @@
     "prepare": "pnpm run build",
     "rebuild": "pnpm run clear && pnpm run build",
     "typecheck": "tsc -p tsconfig.dev.json",
-    "test": "pnpm run fix && pnpm run lint && pnpm run typecheck && pnpm run test:node && pnpm run test:browser",
+    "test": "pnpm run fix && pnpm run lint && pnpm run typecheck && pnpm run test:node && pnpm run test:dist && pnpm run test:browser",
     "test:browser": "playwright test",
+    "test:dist": "pnpm run build && ! grep -rl @interop/logger dist",
     "test:node": "vitest run",
     "test:coverage": "vitest run --coverage"
   },
@@ -87,6 +88,7 @@
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.1",
     "@eslint/js": "^10.0.1",
+    "@interop/logger": "^0.2.0",
     "@mui/icons-material": "^9.0.0",
     "@mui/material": "^9.0.0",
     "@playwright/test": "^1.60.0",

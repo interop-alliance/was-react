@@ -53,6 +53,7 @@ import {
   RW_ACTIONS,
   type GrantRequestCollection
 } from './loginRequest.js'
+import { log } from '../log.js'
 
 /**
  * Verifies a login response VP cryptographically and structurally (steps 1-2
@@ -91,13 +92,12 @@ export async function verifyLoginPresentation({
         ? [{ check: check.check, problems: check.outcome.problems }]
         : []
     )
-    // The thrown message surfaces in the login UI; the raw presentation and
-    // the per-check problem details are console-only diagnostics.
-    console.error(
-      'Wallet presentation failed verification. Presentation:',
-      JSON.stringify(presentation, null, 2)
-    )
-    console.error('Failing checks:', JSON.stringify(failures, null, 2))
+    // The thrown message surfaces in the login UI; the per-check problem
+    // details are diagnostics. The presentation itself is NOT logged: it
+    // carries credential contents (an App Connect response embeds the app key
+    // and its seed), which no log sink may receive.
+    log.error('Wallet presentation failed verification.')
+    log.error('Failing checks.', { failures })
     const summary = failures
       .map(failure => {
         const detail = failure.problems

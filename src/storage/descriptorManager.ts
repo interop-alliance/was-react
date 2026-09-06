@@ -22,6 +22,7 @@ import type { IdentityAgents } from '../identity/agents.js'
 import { createDescriptorCache, type SeedStore } from '../identity/seedStore.js'
 import type { ParsedGrants } from '../grants.js'
 import { readRemoteDescriptors } from './wasSync.js'
+import { log } from '../log.js'
 
 /**
  * The four descriptor operations, bound to one app's collections and stores.
@@ -163,7 +164,7 @@ export function createDescriptorManager({
       }
       return Object.keys(descriptors).length > 0 ? descriptors : undefined
     } catch (err) {
-      console.warn('Failed to load cached encryption descriptors:', err)
+      log.warn('Failed to load cached encryption descriptors', { err })
       return undefined
     }
   }
@@ -253,10 +254,10 @@ export function createDescriptorManager({
         throw failures[0]?.err
       }
       for (const { collection, err } of failures) {
-        console.warn(
-          `Opening collection "${collection.id}" fail-closed: its encryption ` +
-            `descriptor could not be read at restore.`,
-          err
+        log.warn(
+          'Opening a collection fail-closed: its encryption descriptor could ' +
+            'not be read at restore.',
+          { collectionId: collection.id, err }
         )
       }
     }
@@ -269,7 +270,7 @@ export function createDescriptorManager({
         controllerDid: identity.controllerDid
       })
     } catch (err) {
-      console.warn('Failed to cache encryption descriptors at login:', err)
+      log.warn('Failed to cache encryption descriptors at login', { err })
     }
     return { descriptors: { ...fetched, ...cached }, fresh: fetched }
   }

@@ -15,6 +15,7 @@
 - [Session lifecycle](#session-lifecycle)
 - [Sync architecture](#sync-architecture)
 - [Entry points](#entry-points)
+- [Logging](#logging)
 - [Dev tooling](#dev-tooling)
 - [Testing](#testing)
 - [Contribute](#contribute)
@@ -595,6 +596,25 @@ export function App() {
 `ProtectedRoute` calls `restore()` on mount, shows a spinner while the session
 restores and the stores hydrate, redirects an unauthenticated visitor to
 `loginPath`, and renders the routed `<Outlet />` once ready.
+
+## Logging
+
+The package logs through a structural `Logger` port (four two-arg methods:
+`debug`, `info`, `warn`, `error`, each taking a static message and an optional
+`data` object, with `data.err` reserved for an Error). An app that never wires
+one gets a console fallback prefixed `[was-react]`. To route the package's
+events into the app's own sinks, install a logger once at bootstrap:
+
+```ts
+import { createLogger } from '@interop/logger'
+import { setLogger } from '@interop/was-react'
+
+setLogger(createLogger('wr'))
+```
+
+`setLogger` returns the previously installed logger, so a test can restore it in
+`afterEach`. `@interop/logger` is not a dependency of this package; any object
+with the four methods works.
 
 ## Dev tooling
 

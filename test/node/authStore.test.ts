@@ -55,6 +55,8 @@ import {
   dbNameForController
 } from '../../src/storage/localStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
+import { captureLogger } from '@interop/logger'
+import { setLogger } from '../../src/log.js'
 
 // Inert replication: the machine's activate / persist / teardown logic runs
 // without opening any network or `window`-backed replication machinery. The
@@ -315,7 +317,8 @@ describe('boot()', () => {
   })
 
   it('still lands connected when a descriptor read fails during the restore', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     const seedStore = newSeedStore()
     const { controllerDid } = await persistSession({ seedStore })
     const store = makeStore(baseConfig(), seedStore)
@@ -340,10 +343,15 @@ describe('boot()', () => {
     expect(store.getState().status).toBe('connected')
     expect(store.getState().controllerDid).toBe(controllerDid)
     expect(store.getState().error).toBeNull()
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('"notes"'),
-      expect.any(Error)
-    )
+    expect(
+      capture.events.some(
+        event =>
+          event.level === 'warn' &&
+          event.data?.collectionId === 'notes' &&
+          event.err instanceof Error
+      )
+    ).toBe(true)
+    setLogger(previous)
   })
 
   it('reuses the persisted anonymous seed/DID across a second boot', async () => {
@@ -781,7 +789,8 @@ describe('adoption', () => {
     // The post-activation cleanup fails (an anonymous database still open in
     // another tab, an IndexedDB quota error). Best-effort: the login must still
     // report the live, connected session.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     vi.spyOn(LocalStore, 'removeDatabase').mockRejectedValue(
       new Error('database is locked')
     )
@@ -798,10 +807,14 @@ describe('adoption', () => {
       title: string
     }>('notes')
     expect(adopted.map(doc => doc.title)).toEqual(['adopt-me'])
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to delete the adopted anonymous replica'),
-      expect.anything()
-    )
+    expect(
+      capture.events.some(
+        event =>
+          event.level === 'warn' &&
+          event.msg.includes('Failed to delete the adopted anonymous replica')
+      )
+    ).toBe(true)
+    setLogger(previous)
   })
 
   it('collects the pre-login data even when a destroy lands mid-login', async () => {

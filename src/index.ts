@@ -9,6 +9,9 @@
  * This is the core entry. The optional MUI + react-router components live at
  * `@interop/was-react/mui`; the Node-only dev-grant provisioner lives at
  * `@interop/was-react/dev`. Neither is re-exported here.
+ *
+ * It also exports the logging port -- `setLogger` and the `Logger` type -- so
+ * an app can route this library's diagnostics into its own logger.
  */
 
 // Configuration contract.
@@ -202,3 +205,7 @@ export {
   DOCUMENT_EXPORT_FORMAT,
   type DocumentApp
 } from './react/index.js'
+
+// The logging port: an app wires its own logger once at bootstrap, and this
+// library's diagnostics ride it instead of the console fallback.
+export { setLogger, type Logger } from './log.js'

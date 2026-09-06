@@ -38,6 +38,8 @@ import { requestGrants } from '../../src/auth/loginFlow.js'
 import { parseGrants } from '../../src/grants.js'
 import { startWasSync } from '../../src/storage/wasSync.js'
 import { hasStore } from '../../src/storage/storageManager.js'
+import { captureLogger } from '@interop/logger'
+import { setLogger } from '../../src/log.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'
 
 // Replace the live replication bootstrap with an inert resolver.
@@ -242,18 +244,27 @@ describe('activateConnected fallback on failure', () => {
     await store.getState().boot()
     expect(store.getState().status).toBe('local')
 
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const seed = crypto.getRandomValues(new Uint8Array(32))
-    await expect(
-      store.getState().connectWithGrants({ seed, grants: noteGrants() })
-    ).rejects.toThrow(/connected hydrate boom/)
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
+    try {
+      const seed = crypto.getRandomValues(new Uint8Array(32))
+      await expect(
+        store.getState().connectWithGrants({ seed, grants: noteGrants() })
+      ).rejects.toThrow(/connected hydrate boom/)
 
-    // The fallback's own failure is warned about, not surfaced in its place.
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining('local replica after a connected activation'),
-      expect.any(Error)
-    )
-    expect(store.getState().error).toMatch(/connected hydrate boom/)
+      // The fallback's own failure is warned about, not surfaced in its place.
+      expect(
+        capture.events.some(
+          event =>
+            event.level === 'warn' &&
+            event.msg.includes('local replica after a connected activation') &&
+            event.err instanceof Error
+        )
+      ).toBe(true)
+      expect(store.getState().error).toMatch(/connected hydrate boom/)
+    } finally {
+      setLogger(previous)
+    }
   })
 })
 

@@ -1,7 +1,7 @@
 /*!
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import type { ZcapClient } from '@interop/ezcap'
 import type {
   IKeyAgreementKey,
@@ -11,6 +11,8 @@ import type {
 import { NotImplementedError, WasServerError } from '@interop/was-client'
 import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
 import type { ParsedGrants } from '../grants.js'
+import { captureLogger } from '@interop/logger'
+import { setLogger } from '../log.js'
 
 const parsed: ParsedGrants = {
   serverUrl: 'https://was.example',
@@ -242,7 +244,8 @@ describe('WasRemoteStore.readCollectionEncryption', () => {
 
 describe('remoteDescriptorSource', () => {
   it('warns and answers undefined when the read fails', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     try {
       const { zcapClient: stub } = stubZcapClient([
         {
@@ -259,9 +262,11 @@ describe('remoteDescriptorSource', () => {
           collectionId: 'notes'
         })
       ).toBeUndefined()
-      expect(warn).toHaveBeenCalledTimes(1)
+      expect(
+        capture.events.filter(event => event.level === 'warn')
+      ).toHaveLength(1)
     } finally {
-      warn.mockRestore()
+      setLogger(previous)
     }
   })
 })

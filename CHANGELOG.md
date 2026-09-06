@@ -1,5 +1,29 @@
 # @interop/was-react Changelog
 
+## 0.22.0 - TBD
+
+### Added
+
+- The logging port. `setLogger(logger)` on the package root installs the logger
+  every call site in this package emits through and returns the one installed
+  before it; the structural `Logger` type (`debug`, `info`, `warn`, `error`,
+  each `(msg, data?)`) is exported beside it. An app wires it once at bootstrap,
+  e.g. `setLogger(createLogger('wr'))` with `@interop/logger`. `@interop/logger`
+  is a devDependency only: the published artifact carries no reference to it.
+
+### Changed
+
+- Every `console.*` call site in `src/` (39, across 11 files) emits through the
+  port. An unwired consumer keeps today's channel and level through the console
+  fallback, but not byte-identical output: messages carry a `[was-react]`
+  prefix, values previously interpolated into the message text (collection ids,
+  statuses, database names) now arrive in one trailing `data` object, and an
+  Error rides as `data.err`. Anything matching console text by substring should
+  not anchor at position 0.
+- A failed wallet-presentation verification no longer logs the presentation
+  body. An App Connect response embeds the app-key credential and its seed,
+  which no log sink may receive; the per-check failures are still logged.
+
 ## 0.21.0 - 2026-09-05
 
 ### Changed

@@ -36,6 +36,8 @@ import type {
   IKeyResolver
 } from '@interop/data-integrity-core'
 import type { WasCollectionConfig } from '../../src/config.js'
+import { captureLogger } from '@interop/logger'
+import { setLogger } from '../../src/log.js'
 
 // The SyncController wires an `online` listener on `window`; Node has no
 // window, so give it an inert stand-in.
@@ -357,7 +359,8 @@ describe('blinded-index query against was-teaching-server', () => {
     const applied = vi
       .spyOn(LocalStore.prototype, 'applyCollectionMeta')
       .mockRejectedValue(new Error('undecodable metadata envelope'))
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
 
     const watchedController = new SyncController({
       collections: REGISTRY,
@@ -383,8 +386,8 @@ describe('blinded-index query against was-teaching-server', () => {
       })
       expect(bootstrap.remoteStore).toBeDefined()
       expect(
-        warn.mock.calls.some(([message]) =>
-          String(message).includes('Blinded-index schema install failed')
+        capture.events.some(event =>
+          event.msg.includes('Blinded-index schema install failed')
         )
       ).toBe(true)
     } finally {
@@ -392,7 +395,7 @@ describe('blinded-index query against was-teaching-server', () => {
       await watchedStore.remove()
       read.mockRestore()
       applied.mockRestore()
-      warn.mockRestore()
+      setLogger(previous)
     }
   }, 60000)
 

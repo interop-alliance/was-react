@@ -84,6 +84,7 @@ import { mergeAdopted } from '../storage/adopt.js'
 import { startWasSync } from '../storage/wasSync.js'
 import { errorMessage } from '@interop/was-client/sync'
 import { SyncController } from '../storage/syncController.js'
+import { log } from '../log.js'
 
 /**
  * The four session states:
@@ -467,7 +468,7 @@ export function createAuthStore({
         void descriptorManager
           .cacheDescriptors({ descriptors, controllerDid })
           .catch(err =>
-            console.warn('Failed to cache encryption descriptors:', err)
+            log.warn('Failed to cache encryption descriptors', { err })
           ),
       ...(knownDescriptors && { knownDescriptors })
     })
@@ -529,7 +530,7 @@ export function createAuthStore({
     // but the UI no longer reports "Local only" over a wallet-connected
     // session that simply failed to start replicating.
     void pendingSync.catch(err => {
-      console.warn('WAS sync failed to start:', err)
+      log.warn('WAS sync failed to start', { err })
       // Deferred a macrotask: an immediate bootstrap failure would otherwise
       // race the caller's own `set({ ..., error: null })` (which lands right
       // after `persistAndStartSync` resolves) and be wiped by it.
@@ -623,7 +624,7 @@ export function createAuthStore({
       // it here, or the open database keeps its IndexedDB connection, counts
       // toward RxDB's process-wide cap, and blocks a later `remove()`.
       await local.close().catch((closeErr: unknown) => {
-        console.warn('Error closing the losing replica:', closeErr)
+        log.warn('Error closing the losing replica', { err: closeErr })
       })
       throw err
     }
@@ -740,9 +741,10 @@ export function createAuthStore({
       try {
         await openLocal()
       } catch (localErr) {
-        console.warn(
-          'Failed to re-open the local replica after a connected activation failure:',
-          localErr
+        log.warn(
+          'Failed to re-open the local replica after a connected activation ' +
+            'failure',
+          { err: localErr }
         )
       }
       store.setState({ error: errorMessage(err) })
@@ -788,7 +790,7 @@ export function createAuthStore({
           await local.close()
         }
       } catch (err) {
-        console.warn('Error tearing down the local store:', err)
+        log.warn('Error tearing down the local store', { err })
       }
     }
     storageContext.clearEntityStores()
@@ -816,7 +818,7 @@ export function createAuthStore({
           anonControllerDid = (await deriveIdentity({ seed })).controllerDid
         }
       } catch (err) {
-        console.warn('Could not resolve the anonymous replica to wipe:', err)
+        log.warn('Could not resolve the anonymous replica to wipe', { err })
       }
     }
     return snapshotWipeTargets({
@@ -981,7 +983,7 @@ export function createAuthStore({
         ...(storage && { storage })
       })
     } catch (err) {
-      console.warn('Failed to delete the adopted anonymous replica:', err)
+      log.warn('Failed to delete the adopted anonymous replica', { err })
     }
   }
 
@@ -1089,7 +1091,7 @@ export function createAuthStore({
           error: null
         })
       } catch (err) {
-        console.warn('Session boot failed:', err)
+        log.warn('Session boot failed', { err })
         // `activateConnected` already re-opens local on its own failure; only
         // open local here for an earlier failure that never reached it.
         if (get().status === 'boot') {
@@ -1369,7 +1371,7 @@ export function createAuthStore({
             )
           )
         } catch (err) {
-          console.warn('Could not probe the local replica for data:', err)
+          log.warn('Could not probe the local replica for data', { err })
           return false
         }
         return counts?.some(count => count > 0) ?? false

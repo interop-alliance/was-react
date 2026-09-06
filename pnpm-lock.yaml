@@ -69,6 +69,9 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.10.0)
+      '@interop/logger':
+        specifier: ^0.2.0
+        version: 0.2.0
       '@mui/icons-material':
         specifier: ^9.0.0
         version: 9.4.0(@mui/material@9.4.0(@emotion/react@11.14.0(@types/react@19.2.18)(react@19.2.8))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react@19.2.8))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(react@19.2.8)
@@ -754,6 +757,10 @@ packages:
   '@interop/jsonld@9.0.3':
     resolution: {integrity: sha512-i25LeKC9a9GBdwVGopwGlzvTQPuq5Ssgvt/Vh3XdNhJ2yIySCZmp+XApKlL14PxnjewFUfRnBO+bpm1qiAZW/A==}
     engines: {node: '>=18'}
+
+  '@interop/logger@0.2.0':
+    resolution: {integrity: sha512-Iv79MVdrnqYefi0P0G4npe/abOdEkgMc7Pb7ZanN5TFupO1TK0PxiAA425ikcbq2B/TyuBDdpuWbB8M7m1eTOA==}
+    engines: {node: '>=24.0'}
 
   '@interop/lru-memoize@4.0.3':
     resolution: {integrity: sha512-6c8dnoQNIiL25Q4YovC1a44mREO1lzW3F/lmvdwbAMMbhtGGRoQeqo1H4diwNhBzaxRrUMXrAIwbM26POmI/Yg==}
@@ -4208,6 +4215,8 @@ snapshots:
       canonicalize: 2.1.0
       lru-cache: 6.0.0
       rdf-canonize: 5.0.0
+
+  '@interop/logger@0.2.0': {}
 
   '@interop/lru-memoize@4.0.3':
     dependencies:

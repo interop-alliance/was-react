@@ -32,6 +32,7 @@ import {
 import type { LocalStore } from './localStore.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'
 import type { SyncStatusStore } from './syncStatusStore.js'
+import { log } from '../log.js'
 
 export { isAuthError } from '@interop/was-sync/rxdb'
 
@@ -138,8 +139,10 @@ export class SyncController {
     for (const { key, id } of this.#collections) {
       const capability = remoteStore.collectionCapability(id)
       if (!capability) {
-        console.warn(
-          `Skipping sync for "${id}": no delegated capability covers it.`
+        log.warn(
+          'Skipping sync for a collection: no delegated capability ' +
+            'covers it.',
+          { collectionId: id }
         )
         setStatus(key, 'error')
         continue
@@ -176,8 +179,8 @@ export class SyncController {
       onlineSource: browserOnlineSource(),
       pollMs: this.#sync.pollMs ?? DEFAULT_SYNC_POLL_MS,
       log: {
-        warn: (message, meta) => console.warn(message, meta),
-        error: (message, meta) => console.error(message, meta)
+        warn: (message, meta) => log.warn(message, meta),
+        error: (message, meta) => log.error(message, meta)
       }
     })
     try {

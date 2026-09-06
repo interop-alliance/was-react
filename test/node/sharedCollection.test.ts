@@ -33,6 +33,8 @@ import {
   SharedCollectionUnavailableError
 } from '../../src/storage/sharedCollectionReader.js'
 import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
+import { captureLogger } from '@interop/logger'
+import { setLogger } from '../../src/log.js'
 
 const APP_SEED = new Uint8Array(32).map((_, index) => (index * 7 + 3) & 0xff)
 const OWNER_SEED = new Uint8Array(32).map((_, index) => (index * 5 + 11) & 0xff)
@@ -280,7 +282,8 @@ describe('SharedCollectionReader.list', () => {
     const first = await encrypt({ id: 'credential-1', title: 'one' })
     const second = await encrypt({ id: 'credential-2', title: 'two' })
 
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     try {
       const remoteStore = fakeRemoteStore({
         encryption,
@@ -304,12 +307,12 @@ describe('SharedCollectionReader.list', () => {
       expect(remoteStore.resourceGets()).toBe(2)
       // Warned once about the slow path, and only once across repeat calls.
       await reader.list()
-      const slowWarnings = warn.mock.calls.filter(call =>
-        String(call[0]).includes('slow way')
+      const slowWarnings = capture.events.filter(event =>
+        event.msg.includes('slow way')
       )
       expect(slowWarnings).toHaveLength(1)
     } finally {
-      warn.mockRestore()
+      setLogger(previous)
     }
   })
 })
@@ -402,7 +405,8 @@ describe('SharedCollectionReader mid-session revoke', () => {
   it('warns and skips the undecryptable resources instead of failing list()', async () => {
     const { app, stale, readable, unreadable } = await revokeFixture()
 
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     try {
       const remoteStore = fakeRemoteStore({
         // Opened on the roster this app is in; the refresh the unknown epoch
@@ -428,8 +432,8 @@ describe('SharedCollectionReader mid-session revoke', () => {
         { id: readable.id, data: { id: 'credential-1', title: 'before' } }
       ])
       expect(remoteStore.encryptionReads()).toBe(2)
-      const skipWarnings = warn.mock.calls.filter(call =>
-        String(call[0]).includes('is not a recipient of its envelope')
+      const skipWarnings = capture.events.filter(event =>
+        event.msg.includes('is not a recipient of its envelope')
       )
       expect(skipWarnings).toHaveLength(1)
 
@@ -438,7 +442,7 @@ describe('SharedCollectionReader mid-session revoke', () => {
       expect(await reader.get(unreadable.id)).toBeUndefined()
       expect(remoteStore.encryptionReads()).toBe(2)
     } finally {
-      warn.mockRestore()
+      setLogger(previous)
     }
   })
 

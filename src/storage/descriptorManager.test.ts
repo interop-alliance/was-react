@@ -18,6 +18,8 @@ import type { ParsedGrants } from '../grants.js'
 import type { WasCollectionConfig } from '../config.js'
 import { createDescriptorManager } from './descriptorManager.js'
 import { readRemoteDescriptors, type DescriptorReadOutcome } from './wasSync.js'
+import { captureLogger } from '@interop/logger'
+import { setLogger } from '../log.js'
 
 vi.mock('./wasSync.js', () => ({
   readRemoteDescriptors: vi.fn(async (): Promise<DescriptorReadOutcome> => ({
@@ -180,7 +182,8 @@ describe('loadCachedDescriptors', () => {
   it('warns and returns undefined when the store read throws', async () => {
     const sessionStore = fakeSeedStore()
     sessionStore.failRead = true
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     const manager = createDescriptorManager({
       collections,
       sessionStore,
@@ -192,8 +195,8 @@ describe('loadCachedDescriptors', () => {
         controllerDid: identity.controllerDid
       })
     ).toBeUndefined()
-    expect(warn).toHaveBeenCalled()
-    warn.mockRestore()
+    expect(capture.events.some(event => event.level === 'warn')).toBe(true)
+    setLogger(previous)
   })
 })
 
@@ -291,7 +294,8 @@ describe('completeDescriptors', () => {
   })
 
   it('warns and leaves the collection fail-closed on a restore when the live read fails', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const capture = captureLogger('wr')
+    const previous = setLogger(capture.logger)
     try {
       const manager = createDescriptorManager({
         collections: [...collections, tasks],
@@ -313,12 +317,16 @@ describe('completeDescriptors', () => {
 
       // The cached set opens as-is; `tasks` is simply not in it.
       expect(result).toEqual({ descriptors: cached, fresh: {} })
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining('"tasks"'),
-        failure
-      )
+      expect(
+        capture.events.some(
+          event =>
+            event.level === 'warn' &&
+            event.data?.collectionId === 'tasks' &&
+            event.err === failure
+        )
+      ).toBe(true)
     } finally {
-      warn.mockRestore()
+      setLogger(previous)
     }
   })
 

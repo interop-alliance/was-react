@@ -47,6 +47,7 @@ import {
   type CheckedGrants
 } from './verifyResponse.js'
 import type { ParsedGrants } from '../grants.js'
+import { log } from '../log.js'
 
 /**
  * The cohesive configuration for a Login-With-Wallet flow. App-specific values
@@ -191,10 +192,10 @@ function checkGrantsForCollections({
   const grants = grantsOf(presentation)
   if (collections.length === 0 && grants.length === 0) {
     if (sharedCollections.length > 0) {
-      console.warn(
+      log.warn(
         'The wallet returned no storage grants; the requested shared ' +
-          `collection(s) [${sharedCollections.join(', ')}] were declined, so ` +
-          'no shared reader will be opened.'
+          'collections were declined, so no shared reader will be opened.',
+        { sharedCollections }
       )
     }
     return {
@@ -225,9 +226,10 @@ function checkGrantsForCollections({
 function liveOrigin(config: LoginConfig): string {
   const origin = window.location.origin
   if (config.appOrigin !== origin) {
-    console.warn(
-      `Configured appOrigin "${config.appOrigin}" differs from this app's ` +
-        `live browser origin "${origin}"; the live origin is what binds.`
+    log.warn(
+      "The configured appOrigin differs from this app's live browser origin; " +
+        'the live origin is what binds.',
+      { appOrigin: config.appOrigin, origin }
     )
   }
   return origin

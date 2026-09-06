@@ -46,16 +46,13 @@ import {
   type EncryptionDescriptorCache,
   type EncryptionDescriptorSource
 } from '@interop/wallet-core/descriptors'
-import {
-  errorMessage,
-  isEncryptedEnvelope,
-  type DocCipher
-} from '@interop/was-client/sync'
+import { isEncryptedEnvelope, type DocCipher } from '@interop/was-client/sync'
 import type { Json } from '@interop/was-sync'
 import {
   remoteDescriptorSource,
   type WasRemoteStore
 } from './wasRemoteStore.js'
+import { log } from '../log.js'
 
 /**
  * Default page size for the `changes`-feed walk. The server clamps its own
@@ -209,10 +206,11 @@ export class SharedCollectionReader {
       }
       if (!this.#warnedSlowPath) {
         this.#warnedSlowPath = true
-        console.warn(
-          `Shared collection "${this.collectionId}" is being read the slow ` +
-            `way (one request per resource): its backend does not support the ` +
-            `"changes-query" feature the paged read path needs.`
+        log.warn(
+          'A shared collection is being read the slow way (one request per ' +
+            'resource): its backend does not support the "changes-query" ' +
+            'feature the paged read path needs.',
+          { collectionId: this.collectionId }
         )
       }
       return await this.#listViaResources(collection)
@@ -338,9 +336,10 @@ export class SharedCollectionReader {
       return undefined
     }
     if (!isEncryptedEnvelope(body)) {
-      console.warn(
-        `Skipping resource "${id}" of shared collection ` +
-          `"${this.collectionId}": its body is not an EDV envelope.`
+      log.warn(
+        'Skipping a resource of a shared collection: its body is not an EDV ' +
+          'envelope.',
+        { resourceId: id, collectionId: this.collectionId }
       )
       return undefined
     }
@@ -359,12 +358,12 @@ export class SharedCollectionReader {
    * expected rather than corruption, so it is called out by name.
    */
   #skipUndecryptable({ id, err }: { id: string; err: unknown }): undefined {
-    console.warn(
-      `Skipping resource "${id}" of shared collection ` +
-        `"${this.collectionId}": this app is not a recipient of its envelope ` +
-        `(expected for legacy resources written before the collection had ` +
-        `an epoch roster -- those stay sealed to the owner alone and are ` +
-        `never re-encrypted). ${errorMessage(err)}`
+    log.warn(
+      'Skipping a resource of a shared collection: this app is not a ' +
+        'recipient of its envelope (expected for legacy resources written ' +
+        'before the collection had an epoch roster -- those stay sealed to ' +
+        'the owner alone and are never re-encrypted).',
+      { resourceId: id, collectionId: this.collectionId, err }
     )
     return undefined
   }

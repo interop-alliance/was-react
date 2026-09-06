@@ -40,6 +40,7 @@ import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
 import { SharedCollectionReader } from './sharedCollectionReader.js'
 import type { LocalStore } from './localStore.js'
 import type { SyncController } from './syncController.js'
+import { log } from '../log.js'
 
 /**
  * What the sync bootstrap hands back: the delegated remote store, plus a
@@ -308,10 +309,11 @@ export async function startWasSync({
         if (hasKeyEpochs(encryption)) {
           await localStore.applyRemoteDescriptor({ collectionId, encryption })
         } else {
-          console.warn(
-            `Collection "${collectionId}" has no key-epoch roster on its ` +
-              `encryption descriptor; it stays unreadable (fail-closed) ` +
-              `until its provisioner installs one.`
+          log.warn(
+            'A collection has no key-epoch roster on its encryption ' +
+              'descriptor; it stays unreadable (fail-closed) until its ' +
+              'provisioner installs one.',
+            { collectionId }
           )
         }
         const declared = await remoteStore.markCollectionEncrypted(
@@ -319,9 +321,10 @@ export async function startWasSync({
           { encryption }
         )
         if (!declared.ok) {
-          console.warn(
-            `Encryption descriptor PUT not authorized for "${collectionId}" (status ${declared.status ?? 'n/a'}).`
-          )
+          log.warn('Encryption descriptor PUT not authorized.', {
+            collectionId,
+            status: declared.status ?? 'n/a'
+          })
         }
         // The private-collection counterpart of the public `indexes` PUT: the
         // blinded-index schema lives in the collection's own encrypted
@@ -332,10 +335,11 @@ export async function startWasSync({
           encryption
         })
         if (!blinded.ok) {
-          console.warn(
-            `Blinded-index declaration failed for "${collectionId}": ` +
-              `${blinded.error ?? 'unknown error'} (status ${blinded.status ?? 'n/a'}).`
-          )
+          log.warn('Blinded-index declaration failed.', {
+            collectionId,
+            error: blinded.error ?? 'unknown error',
+            status: blinded.status ?? 'n/a'
+          })
         }
         // The schema the declaration just settled is then installed on this
         // collection's local cipher, so the documents this replica writes from
@@ -356,18 +360,19 @@ export async function startWasSync({
               })
             }
           } catch (err) {
-            console.warn(
-              `Blinded-index schema install failed for "${collectionId}":`,
+            log.warn('Blinded-index schema install failed.', {
+              collectionId,
               err
-            )
+            })
           }
         }
       }
       const indexes = await remoteStore.declareCollectionIndexes(collectionId)
       if (!indexes.ok) {
-        console.warn(
-          `Indexes declaration PUT not authorized for "${collectionId}" (status ${indexes.status ?? 'n/a'}).`
-        )
+        log.warn('Indexes declaration PUT not authorized.', {
+          collectionId,
+          status: indexes.status ?? 'n/a'
+        })
       }
     }
   })
@@ -375,10 +380,10 @@ export async function startWasSync({
   // opened with (the cached descriptor, or fail-closed) and receives no
   // description PUT this session. It is not "no descriptor".
   for (const { collection, err } of failures) {
-    console.warn(
-      `Skipping the sync bootstrap of collection "${collection.id}": its ` +
-        `encryption descriptor could not be read.`,
-      err
+    log.warn(
+      'Skipping the sync bootstrap of a collection: its encryption ' +
+        'descriptor could not be read.',
+      { collectionId: collection.id, err }
     )
   }
   // Install the encryption-descriptor source so a decrypt that meets an unseen
@@ -400,15 +405,17 @@ export async function startWasSync({
   await Promise.all(
     sharedCollections.map(async ({ key, id }) => {
       if (!parsed.byCollectionId[id]) {
-        console.warn(
-          `Skipping shared collection "${id}": no delegated capability covers it.`
+        log.warn(
+          'Skipping a shared collection: no delegated capability covers it.',
+          { collectionId: id }
         )
         return
       }
       if (!identityKeys) {
-        console.warn(
-          `Skipping shared collection "${id}": no identity key-agreement key was ` +
-            `supplied to decrypt it with.`
+        log.warn(
+          'Skipping a shared collection: no identity key-agreement key was ' +
+            'supplied to decrypt it with.',
+          { collectionId: id }
         )
         return
       }
@@ -420,7 +427,7 @@ export async function startWasSync({
           collectionId: id
         })
       } catch (err) {
-        console.warn(`Skipping shared collection "${id}":`, err)
+        log.warn('Skipping a shared collection.', { collectionId: id, err })
       }
     })
   )

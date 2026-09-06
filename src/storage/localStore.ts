@@ -58,6 +58,7 @@ import {
   createUnprovisionedDocCipher,
   type DocCipher
 } from './docCipher.js'
+import { log } from '../log.js'
 import { remotePayloadWins } from '@interop/social-core'
 import { epochRostersEqual, hasKeyEpochs } from '@interop/was-client/edv'
 import { isUnknownEpochError } from '@interop/was-client/sync'
@@ -312,8 +313,8 @@ export class LocalStore {
               // comparing stamps, so they get a real logger rather than being
               // dropped on the package's no-op default.
               {
-                warn: (message, meta) => console.warn(message, meta),
-                error: (message, meta) => console.error(message, meta)
+                warn: (message, meta) => log.warn(message, meta),
+                error: (message, meta) => log.error(message, meta)
               }
             )
           }
