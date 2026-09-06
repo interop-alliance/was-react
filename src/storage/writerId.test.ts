@@ -2,11 +2,11 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit tests for the persisted writer-id wipe: {@link clearPersistedWriterId}
- * removes both the current and the pre-rename localStorage keys, so a
- * subsequent {@link getWriterId} mints a fresh id rather than reading a
- * leftover one. `getWriterId` itself (mint-once, custom prefix, legacy-key
- * migration) is covered by `test/node/writerId.test.ts`.
+ * Unit tests for this library's binding over `@interop/was-sync`'s writer-id
+ * mint: that it supplies {@link DEFAULT_STORAGE_KEY_PREFIX} and `localStorage`,
+ * and that a clear touches only the prefix it was given. The mint's own
+ * semantics (mint-once, the fresh-id-per-call answer from a storage that
+ * throws) are the package's tests.
  *
  * @vitest-environment jsdom
  */
@@ -28,14 +28,6 @@ describe('clearPersistedWriterId', () => {
 
     const second = getWriterId()
     expect(second).not.toBe(first)
-  })
-
-  it('removes the pre-rename legacy key too', () => {
-    localStorage.setItem(`${DEFAULT_STORAGE_KEY_PREFIX}clientId`, 'legacy-id')
-    clearPersistedWriterId()
-    expect(
-      localStorage.getItem(`${DEFAULT_STORAGE_KEY_PREFIX}clientId`)
-    ).toBeNull()
   })
 
   it('only clears the configured prefix, leaving other prefixes intact', () => {

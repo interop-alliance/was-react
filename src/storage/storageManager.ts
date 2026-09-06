@@ -18,7 +18,7 @@
  * down) is inert and is replaced without complaint, which is what a React
  * dev-mode double `useState` initializer or a test's sequence of stores needs.
  */
-import type { LwwFields } from '../sync/lww.js'
+import type { LwwFields } from '@interop/was-sync'
 import type { LocalStore } from './localStore.js'
 import type { StorageContext } from './storageContext.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'

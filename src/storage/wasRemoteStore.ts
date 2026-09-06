@@ -48,7 +48,7 @@ import {
   resourcePath,
   toUrl
 } from '@interop/was-client/paths'
-import { errorStatus, errorMessage } from '../sync/index.js'
+import { errorStatus, errorMessage } from '@interop/was-client/sync'
 import type { WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
 

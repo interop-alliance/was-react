@@ -38,7 +38,7 @@ import {
 } from '@interop/was-client/paths'
 import { deriveIdentity } from '../identity/agents.js'
 import { RW_ACTIONS } from '../auth/loginRequest.js'
-import { errorStatus } from '../sync/index.js'
+import { errorStatus } from '@interop/was-client/sync'
 
 /**
  * A fixed, distinct default provisioner seed -- the "wallet" that owns the dev

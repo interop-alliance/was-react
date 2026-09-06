@@ -60,8 +60,14 @@ Peer dependencies (install the ones you use):
 pnpm add react zustand rxdb
 ```
 
-`react >= 19`, `zustand ^5`, and `rxdb ^17` are required peers. The optional
-`@interop/was-react/mui` entry additionally needs `@mui/material`,
+`react >= 19`, `zustand ^5`, and `rxdb ^17` are required peers. `rxdb` stays
+required for now: the WAS replication driver moved out to `@interop/was-sync`
+(installed for you as a dependency, whose root entry needs no `rxdb`), but
+`LocalStore` is still exported from this package's root entry and imports `rxdb`
+itself. An app that never builds a local replica can drop the peer once that
+split lands.
+
+The optional `@interop/was-react/mui` entry additionally needs `@mui/material`,
 `@mui/icons-material`, and `react-router`; the core entry never imports them.
 
 No particular bundler is required: the library reads `import.meta.env.MODE` (a

@@ -1,5 +1,128 @@
 # @interop/was-react Changelog
 
+## 0.21.0 - TBD
+
+### Changed
+
+- The WAS replication driver now lives in `@interop/was-sync` and is a
+  dependency of this package. What moved: the changes-feed pull handler, the
+  conditional-write push handler, the `replicateRxCollection` wiring, the
+  feed-backed conflict re-read, the synced-document schema, the conflict-handler
+  seam with its last-write-wins default, the writer-id mint, and the controller
+  core. `src/sync/` is gone; `docCipher.ts` and `wasSyncPort.ts` moved to
+  `src/storage/`, which is where this package's key handling stays.
+- `SyncController` (`src/storage/syncController.ts`) is now a binding over the
+  package's `createSyncController`. Its public shape is unchanged
+  (`start({ remoteStore, localStore, onRemoteChange, onAuthError })`, `reSync`,
+  a terminal `stop`), and so are the skip of an uncovered collection, the status
+  keying on the logical collection key, and the failed bring-up that flags every
+  collection and rethrows. One behavior is new: the periodic re-sync now skips
+  its tick while the browser reports itself offline, instead of firing into a
+  known-down network.
+- `storage/writerId.ts` is a thin binding over the package's mint: it supplies
+  `DEFAULT_STORAGE_KEY_PREFIX` and `localStorage`. `getWriterId` and
+  `clearPersistedWriterId` keep their names and their optional-prefix signature.
+- `isAuthError` keeps its name and is re-exported from `@interop/was-sync/rxdb`.
+  It is still exported from this package's root.
+- `SyncStatus` is re-exported from `@interop/was-client/sync`, which now owns
+  the four-string vocabulary the replication driver and the wallets' own sync
+  engine both report. The Zustand status store, `deriveSyncRollup`, and
+  `useSyncStatus` are unchanged.
+- The "master" names became "primary" in the package: `MasterState` is
+  `PrimaryState`, `MasterReadCache` is `PrimaryReadCache`, and
+  `withFeedMasterRead` is `withFeedPrimaryRead`. RxDB's own `assumedMasterState`
+  and `realMasterState` fields are RxDB's API and are untouched.
+- The replica schema is the package's merged one, which adds `createdBy`. RxDB
+  hashes a schema and refuses to open a replica whose stored hash differs at the
+  same `version`, and it ships at `version: 0` with no migration strategy. Every
+  existing local replica must therefore be cleared once: clear local data and
+  log in again, and the collections re-pull from WAS. Anything written only
+  locally and never synced is lost with it.
+
+### Removed
+
+The root barrel no longer re-exports the driver. Every name below is gone from
+`@interop/was-react`; import it from the package named beside it.
+
+- From `@interop/was-sync`: `syncedDocSchema`, `makeLwwConflictHandler`,
+  `lwwFields`, and the types `LwwFields`, `SyncCheckpoint`, `SyncedDoc`,
+  `WireDoc`, `WasSyncBasePort`, `WasSyncPort`, and `MasterState` /
+  `MasterReadCache` (as `PrimaryState` / `PrimaryReadCache`).
+- From `@interop/was-sync/rxdb`: `createWasReplication`, `createPullHandler`,
+  `wireDocToRxDoc`, `createPushHandler`, the type `PushWriteAck`, and
+  `withFeedMasterRead` (as `withFeedPrimaryRead`).
+- From `@interop/was-client/sync`: `errorStatus`, `errorMessage`, `formatEtag`,
+  `isEncryptedEnvelope`, `isUnknownEpochError`, `WasSyncConflictError`,
+  `WasSyncAuthError`, and the type `Json` (also available from
+  `@interop/was-sync`). These were pass-throughs; the client owns them.
+- From `@interop/was-client/edv`: `hasKeyEpochs`, `epochRostersEqual`, also
+  pass-throughs.
+
+`createDocCipher`, `createPlaintextDocCodec`, `createUnprovisionedDocCipher`,
+the type `DocCipher`, and `createWasSyncPort` stay exported from this package's
+root: they hold this library's key handling and the client seam, which the
+driver never touches.
+
+### Dependencies
+
+- `@interop/was-sync` `^0.1.0`, added.
+- `rxdb ^17` is still a required peer: `LocalStore` is exported from the root
+  entry and imports it. A replica-less app can drop it once that entry point is
+  split (WR-44).
+
+### Changed
+
+- The last-write-wins comparison is `remotePayloadWins` from
+  `@interop/social-core`, and `src/sync/lww.ts` is deleted. Its stamp accessor
+  (`lwwFields`, `LwwFields`) moves to `src/sync/types.ts` and still ships from
+  the root barrel. This is a behavior change on the three sites that compare
+  outside conflict resolution: the anonymous-to-connected adopt, the
+  duplicate-id pick in `hydrateSingleton`, and the entity store's patch. On a
+  pair where exactly one `updatedAt` parses, the parseable side no longer wins;
+  the raw strings compare lexically. One rule now, the one every wallet's stored
+  data already converges under.
+- A `412`-refused delete whose re-read body is unchanged is re-issued against
+  the current ETag. A locally created row pushed with a revision the server has
+  since moved past would otherwise be refused forever and stay live on the
+  server. Every other `412` is still a real conflict.
+- `bodiesEqual` compares JCS-canonicalized JSON. A stored body a host
+  re-serializes with a different key order no longer reads as a change, which is
+  what keeps the delete retry firing and stops a spurious `PUT` on an immutable
+  content-addressed row.
+- The push handler and the sync controller's `isAuthError` match the port's
+  typed signals by `err.name`, through `isSyncConflictError`, `isSyncAuthError`,
+  and `isUnknownEpochError` from `@interop/was-client/sync`, never by
+  `instanceof`. An error raised by a second physical copy of the client is
+  classified the same as this copy's. `err.status` is read off the matched value
+  as a plain property.
+- The server-managed `createdBy` creator DID is carried across the sync layer:
+  it joins `OptionalBodyFields`, `WireDoc`, and `SyncedDoc`, and rides the pull
+  mapping (live documents and tombstones) and the assembled conflict entry. The
+  RxDB schema does not declare it yet; that lands with the merged schema when
+  the driver moves into its own package.
+- `MasterState.deleted` is optional. A feed-backed read sets it; a client `get`
+  resolves `null` for a tombstone and sets nothing, and the push handler reads
+  an absent flag as `false`.
+- `getWriterId` no longer adopts a value left under the pre-rename
+  `<prefix>clientId` key, and `clearPersistedWriterId` no longer removes that
+  key. Where `localStorage` cannot answer, `getWriterId` mints a fresh id per
+  call instead of remembering one for the process: a shared fallback stamped one
+  label into two accounts' histories in the same tab.
+- `docCipher.ts` no longer declares its own unknown-epoch predicate or its own
+  base cipher shape. `isUnknownEpochError` ships from `@interop/was-client/sync`
+  (still re-exported from the root barrel), and `DocCipher` extends the
+  client's, adding the required `encryptUpdate` and the optional blinded-index
+  `applyMeta`.
+- Dependency floors: `@interop/was-client` `^0.49.0`, `@interop/wallet-core`
+  `^0.67.0`, `@interop/webkms-client` `^14.7.5` (matching wallet-core's).
+  `@interop/social-core` and `json-canonicalize` are added.
+
+### Removed
+
+- The root barrel no longer exports `remotePayloadWins`. It is
+  `@interop/social-core`'s name, and one name has one owner; import it from
+  there.
+
 ## 0.20.1 - 2026-09-05
 
 ### Fixed

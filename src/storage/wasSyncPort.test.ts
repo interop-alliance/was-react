@@ -14,7 +14,10 @@
 import { describe, it, expect } from 'vitest'
 import type { WasClient } from '@interop/was-client'
 import { createWasSyncPort } from './wasSyncPort.js'
-import { WasSyncAuthError, WasSyncConflictError } from './types.js'
+import {
+  WasSyncAuthError,
+  WasSyncConflictError
+} from '@interop/was-client/sync'
 
 /**
  * A fake `WasClient` whose raw `request` and whose `changes` feed both reject

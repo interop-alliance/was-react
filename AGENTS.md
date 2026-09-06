@@ -54,7 +54,7 @@ table row of a target class. When writing prose, prefer the spec's wording
 
 Three package entry points, and it matters that they stay separate:
 
-- `.` -- core (config, grants, identity, auth, sync, storage, session, React
+- `.` -- core (config, grants, identity, auth, storage, session, React
   provider/hooks, the `defineDocumentApp` facade).
 - `./mui` -- optional MUI + react-router components.
 - `./dev` -- Node-only dev-grant provisioner.
@@ -77,6 +77,11 @@ mint the descriptor a fresh encrypted collection requires.
 `@mui/icons-material`, and `react-router` are OPTIONAL peers
 (`peerDependenciesMeta`), imported only under `src/mui/`. Do not add a runtime
 dependency that an app could reasonably own; prefer a peer.
+
+`@interop/was-sync` (the WAS replication driver) is an ordinary dependency
+rather than a peer, because `LocalStore` is value-exported from the root entry
+and so `rxdb` is not yet droppable. WR-44 owns that split, and the two become
+optional peers with it.
 
 ### Pinned derivation warning (wire/data contract -- never change)
 
@@ -105,8 +110,8 @@ the first.
 ### .tsx placement
 
 `.tsx` files live ONLY under `src/react/` and `src/mui/`. Every other directory
-(config, grants, identity, auth, sync, storage, session, dev) is
-framework-agnostic `.ts` with no JSX.
+(config, grants, identity, auth, storage, session, dev) is framework-agnostic
+`.ts` with no JSX.
 
 ## Toolchain & Project Layout
 
@@ -142,7 +147,7 @@ Two homes, both run by Vitest, and the include pattern in `vite.config.ts` is
   the shared-collection reader, `documentApp`, `ProtectedRoute`, sync
   controller, `writerId`).
 - `src/**/*.test.ts` (and `.tsx`) -- unit suites colocated with their subject
-  (`src/auth/`, `src/identity/`, `src/storage/`, `src/sync/`, `src/config.ts`,
+  (`src/auth/`, `src/identity/`, `src/storage/`, `src/config.ts`,
   `src/grants.ts`). Adding one here is normal and safe; the build's exclude
   keeps it out of `dist/`.
 - `test/browser/` -- Playwright tests (`pnpm run test:browser`); run in real

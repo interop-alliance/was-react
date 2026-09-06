@@ -110,13 +110,25 @@ export type {
   IZcap
 } from './auth/walletRequestTypes.js'
 
-// The collection-agnostic RxDB-WAS replication core.
-export * from './sync/index.js'
+// The RxDB-WAS replication driver lives in `@interop/was-sync` and is no
+// longer re-exported here; import it from there (its root entry for the types,
+// the schema, the conflict-handler seam and the writer-id mint, `./rxdb` for
+// the handlers, the replication wiring and the controller core).
 
 // Storage: local encrypted replica, the session-scoped storage context and
 // the app-facing facades over the active one, entity stores, the delegated
 // remote store, sync status, and the replication controller.
 export { LocalStore } from './storage/localStore.js'
+// The per-collection document cipher and the WAS sync port stay here: they
+// bridge the driver to `@interop/was-client` and hold this library's key
+// handling, which the driver never touches.
+export {
+  createDocCipher,
+  createPlaintextDocCodec,
+  createUnprovisionedDocCipher,
+  type DocCipher
+} from './storage/docCipher.js'
+export { createWasSyncPort } from './storage/wasSyncPort.js'
 // Re-exported beside `LocalStore` (with `deriveIdentity` and
 // `createDescriptorCache` above) so a consumer handed the store directly is
 // also handed everything needed to provision one under epoch-from-birth.

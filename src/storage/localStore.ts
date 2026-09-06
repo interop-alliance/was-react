@@ -47,19 +47,20 @@ import {
   type EncryptionDescriptorSource
 } from '@interop/wallet-core/descriptors'
 import {
+  makeLwwConflictHandler,
   syncedDocSchema,
+  type Json,
+  type SyncedDoc
+} from '@interop/was-sync'
+import {
   createDocCipher,
   createPlaintextDocCodec,
   createUnprovisionedDocCipher,
-  hasKeyEpochs,
-  epochRostersEqual,
-  isUnknownEpochError,
-  makeLwwConflictHandler,
-  remotePayloadWins,
-  type Json,
-  type SyncedDoc,
   type DocCipher
-} from '../sync/index.js'
+} from './docCipher.js'
+import { remotePayloadWins } from '@interop/social-core'
+import { epochRostersEqual, hasKeyEpochs } from '@interop/was-client/edv'
+import { isUnknownEpochError } from '@interop/was-client/sync'
 import type {
   IKeyAgreementKey,
   IKeyResolver
@@ -303,8 +304,17 @@ export class LocalStore {
             // Reads the CURRENT cipher for this key at decrypt time (not a
             // captured reference), so a `rebuildCipher` after a descriptor change
             // takes effect here too.
-            conflictHandler: makeLwwConflictHandler(envelope =>
-              storeHolder.current!.decryptEnvelope(key, envelope)
+            conflictHandler: makeLwwConflictHandler(
+              envelope => storeHolder.current!.decryptEnvelope(key, envelope),
+              remotePayloadWins,
+              // The undecryptable-side warnings are the only signal that a
+              // conflict was settled by presuming one side newer rather than by
+              // comparing stamps, so they get a real logger rather than being
+              // dropped on the package's no-op default.
+              {
+                warn: (message, meta) => console.warn(message, meta),
+                error: (message, meta) => console.error(message, meta)
+              }
             )
           }
         ]

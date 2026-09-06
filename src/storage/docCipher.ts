@@ -28,31 +28,11 @@ import type {
 } from '@interop/data-integrity-core'
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvDocCipher, UnknownEpochError } from '@interop/was-client/edv'
-import { isEncryptedEnvelope } from '@interop/was-client/sync'
-import type { Json } from './types.js'
-
-/**
- * Whether an error is the EDV codec's `UnknownEpochError` -- a stored envelope
- * naming a JWE recipient this cipher cannot route, which is the signal to
- * re-read the collection's encryption descriptor and rebuild the cipher.
- *
- * The `name` check is not belt-and-braces: a cipher built by
- * `@interop/wallet-core` throws that package's OWN instance of the class (its
- * dependency tree resolves a second physical copy of `@interop/was-client`, so
- * the constructor is a different function object and `instanceof` is false
- * here). The class sets `this.name`, which is stable across copies. Once the
- * two copies dedupe from the npm registry the `instanceof` arm alone would
- * suffice, and the `name` arm is harmless.
- *
- * @param err {unknown}
- * @returns {boolean}
- */
-export function isUnknownEpochError(err: unknown): boolean {
-  return (
-    err instanceof UnknownEpochError ||
-    (err instanceof Error && err.name === 'UnknownEpochError')
-  )
-}
+import {
+  isEncryptedEnvelope,
+  type DocCipher as ClientDocCipher
+} from '@interop/was-client/sync'
+import type { Json } from '@interop/was-sync'
 
 /**
  * A per-collection document cipher. `encrypt` is the create path (mints a random
@@ -68,16 +48,12 @@ export function isUnknownEpochError(err: unknown): boolean {
  * the pass-through plaintext codec and on the fail-closed placeholder, neither
  * of which has a schema to install -- hence optional here.
  */
-export interface DocCipher {
-  encrypt(options: {
-    data: Json
-  }): Promise<{ id: string; envelope: Json; epoch?: string }>
+export interface DocCipher extends ClientDocCipher {
   encryptUpdate(options: {
     id: string
     data: Json
     current: Json
   }): Promise<{ id: string; envelope: Json; epoch?: string }>
-  decrypt(options: { envelope: Json }): Promise<Json>
   applyMeta?(options: { custom?: unknown }): Promise<unknown>
 }
 

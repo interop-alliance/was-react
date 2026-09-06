@@ -22,7 +22,8 @@
  * verbs, which always stamp fresh: this is a repair of an existing edit, not a
  * new one.
  */
-import { lwwFields, remotePayloadWins } from '../sync/lww.js'
+import { remotePayloadWins } from '@interop/social-core'
+import { lwwFields } from '@interop/was-sync'
 import type { LocalStore } from './localStore.js'
 
 /**

@@ -2,42 +2,28 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * SyncController: the app-side lifecycle around background WAS replication for
- * the delegated RP model.
+ * SyncController: this library's session binding over the replication
+ * controller core in `@interop/was-sync/rxdb`.
  *
- * The local RxDB collections owned by {@link LocalStore} are the always-on active
- * replica; `start()` spins up one `replicateRxCollection` state machine per
- * entity collection against the user's WAS Space, invoking that collection's
- * delegated capability. Reachability is not polled -- the replication attempt is
- * the probe; RxDB's `retryTime` backoff retries a down server and surfaces
- * failures on `error$`. The one explicit reachability wire is the `online`
- * listener, which fires `reSync()` on reconnect so a long-offline session
- * recovers promptly rather than waiting out the backoff.
+ * The core owns the lifecycle -- the serialized start/stop queue, one
+ * `replicateRxCollection` state machine per collection, the per-collection
+ * capability skip, the status and auth-error callbacks, the poll timer, and the
+ * failed-bring-up unwind. What this binding owns is everything app-shaped: the
+ * port built from the session's {@link WasRemoteStore} and {@link LocalStore},
+ * the browser reachability source, the poll interval from the app's
+ * {@link WasSyncConfig}, and the Zustand {@link SyncStatusStore} the statuses
+ * are written into (keyed by the registry's LOGICAL collection key, which is
+ * the first argument the core delivers).
  *
- * Reactivity (multi-device live updates): each collection's RxDB change stream
- * (`rxCollection.$`) triggers `onRemoteChange(collectionKey, event)`, which the
- * caller wires to re-decrypt and patch the app store per-doc. Subscribing to the
- * collection stream (rather than the replication `received$`) is deliberate: it
- * also fires for documents rewritten by CONFLICT RESOLUTION on the push path
- * (when this replica adopts the remote master under LWW), which `received$`
- * (pull-only) misses -- otherwise the losing side's UI would show its stale local
- * edit until the next unrelated pull. The caller debounces, and a re-hydrate
- * after this replica's own optimistic write is idempotent.
- *
- * A controller captures the collection registry and sync tuning at construction
- * and is single-use per session (started once, stopped on logout); prefer one
- * per session over a module-level singleton.
+ * A controller is single-use per session, which is the core's own rule: `stop()`
+ * is terminal for a core instance, so the binding builds a fresh one inside
+ * `start()` and resets the status store on stop.
  */
-import type { RxReplicationState } from 'rxdb/plugins/replication'
 import type { RxChangeEvent } from 'rxdb/plugins/core'
-import {
-  createWasReplication,
-  createWasSyncPort,
-  withFeedMasterRead,
-  WasSyncAuthError,
-  type SyncCheckpoint,
-  type SyncedDoc
-} from '../sync/index.js'
+import { createSyncController } from '@interop/was-sync/rxdb'
+import type { SyncController as SyncControllerCore } from '@interop/was-sync/rxdb'
+import type { SyncedDoc } from '@interop/was-sync'
+import type { IZcap } from '@interop/data-integrity-core'
 import {
   DEFAULT_SYNC_POLL_MS,
   type WasCollectionConfig,
@@ -47,57 +33,30 @@ import type { LocalStore } from './localStore.js'
 import type { WasRemoteStore } from './wasRemoteStore.js'
 import type { SyncStatusStore } from './syncStatusStore.js'
 
-/**
- * The subset of an RxJS `Subscription` we hold (rxjs is a transitive dep).
- */
-type Unsubscribable = { unsubscribe: () => void }
+export { isAuthError } from '@interop/was-sync/rxdb'
 
 /**
- * Whether a replication error signals expired/revoked storage access. Every WAS
- * request the replication makes funnels through the sync port, which maps a
- * `401` / `403` to a typed {@link WasSyncAuthError} at the boundary. RxDB then
- * wraps that thrown error inside an RxError (nested under `cause` / `errors` /
- * `parameters.errors`), so this walks the error graph looking for a
- * `WasSyncAuthError` rather than re-extracting raw status codes. RxDB's
- * wrapping serializes the handler's thrown error to plain JSON (name, message,
- * stack -- `errorToPlainJson`), so the walk matches the serialized `name`
- * alongside a live instance; an instance only ever appears when a caller hands
- * the port error over directly.
+ * The browser reachability source the core polls and subscribes through. An
+ * `isOnline` that cannot answer reports `true`, since a platform with no
+ * reachability signal must still poll.
  *
- * @param err {unknown}
- * @returns {boolean}
+ * @returns {object}   the core's `onlineSource` port
  */
-export function isAuthError(err: unknown): boolean {
-  const seen = new Set<unknown>()
-  const queue: unknown[] = [err]
-  while (queue.length > 0) {
-    const current = queue.shift()
-    if (current === null || typeof current !== 'object' || seen.has(current)) {
-      continue
-    }
-    seen.add(current)
-    if (
-      current instanceof WasSyncAuthError ||
-      (current as { name?: unknown }).name === 'WasSyncAuthError'
-    ) {
-      return true
-    }
-    const candidate = current as {
-      cause?: unknown
-      parameters?: { errors?: unknown[] }
-      errors?: unknown[]
-    }
-    if (candidate.cause) {
-      queue.push(candidate.cause)
-    }
-    if (Array.isArray(candidate.errors)) {
-      queue.push(...candidate.errors)
-    }
-    if (Array.isArray(candidate.parameters?.errors)) {
-      queue.push(...candidate.parameters.errors)
+function browserOnlineSource(): {
+  isOnline: () => boolean
+  subscribe: (onOnline: () => void) => () => void
+} {
+  return {
+    isOnline: () =>
+      typeof navigator === 'undefined' || navigator.onLine !== false,
+    subscribe: onOnline => {
+      if (typeof window === 'undefined') {
+        return () => {}
+      }
+      window.addEventListener('online', onOnline)
+      return () => window.removeEventListener('online', onOnline)
     }
   }
-  return false
 }
 
 /**
@@ -107,13 +66,7 @@ export class SyncController {
   #collections: WasCollectionConfig[]
   #sync: WasSyncConfig
   #syncStatus: SyncStatusStore
-  #replications: Array<{
-    state: RxReplicationState<SyncedDoc, SyncCheckpoint>
-    subscriptions: Unsubscribable[]
-  }> = []
-  #onlineHandler?: () => void
-  #pollTimer?: ReturnType<typeof setInterval>
-  #started = false
+  #core?: SyncControllerCore
   #stopped = false
 
   /**
@@ -139,7 +92,12 @@ export class SyncController {
 
   /**
    * Starts background replication for every entity collection covered by the
-   * grant set. Idempotent (a no-op if already running).
+   * grant set. Idempotent (a no-op if already running, or if `stop()` has
+   * already run: `stop()` is terminal, so a logout that raced an in-flight
+   * session bootstrap never spins up replications against a closed database).
+   *
+   * A failed bring-up rethrows, with every collection's status left at `error`,
+   * so the caller's bootstrap can surface it.
    *
    * @param options {object}
    * @param options.remoteStore {WasRemoteStore}
@@ -165,131 +123,72 @@ export class SyncController {
     ) => void
     onAuthError?: () => void
   }): Promise<void> {
-    // `stop()` is terminal: a controller stopped before `start()` ran (a logout
-    // that raced an in-flight session bootstrap) must never spin up
-    // replications against the now-closed database.
-    if (this.#started || this.#stopped) {
+    if (this.#core || this.#stopped) {
       return
     }
-    this.#started = true
     const setStatus = this.#syncStatus.getState().setStatus
-    const batchSize = this.#sync.batchSize
-    const retryMs = this.#sync.retryMs
-    const pollMs = this.#sync.pollMs ?? DEFAULT_SYNC_POLL_MS
-
-    try {
-      for (const { key, id } of this.#collections) {
-        const capability = remoteStore.collectionCapability(id)
-        // A collection the grant set does not cover would otherwise sync with no
-        // capability and draw a fail-closed 403, tripping the session-wide
-        // "storage access expired" banner. Skip it (and flag it) instead so an
-        // uncovered collection never masquerades as expired access.
-        if (!capability) {
-          console.warn(
-            `Skipping sync for "${id}": no delegated capability covers it.`
-          )
-          setStatus(key, 'error')
-          continue
-        }
-        setStatus(key, 'idle')
-        // Wrap the verbatim port so the 412 conflict re-read resolves `version`
-        // from the changes-feed body (CORS hides the `GET` ETag cross-origin).
-        const wasPort = withFeedMasterRead(
-          createWasSyncPort({
-            was: remoteStore.was,
-            spaceId: remoteStore.spaceId,
-            collectionId: id,
-            capability
-          })
+    // A collection the grant set does not cover would otherwise sync with no
+    // capability and draw a fail-closed 403, tripping the session-wide
+    // "storage access expired" banner. Flag it and keep it out of the port
+    // instead, so an uncovered collection never masquerades as expired access.
+    // The core makes the same call, but only for a port whose OTHER entries
+    // carry a capability: it cannot tell an all-uncovered delegated port from
+    // a wallet's root-capability port, and every session here is delegated.
+    const covered: Array<{ key: string; id: string; capability: IZcap }> = []
+    for (const { key, id } of this.#collections) {
+      const capability = remoteStore.collectionCapability(id)
+      if (!capability) {
+        console.warn(
+          `Skipping sync for "${id}": no delegated capability covers it.`
         )
-        const state = createWasReplication({
-          rxCollection: localStore.rxCollection(key),
-          wasPort,
-          replicationIdentifier: `was-sync:${remoteStore.serverUrl}:${remoteStore.spaceId}:${id}`,
-          ...(batchSize !== undefined && { batchSize }),
-          ...(retryMs !== undefined && { retryTime: retryMs })
-        })
-
-        const subscriptions: Unsubscribable[] = [
-          state.active$.subscribe(active => {
-            setStatus(key, active ? 'syncing' : 'synced')
-          }),
-          state.error$.subscribe(err => {
-            console.error(`Sync error for "${id}":`, err)
-            setStatus(key, 'error')
-            if (onAuthError && isAuthError(err)) {
-              onAuthError()
-            }
-          })
-        ]
-        if (onRemoteChange) {
-          subscriptions.push(
-            localStore
-              .rxCollection(key)
-              .$.subscribe(event => onRemoteChange(key, event))
-          )
-        }
-        this.#replications.push({ state, subscriptions })
-      }
-
-      this.#onlineHandler = () => this.reSync()
-      window.addEventListener('online', this.#onlineHandler)
-
-      // The pull side has no server-side live stream, so an already-open session
-      // would otherwise never see another device's edits. A low-frequency
-      // periodic reSync polls the changes feed so multi-device edits converge
-      // live (the change subscriptions above then patch the stores).
-      if (pollMs > 0) {
-        this.#pollTimer = setInterval(() => this.reSync(), pollMs)
-      }
-    } catch (err) {
-      console.error('Failed to start sync controller:', err)
-      // Unwind the partial bring-up WITHOUT `stop()`: its terminal `#stopped`
-      // latch would permanently prevent a later `start()` on this session, and
-      // its status reset would leave the rollup reporting "Local only" over a
-      // wallet-connected session that failed to start replicating. Instead the
-      // per-collection statuses are left at `error` (visible in the rollup)
-      // and the error RETHROWS so the caller's bootstrap promise rejects and
-      // the session can surface it.
-      await this.#teardownReplications()
-      this.#started = false
-      for (const { key } of this.#collections) {
         setStatus(key, 'error')
+        continue
       }
+      covered.push({ key, id, capability })
+    }
+    this.#core = createSyncController({
+      port: {
+        wasClient: remoteStore.was,
+        spaceId: remoteStore.spaceId,
+        serverUrl: remoteStore.serverUrl,
+        collections: covered,
+        rxCollection: key => localStore.rxCollection(key),
+        // The 412 conflict re-read resolves `version` from the changes-feed
+        // body: CORS hides the `GET` ETag cross-origin, which is this
+        // library's deployment shape.
+        feedPrimaryRead: true,
+        // A `401` / `403` / the server's masked `404` must arrive typed, or
+        // `onAuthError` could never fire.
+        mapAuthErrors: true,
+        ...(this.#sync.batchSize !== undefined && {
+          batchSize: this.#sync.batchSize
+        }),
+        ...(this.#sync.retryMs !== undefined && {
+          retryTime: this.#sync.retryMs
+        })
+      },
+      // The core delivers the logical key first and the WAS id second; the
+      // status store is keyed on the logical key, since two registry entries
+      // may share one WAS id.
+      onStatus: (key, _collectionId, status) => setStatus(key, status),
+      ...(onAuthError && { onAuthError }),
+      ...(onRemoteChange && { onRemoteChange }),
+      onlineSource: browserOnlineSource(),
+      pollMs: this.#sync.pollMs ?? DEFAULT_SYNC_POLL_MS,
+      log: {
+        warn: (message, meta) => console.warn(message, meta),
+        error: (message, meta) => console.error(message, meta)
+      }
+    })
+    try {
+      await this.#core.start()
+    } catch (err) {
+      // The core already unwound and flagged every collection; drop the
+      // instance so this session's controller is not left holding a core it
+      // can neither start nor usefully stop, and rethrow.
+      this.#core = undefined
       throw err
     }
-  }
-
-  /**
-   * The shared release path behind the failed-bring-up unwind and {@link stop}:
-   * drops the `online` listener, clears the poll timer, unsubscribes every
-   * per-collection subscription, and cancels every replication. What each caller
-   * does AFTER this differs (the unwind leaves the per-collection statuses at
-   * `error` and rethrows; `stop()` resets the status store behind its terminal
-   * latch), so the divergence stays at the call sites.
-   *
-   * @returns {Promise<void>}
-   */
-  async #teardownReplications(): Promise<void> {
-    if (this.#onlineHandler) {
-      window.removeEventListener('online', this.#onlineHandler)
-      this.#onlineHandler = undefined
-    }
-    if (this.#pollTimer) {
-      clearInterval(this.#pollTimer)
-      this.#pollTimer = undefined
-    }
-    for (const { state, subscriptions } of this.#replications) {
-      for (const subscription of subscriptions) {
-        subscription.unsubscribe()
-      }
-      try {
-        await state.cancel()
-      } catch (err) {
-        console.error('Error cancelling replication:', err)
-      }
-    }
-    this.#replications = []
   }
 
   /**
@@ -299,23 +198,20 @@ export class SyncController {
    * @returns {void}
    */
   reSync(): void {
-    for (const { state } of this.#replications) {
-      state.reSync()
-    }
+    this.#core?.reSync()
   }
 
   /**
    * Stops replication and releases resources (the database is owned by the
-   * caller). Idempotent.
+   * caller). Idempotent, and terminal: a later `start()` is refused.
    *
    * @returns {Promise<void>}
    */
   async stop(): Promise<void> {
-    // Latch first so a concurrent `start()` (a logout racing the session
-    // bootstrap) sees the controller as terminally stopped and bails.
     this.#stopped = true
-    await this.#teardownReplications()
+    const core = this.#core
+    this.#core = undefined
+    await core?.stop()
     this.#syncStatus.getState().reset()
-    this.#started = false
   }
 }

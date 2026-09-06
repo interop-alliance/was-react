@@ -28,7 +28,8 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import { hasKeyEpochs, type SyncedDoc } from '../sync/index.js'
+import { hasKeyEpochs } from '@interop/was-client/edv'
+import type { SyncedDoc } from '@interop/was-sync'
 import {
   isPublicCollection,
   type SharedCollectionConfig,

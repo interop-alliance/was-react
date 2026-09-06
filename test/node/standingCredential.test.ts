@@ -73,13 +73,12 @@ import {
 import { startWasSync } from '../../src/storage/wasSync.js'
 import { isAuthError } from '../../src/storage/syncController.js'
 import { requireStore } from '../../src/storage/storageManager.js'
+import { isUnknownEpochError, WasSyncAuthError } from '@interop/was-client/sync'
 import {
   createDocCipher,
-  createUnprovisionedDocCipher,
-  createWasSyncPort,
-  isUnknownEpochError,
-  WasSyncAuthError
-} from '../../src/sync/index.js'
+  createUnprovisionedDocCipher
+} from '../../src/storage/docCipher.js'
+import { createWasSyncPort } from '../../src/storage/wasSyncPort.js'
 import { SharedCollectionReader } from '../../src/storage/sharedCollectionReader.js'
 import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
 import type { StoreRegistry, WasAppConfig } from '../../src/config.js'

@@ -7,12 +7,12 @@
  * REAL encrypted collection: a dev Space is provisioned with a private
  * (EDV-encrypted) collection, every pushed body is a genuine EDV envelope sealed
  * under the collection's key epoch, and the sync port is the one the sync
- * controller builds (`createWasSyncPort` wrapped in `withFeedMasterRead`).
+ * controller builds (`createWasSyncPort` wrapped in `withFeedPrimaryRead`).
  *
  * The assumption under test, in one line: a write precondition APPLIES on an
  * encrypted collection, so a lost race answers `412` and `pushWrites` turns it
- * into an RxDB conflict entry carrying the current master state. The fake-port
- * unit suite (`src/sync/pushWrites.test.ts`) asserts the mapping; these tests
+ * into an RxDB conflict entry carrying the current primary state. The fake-port
+ * unit suite lives in `@interop/was-sync`; these tests
  * assert that a real encrypted collection actually produces the `412` the
  * mapping is written for.
  *
@@ -39,19 +39,20 @@ import { parseGrants } from '../../src/grants.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
 import {
-  createDocCipher,
-  createPushHandler,
-  createWasSyncPort,
-  formatEtag,
-  hasKeyEpochs,
   makeLwwConflictHandler,
-  withFeedMasterRead,
-  type DocCipher,
   type Json,
-  type PushWriteAck,
   type SyncedDoc,
   type WasSyncPort
-} from '../../src/sync/index.js'
+} from '@interop/was-sync'
+import {
+  createPushHandler,
+  withFeedPrimaryRead,
+  type PushWriteAck
+} from '@interop/was-sync/rxdb'
+import { formatEtag } from '@interop/was-client/sync'
+import { hasKeyEpochs } from '@interop/was-client/edv'
+import { createDocCipher, type DocCipher } from '../../src/storage/docCipher.js'
+import { createWasSyncPort } from '../../src/storage/wasSyncPort.js'
 import type { WasCollectionConfig } from '../../src/config.js'
 
 const PRIVATE_ID = 'conflict-notes'
@@ -147,7 +148,7 @@ beforeAll(async () => {
   })
 
   // The exact port the sync controller builds for a granted collection.
-  port = withFeedMasterRead(
+  port = withFeedPrimaryRead(
     createWasSyncPort({
       was: remoteStore.was,
       spaceId: remoteStore.spaceId,

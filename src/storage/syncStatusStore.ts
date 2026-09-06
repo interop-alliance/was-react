@@ -10,15 +10,17 @@
  * provider. In-memory only, like the session -- reset on logout.
  */
 import { createStore, type StoreApi } from 'zustand/vanilla'
+import type { SyncStatus } from '@interop/was-client/sync'
 
 /**
- * A single collection's replication status:
- * - `idle`    -- configured but no cycle has run yet
- * - `syncing` -- a pull/push cycle is in flight
- * - `synced`  -- last cycle completed without error
- * - `error`   -- last cycle failed (RxDB is backing off / will retry)
+ * A single collection's replication status, re-exported from the client's
+ * closed vocabulary (`idle` -- configured but no cycle has run yet; `syncing`
+ * -- a pull/push cycle is in flight; `synced` -- last cycle completed without
+ * error; `error` -- last cycle failed and RxDB is backing off). The client owns
+ * the type so the replication driver and the wallets' own sync engine report
+ * the same four strings.
  */
-export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error'
+export type { SyncStatus }
 
 interface SyncStatusState {
   /**

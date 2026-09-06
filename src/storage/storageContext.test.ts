@@ -8,7 +8,7 @@
  * holders (`setLocalStore` / `clearLocalStore`).
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import type { Json } from '../sync/index.js'
+import type { Json } from '@interop/was-sync'
 import type { StoreRegistry } from '../config.js'
 import type { LocalStore } from './localStore.js'
 import { StorageContext } from './storageContext.js'

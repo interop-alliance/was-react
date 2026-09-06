@@ -26,7 +26,8 @@ import { create, type UseBoundStore, type StoreApi } from 'zustand'
 // capturing one: an entity store is created at module level, before any
 // session exists, and outlives every session it serves.
 import { requireStore, requireRemoteStore, stampLww } from './storageManager.js'
-import { lwwFields, remotePayloadWins } from '../sync/lww.js'
+import { remotePayloadWins } from '@interop/social-core'
+import { lwwFields } from '@interop/was-sync'
 
 /**
  * What the persisted write verbs accept: the payload WITHOUT its last-write-wins

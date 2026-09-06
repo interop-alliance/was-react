@@ -26,19 +26,27 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
 - `src/auth/` -- the relying-party side of Login With Wallet (App Connect):
   CHAPI wrappers, VPR construction, response verification, and the
   login/reconnect orchestration.
-- `src/sync/` -- the collection-agnostic RxDB-to-WAS replication core (nothing
-  here imports React): replication, doc cipher, LWW conflict handling, the
-  `WasSyncPort`.
 - `src/storage/` -- the encrypted `LocalStore`, the session-scoped
   `StorageContext` (`storageContext.ts`: the open replica, the remote store, the
   writer id, the sync status store, and the rehydrate mechanism), the
   active-context pointer and its app-facing facades (`storageManager.ts`), the
-  per-install `writerId` persistence (`writerId.ts`), generic entity stores, the
+  per-install `writerId` binding (`writerId.ts`), generic entity stores, the
   delegated remote store, the read-only `SharedCollectionReader`, the
   replication bootstrap (`wasSync.ts`), the session's encryption-descriptor
-  policy (`descriptorManager.ts`), the sync controller, sync status, the
-  local-to-connected adoption merge (`adopt.ts`), and the public share-URL
-  helper (`publicUrl.ts`).
+  policy (`descriptorManager.ts`), the per-collection document cipher
+  (`docCipher.ts`) and the WAS sync port over it (`wasSyncPort.ts`), the sync
+  controller binding, sync status, the local-to-connected adoption merge
+  (`adopt.ts`), and the public share-URL helper (`publicUrl.ts`).
+
+The replication driver itself is not in this repo. It lives in
+`@interop/was-sync`: the changes-feed pull handler, the conditional-write push
+handler, the `replicateRxCollection` wiring, the synced-document schema, the
+conflict-handler seam, the writer-id mint, and the controller core. Its root
+entry carries no `rxdb`; the driver and the controller core are on its `./rxdb`
+subpath. What stays here is everything app-shaped: the document cipher and the
+key handling around it, the session binding over the controller core, the
+Zustand status store, and the browser bindings the core takes as ports.
+
 - `src/session/` -- the session auth store factory (`createAuthStore`): the
   four-state machine described below.
 - `src/react/` -- the `WasSessionProvider`, the hooks (`useSession`, `useLogin`,
@@ -109,14 +117,16 @@ reach the server as ordinary creates -- and the anonymous seed and database are
 deleted once the activation lands. The merge policy is per logical uuid and
 deterministic: insert when the connected replica holds nothing under that uuid;
 otherwise replace only when the adopted payload wins the same
-`remotePayloadWins` last-write-wins rule replication runs, with a connected doc
-carrying no LWW fields always losing to a stamped adopted one. Adopted payloads
-missing `updatedAt` / `writerId` are stamped at adoption time with the session's
-resolved `writerId` (the storage context's, the same value the write verbs stamp
-from), so the repair carries the same attribution identity as the app's own
-writes; payloads that already carry them keep their original values. That
-preserve-if-present rule is deliberately unlike the write verbs' fresh-always
-one: adoption repairs an edit already made, rather than recording a new one.
+`remotePayloadWins` last-write-wins rule replication runs (owned by
+`@interop/social-core`, so every wallet and app converges on one rule), with a
+connected doc carrying no LWW fields always losing to a stamped adopted one.
+Adopted payloads missing `updatedAt` / `writerId` are stamped at adoption time
+with the session's resolved `writerId` (the storage context's, the same value
+the write verbs stamp from), so the repair carries the same attribution identity
+as the app's own writes; payloads that already carry them keep their original
+values. That preserve-if-present rule is deliberately unlike the write verbs'
+fresh-always one: adoption repairs an edit already made, rather than recording a
+new one.
 
 `adopt: 'leave'` sets the anonymous replica aside untouched instead; it returns
 after a logout. A cancelled or failed login leaves `local` intact either way.
@@ -215,9 +225,15 @@ The per-install LWW attribution label, resolved once at store creation from
 `WasAppConfig.storageKeyPrefix` and exposed as `useSession().writerId`. It is an
 unkeyed, clearable, unrecoverable stamp whose only jobs are attribution and
 breaking last-write-wins ties -- never an identity. (The keyed client identity
-of an (app, user) pair is the app-key credential's subject DID.) `getWriterId`
-adopts a value left under the older `<prefix>clientId` key once and removes it,
-so an existing install keeps its id.
+of an (app, user) pair is the app-key credential's subject DID.) Where
+`localStorage` cannot answer, `getWriterId` mints a fresh id per call and
+remembers nothing: a shared module-level fallback would stamp one label into two
+accounts' histories in the same tab.
+
+The mint is `@interop/was-sync`'s, which takes the key prefix and the storage as
+required inputs. `src/storage/writerId.ts` is the browser binding that supplies
+`DEFAULT_STORAGE_KEY_PREFIX` and `localStorage`, so `getWriterId` and
+`clearPersistedWriterId` keep their names and their optional-prefix signature.
 
 Stamping is the library's job, not the app's. The resolved id lives on the
 session's `StorageContext` (constructed with it at store creation, before any
@@ -549,6 +565,24 @@ The other standing limit is the one the wallet states too: removing access stops
 future reads but cannot take back what has already been read.
 
 ## Storage and sync
+
+`SyncController` (`src/storage/syncController.ts`) is the session binding over
+`createSyncController` from `@interop/was-sync/rxdb`. The core owns the
+lifecycle -- the serialized start/stop queue, one replication per collection,
+the status and auth-error callbacks, the poll timer, and the failed-bring-up
+unwind, which flags every collection and rethrows so the caller's bootstrap can
+surface it. The binding owns what is app-shaped: the port built from the
+session's `WasRemoteStore` and `LocalStore`, the two port flags this deployment
+needs (`feedPrimaryRead`, because CORS hides the `GET` ETag cross-origin, and
+`mapAuthErrors`, without which `onAuthError` could never fire), the browser
+reachability source, the poll interval from `WasSyncConfig`, and the Zustand
+status store the statuses are written into. The core delivers both the logical
+collection key and the WAS id to `onStatus`; the store is keyed on the logical
+key, since two registry entries may share one WAS id. A collection the grant set
+does not cover is flagged `error` and kept out of the port entirely, so an
+uncovered collection never draws a fail-closed 403 that reads as expired access.
+`stop()` is terminal for a core instance, so the binding builds a fresh core
+inside `start()` and resets the status store on stop.
 
 `startWasSync` (`src/storage/wasSync.ts`) is the replication bootstrap: given
 the parsed grant set and the invoking `ZcapClient` it builds the delegated

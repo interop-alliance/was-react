@@ -21,7 +21,7 @@ import {
   deriveSyncRollup,
   type SyncStatusStore
 } from '../../src/storage/syncStatusStore.js'
-import { WasSyncAuthError } from '../../src/sync/index.js'
+import { WasSyncAuthError } from '@interop/was-client/sync'
 import type { WasRemoteStore } from '../../src/storage/wasRemoteStore.js'
 import type { LocalStore } from '../../src/storage/localStore.js'
 

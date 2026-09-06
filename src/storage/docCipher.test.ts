@@ -28,14 +28,13 @@ import type {
   IKeyAgreementKey,
   IKeyResolver
 } from '@interop/data-integrity-core'
-import { isEncryptedEnvelope } from '@interop/was-client/sync'
-import { deriveIdentity } from '../identity/agents.js'
 import {
-  createDocCipher,
-  createUnprovisionedDocCipher,
+  isEncryptedEnvelope,
   isUnknownEpochError
-} from './docCipher.js'
-import type { Json } from './types.js'
+} from '@interop/was-client/sync'
+import { deriveIdentity } from '../identity/agents.js'
+import { createDocCipher, createUnprovisionedDocCipher } from './docCipher.js'
+import type { Json } from '@interop/was-sync'
 
 // A fixed 32-byte master seed drives the deterministic identity derivation.
 const SEED = new Uint8Array(32).map((_, index) => (index * 5 + 1) & 0xff)

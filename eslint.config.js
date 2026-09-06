@@ -38,5 +38,29 @@ export default defineConfig([
       'no-var': 'error',
       'prefer-const': 'error'
     }
+  },
+  {
+    // `@interop/was-sync/testing` is test fixtures: its fake server accepts
+    // every write and serves a plausible changes feed, so a production import
+    // would show a healthy sync status over a replica writing nothing to WAS.
+    // Restated per file block, since flat config does not merge `rules`
+    // options across blocks.
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
+    ignores: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: '@interop/was-sync/testing',
+              message:
+                'Test fixtures only. A production import would report a ' +
+                'healthy sync over a replica writing nothing to WAS.'
+            }
+          ]
+        }
+      ]
+    }
   }
 ])

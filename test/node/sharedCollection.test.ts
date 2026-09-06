@@ -27,7 +27,7 @@ import {
 import { NotImplementedError } from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
 import { deriveIdentity } from '../../src/identity/agents.js'
-import { createDocCipher } from '../../src/sync/index.js'
+import { createDocCipher } from '../../src/storage/docCipher.js'
 import {
   SharedCollectionReader,
   SharedCollectionUnavailableError

@@ -21,8 +21,7 @@
  */
 import { uuidv7 } from 'uuidv7'
 import type { StoreRegistry } from '../config.js'
-import type { Json } from '../sync/index.js'
-import type { LwwFields } from '../sync/lww.js'
+import type { Json, LwwFields } from '@interop/was-sync'
 import type { LocalStore } from './localStore.js'
 import {
   activateStorageContext,

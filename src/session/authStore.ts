@@ -82,7 +82,7 @@ import { StorageContext } from '../storage/storageContext.js'
 import { getWriterId } from '../storage/writerId.js'
 import { mergeAdopted } from '../storage/adopt.js'
 import { startWasSync } from '../storage/wasSync.js'
-import { errorMessage } from '../sync/index.js'
+import { errorMessage } from '@interop/was-client/sync'
 import { SyncController } from '../storage/syncController.js'
 
 /**

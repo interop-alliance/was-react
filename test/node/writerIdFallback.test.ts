@@ -2,10 +2,11 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Unit test for `getWriterId` in an environment without `localStorage` (this
- * file runs in plain Node): instead of throwing, it falls back to a
- * process-stable unpersisted id, so every LWW stamp within one run still
- * agrees on the writer.
+ * Unit test for this library's writer-id binding in an environment without
+ * `localStorage` (this file runs in plain Node): the module still imports, and
+ * `getWriterId` mints a fresh id per call instead of throwing. The binding
+ * reads the global lazily for exactly this reason; the package's mint answers
+ * the same way for any storage that throws.
  *
  * @vitest-environment node
  */
@@ -13,11 +14,10 @@ import { describe, expect, it } from 'vitest'
 import { getWriterId } from '../../src/storage/writerId.js'
 
 describe('getWriterId without localStorage', () => {
-  it('falls back to one process-stable id instead of throwing', () => {
+  it('mints a fresh id per call instead of throwing', () => {
     const first = getWriterId()
     expect(first.length).toBeGreaterThan(0)
-    expect(getWriterId()).toBe(first)
-    // The fallback is shared across prefixes -- there is no store to key on.
-    expect(getWriterId({ storageKeyPrefix: 'myapp:' })).toBe(first)
+    expect(getWriterId()).not.toBe(first)
+    expect(getWriterId({ storageKeyPrefix: 'myapp:' })).not.toBe(first)
   })
 })

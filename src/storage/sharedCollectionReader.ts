@@ -49,9 +49,9 @@ import {
 import {
   errorMessage,
   isEncryptedEnvelope,
-  type DocCipher,
-  type Json
-} from '../sync/index.js'
+  type DocCipher
+} from '@interop/was-client/sync'
+import type { Json } from '@interop/was-sync'
 import {
   remoteDescriptorSource,
   type WasRemoteStore
