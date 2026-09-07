@@ -614,7 +614,9 @@ setLogger(createLogger('wr'))
 
 `setLogger` returns the previously installed logger, so a test can restore it in
 `afterEach`. `@interop/logger` is not a dependency of this package; any object
-with the four methods works.
+with the four methods works. The call also installs the logger into
+`@interop/was-sync`, the replication driver this package runs on, so the
+driver's diagnostics arrive under the same namespace.
 
 ## Dev tooling
 

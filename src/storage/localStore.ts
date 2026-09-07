@@ -58,7 +58,6 @@ import {
   createUnprovisionedDocCipher,
   type DocCipher
 } from './docCipher.js'
-import { log } from '../log.js'
 import { remotePayloadWins } from '@interop/social-core'
 import { epochRostersEqual, hasKeyEpochs } from '@interop/was-client/edv'
 import { isUnknownEpochError } from '@interop/was-client/sync'
@@ -307,15 +306,7 @@ export class LocalStore {
             // takes effect here too.
             conflictHandler: makeLwwConflictHandler(
               envelope => storeHolder.current!.decryptEnvelope(key, envelope),
-              remotePayloadWins,
-              // The undecryptable-side warnings are the only signal that a
-              // conflict was settled by presuming one side newer rather than by
-              // comparing stamps, so they get a real logger rather than being
-              // dropped on the package's no-op default.
-              {
-                warn: (message, meta) => log.warn(message, meta),
-                error: (message, meta) => log.error(message, meta)
-              }
+              remotePayloadWins
             )
           }
         ]

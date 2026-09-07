@@ -177,11 +177,7 @@ export class SyncController {
       ...(onAuthError && { onAuthError }),
       ...(onRemoteChange && { onRemoteChange }),
       onlineSource: browserOnlineSource(),
-      pollMs: this.#sync.pollMs ?? DEFAULT_SYNC_POLL_MS,
-      log: {
-        warn: (message, meta) => log.warn(message, meta),
-        error: (message, meta) => log.error(message, meta)
-      }
+      pollMs: this.#sync.pollMs ?? DEFAULT_SYNC_POLL_MS
     })
     try {
       await this.#core.start()

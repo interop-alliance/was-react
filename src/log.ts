@@ -17,7 +17,12 @@
  * `'[was-react]'` prefix and the call's `data` passed as a single trailing
  * argument (present only when supplied). An app wires a real logger once at
  * bootstrap, e.g. `setLogger(createLogger('wr'))`.
+ *
+ * {@link setLogger} also installs the same logger into `@interop/was-sync`,
+ * the replication driver this package runs on, so one call wires both and the
+ * driver's diagnostics arrive under the app's `wr` namespace.
  */
+import { setLogger as setWasSyncLogger } from '@interop/was-sync'
 
 /**
  * The structural logging port every call site in this package logs
@@ -47,8 +52,9 @@ let logger: Logger = consoleFallback
 
 /**
  * Installs `next` as the logger every call site in this package logs
- * through, and returns the PREVIOUS logger -- so a test (or an app
- * reconfiguring at runtime) can restore it.
+ * through, forwards it to `@interop/was-sync` as well, and returns the
+ * PREVIOUS logger of this package -- so a test (or an app reconfiguring at
+ * runtime) can restore it.
  *
  * @param next {Logger}
  * @returns {Logger} the logger that was installed before this call.
@@ -56,6 +62,7 @@ let logger: Logger = consoleFallback
 export function setLogger(next: Logger): Logger {
   const previous = logger
   logger = next
+  setWasSyncLogger(next)
   return previous
 }
 

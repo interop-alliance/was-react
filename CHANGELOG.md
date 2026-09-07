@@ -1,5 +1,14 @@
 # @interop/was-react Changelog
 
+## 0.22.1 - TBD
+
+### Changed
+
+- `setLogger` also installs the logger into `@interop/was-sync`, so the
+  replication driver's diagnostics (the controller core, conflict handling, push
+  and pull) arrive under the app's namespace. The driver's per-call `log` option
+  is gone with `@interop/was-sync`'s adoption of the logging port.
+
 ## 0.22.0 - 2026-09-05
 
 ### Added
