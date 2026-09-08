@@ -1,5 +1,14 @@
 # @interop/was-react Changelog
 
+## 0.22.2 - TBD
+
+### Changed
+
+- The `rxdb` peer floor is `^17.5.0`. Under 17.4 the Dexie storage never evicted
+  a closed connection from its name cache, so `logout({ wipe: true })` followed
+  by a login in the same page reopened the replica on a closed Dexie instance
+  and failed with `DatabaseClosedError` (rxdb #8793, fixed in 17.5.0).
+
 ## 0.22.1 - 2026-09-08
 
 ### Changed
