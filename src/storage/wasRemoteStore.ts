@@ -39,7 +39,10 @@ import {
   WasClient,
   mapError
 } from '@interop/was-client'
-import type { CollectionEncryption } from '@interop/was-client'
+import type {
+  CollectionDescription,
+  CollectionEncryption
+} from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 import type { EncryptionDescriptorSource } from '@interop/was-client/edv'
 import {
@@ -144,6 +147,37 @@ async function readOrAbsent<T>({
     // eslint-disable-next-line preserve-caught-error
     throw new Error(`Failed to read ${description}.`, { cause: mapped })
   }
+}
+
+/**
+ * One entry of a collection description's `plaintext.indexes` declaration, as
+ * the client types it.
+ */
+type DeclaredIndex = NonNullable<
+  NonNullable<CollectionDescription['plaintext']>['indexes']
+>[number]
+
+/**
+ * Whether a stored `plaintext.indexes` declaration already says what the
+ * configured list says, compared in the server's normalized shape (a bare
+ * string is `{ name, source: 'content', unique: false }`) and in order.
+ *
+ * @param stored {DeclaredIndex[]}   the declaration read from the description
+ * @param configured {DeclaredIndex[]}   the configured list
+ * @returns {boolean}
+ */
+function sameIndexDeclaration(
+  stored: DeclaredIndex[],
+  configured: DeclaredIndex[]
+): boolean {
+  const normalize = (entry: DeclaredIndex): string =>
+    typeof entry === 'string'
+      ? `${entry}\0content\0false`
+      : `${entry.name}\0${entry.source ?? 'content'}\0${entry.unique === true}`
+  return (
+    stored.length === configured.length &&
+    stored.map(normalize).join('\n') === configured.map(normalize).join('\n')
+  )
 }
 
 export class WasRemoteStore {
@@ -391,6 +425,15 @@ export class WasRemoteStore {
    * than throwing. Skipped (reported `ok` + `skipped`) for a private
    * collection or one that declares no indexes.
    *
+   * The description is read first, and a stored declaration that already
+   * matches the configured list is skipped too, so a returning session writes
+   * nothing. The comparison is over the server's normalized shape (a bare
+   * string entry is `{ name, source: 'content', unique: false }`), so the
+   * server echoing an expanded entry is not read as drift. A read that fails
+   * (or answers not-found) does not block the write: the list is
+   * configuration this app owns, so writing it over an unknown stored value
+   * is the repair the declaration exists for, not a clobber.
+   *
    * @param collectionId {string}   the WAS collection id
    * @returns {Promise<DeclarationResult>}
    */
@@ -403,6 +446,29 @@ export class WasRemoteStore {
       !config.indexes ||
       config.indexes.length === 0
     ) {
+      return { collectionId, ok: true, skipped: true }
+    }
+    const capability = this.collectionCapability(collectionId)
+    if (!capability) {
+      return { collectionId, ok: false, error: 'no capability' }
+    }
+    let declared: DeclaredIndex[] | undefined
+    try {
+      const response = await this.was.request({
+        capability,
+        path: collectionPath(this.spaceId, collectionId),
+        method: 'GET'
+      })
+      declared = (response.data as CollectionDescription | undefined)?.plaintext
+        ?.indexes
+    } catch (err) {
+      log.warn(
+        'Could not read the stored index declaration of a public ' +
+          'collection; declaring the configured indexes regardless.',
+        { collectionId, err }
+      )
+    }
+    if (declared && sameIndexDeclaration(declared, config.indexes)) {
       return { collectionId, ok: true, skipped: true }
     }
     return this.#putDescription({
@@ -735,14 +801,17 @@ export class WasRemoteStore {
   /**
    * The shared best-effort collection-description PUT behind the encryption
    * descriptor and the indexes declaration: invokes the collection's delegated RW
-   * zcap and reports the outcome rather than throwing.
+   * zcap and reports the outcome rather than throwing. The body is typed as the
+   * client's description (partial, since neither PUT sends `type`), so a drift
+   * from the wire shape the server reads is a compile error here rather than
+   * a PUT that is accepted and dropped.
    */
   async #putDescription({
     collectionId,
     description
   }: {
     collectionId: string
-    description: Record<string, unknown>
+    description: Partial<CollectionDescription>
   }): Promise<DeclarationResult> {
     const capability = this.collectionCapability(collectionId)
     if (!capability) {

@@ -17,19 +17,16 @@
 import 'fake-indexeddb/auto'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  createEdvEncryption,
   initRecipients,
   mintHmacKey,
   ownerRecipient,
   wrapEpochSecret
 } from '@interop/was-client/edv'
-import type {
-  CollectionEncryption,
-  ResourceMetadataCustom
-} from '@interop/was-client'
+import type { CollectionEncryption } from '@interop/was-client'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import type { WasCollectionConfig } from '../../src/config.js'
+import { encodeIndexSchemaMeta } from '../fixtures/indexSchemaMeta.js'
 
 // A neutral test collection registry (not any app's real collections).
 const COLLECTIONS: WasCollectionConfig[] = [{ key: 'notes', id: 'notes' }]
@@ -369,12 +366,6 @@ describe('LocalStore key-epoch stamping', () => {
   })
 })
 
-// The persisted blinded-index schema a searchable collection's metadata holds.
-const INDEX_SCHEMA = {
-  revision: 1,
-  indexes: [{ attribute: 'content.title', addedIn: 1 }]
-}
-
 /**
  * The one-epoch descriptor with a blinded-index HMAC key installed -- the
  * searchable-collection fixture. The blinding key is distributed exactly like
@@ -397,34 +388,6 @@ async function mintIndexableDescriptor(): Promise<CollectionEncryption> {
       ]
     }
   }
-}
-
-/**
- * The stored `/meta` `custom` value the collection carries: the opaque metadata
- * envelope, built through the very codec the direct (Collection handle) path
- * writes it with.
- */
-async function encodeIndexSchemaMeta(
-  encryption: CollectionEncryption,
-  collectionId: string = COLLECTION
-): Promise<unknown> {
-  const keys = await identityKeys()
-  const provider = createEdvEncryption({ resolveKeys: async () => keys })
-  const codec = await provider.codecFor({
-    spaceId: 'space-1',
-    collectionId,
-    scheme: 'edv',
-    encryption
-  })
-  if (!codec) {
-    throw new Error('Expected an EDV codec for the descriptor.')
-  }
-  codec.indexing?.applySchema(INDEX_SCHEMA)
-  const { custom } = await codec.encodeMeta({
-    custom: { indexSchema: INDEX_SCHEMA } as unknown as ResourceMetadataCustom,
-    slot: { kind: 'collection' }
-  })
-  return custom
 }
 
 /**
@@ -457,7 +420,11 @@ describe('LocalStore.applyCollectionMeta', () => {
         [COLLECTION]: encryption
       }
     )
-    const custom = await encodeIndexSchemaMeta(encryption)
+    const custom = await encodeIndexSchemaMeta({
+      encryption,
+      collectionId: COLLECTION,
+      keys: await identityKeys()
+    })
 
     expect(
       await store.applyCollectionMeta({ collectionId: COLLECTION, custom })
@@ -478,7 +445,11 @@ describe('LocalStore.applyCollectionMeta', () => {
     )
     await store.applyCollectionMeta({
       collectionId: COLLECTION,
-      custom: await encodeIndexSchemaMeta(encryption)
+      custom: await encodeIndexSchemaMeta({
+        encryption,
+        collectionId: COLLECTION,
+        keys: await identityKeys()
+      })
     })
 
     // A rotation elsewhere rebuilds the cipher; the schema is not a casualty.
@@ -500,7 +471,11 @@ describe('LocalStore.applyCollectionMeta', () => {
     expect(
       await store.applyCollectionMeta({
         collectionId: COLLECTION,
-        custom: await encodeIndexSchemaMeta(encryption)
+        custom: await encodeIndexSchemaMeta({
+          encryption,
+          collectionId: COLLECTION,
+          keys: await identityKeys()
+        })
       })
     ).toBe(true)
 
@@ -529,7 +504,11 @@ describe('LocalStore.applyCollectionMeta', () => {
     // A metadata envelope AEAD-bound to another collection is refused by the
     // cipher, and the failed value must not stay remembered: a poisoned memo
     // would make the next rebuild throw on a collection that reads fine.
-    const foreign = await encodeIndexSchemaMeta(encryption, 'other-collection')
+    const foreign = await encodeIndexSchemaMeta({
+      encryption,
+      collectionId: 'other-collection',
+      keys: await identityKeys()
+    })
     await expect(
       store.applyCollectionMeta({ collectionId: COLLECTION, custom: foreign })
     ).rejects.toThrow()

@@ -39,8 +39,8 @@ importers:
         specifier: ^0.54.0
         version: 0.54.0(@interop/jsonld-signatures@11.8.5)
       '@interop/was-sync':
-        specifier: ^0.2.1
-        version: 0.2.1(@interop/was-client@0.54.0(@interop/jsonld-signatures@11.8.5))(rxdb@17.5.0(react@19.2.8)(rxjs@7.8.2))
+        specifier: ^0.2.5
+        version: 0.2.5(@interop/was-client@0.54.0(@interop/jsonld-signatures@11.8.5))(rxdb@17.5.0(react@19.2.8)(rxjs@7.8.2))
       '@interop/webkms-client':
         specifier: ^14.7.5
         version: 14.7.5
@@ -810,11 +810,11 @@ packages:
     resolution: {integrity: sha512-tjBkxqIWoLYmTBxDULRHjZIr6nSAe3GunZoFjw9GCd0S5/Wx4mQOkFOiVkpYKjxH36MVvWZ8bARTz6Qi00POeQ==}
     engines: {node: '>=24.0'}
 
-  '@interop/was-sync@0.2.1':
-    resolution: {integrity: sha512-vfRMgP2QVBp6r9iIxwP3t13p12h00SAdNYuhPBdxpHdkRJrAgt5+R/oLAI2dVt2h3LPkygeCj23gRGyFvToXdw==}
+  '@interop/was-sync@0.2.5':
+    resolution: {integrity: sha512-xowPw0abellRzIKme7E7mU+wAy4UnFmFqihNczXYYMkQN4BMMMwRizBMmr2nCivEyZ4nTMHl1nDCAChtUR1acg==}
     engines: {node: '>=24.0'}
     peerDependencies:
-      '@interop/was-client': ^0.49.0
+      '@interop/was-client': ^0.54.0
       rxdb: ^17.0.0
     peerDependenciesMeta:
       rxdb:
@@ -4354,7 +4354,7 @@ snapshots:
       - expo-crypto
       - react-native-get-random-values
 
-  '@interop/was-sync@0.2.1(@interop/was-client@0.54.0(@interop/jsonld-signatures@11.8.5))(rxdb@17.5.0(react@19.2.8)(rxjs@7.8.2))':
+  '@interop/was-sync@0.2.5(@interop/was-client@0.54.0(@interop/jsonld-signatures@11.8.5))(rxdb@17.5.0(react@19.2.8)(rxjs@7.8.2))':
     dependencies:
       '@interop/social-core': 0.8.1
       '@interop/was-client': 0.54.0(@interop/jsonld-signatures@11.8.5)

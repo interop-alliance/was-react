@@ -593,8 +593,9 @@ opened with, and as the read-before-write guard on the best-effort encryption
 descriptor PUT. Public collections skip the encryption half. Every collection
 that configures equality `indexes` then declares them, and where the declaration
 lives depends on the visibility: a public collection announces them in its
-plaintext collection description, while a private one declares them as
-blinded-index attributes in its own encrypted metadata, through a
+plaintext collection description (read first, and written only when the stored
+declaration differs from the configured list), while a private one declares them
+as blinded-index attributes in its own encrypted metadata, through a
 compare-and-swap write (`declareBlindedIndexes`, over was-client's
 `Collection.declareIndex`). The encrypted form is what lets every recipient
 discover what is queryable while the server never learns the attribute names.

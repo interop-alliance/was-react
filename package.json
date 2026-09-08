@@ -57,7 +57,7 @@
     "@interop/verifier-core": "^3.5.6",
     "@interop/wallet-core": "^0.69.0",
     "@interop/was-client": "^0.54.0",
-    "@interop/was-sync": "^0.2.1",
+    "@interop/was-sync": "^0.2.5",
     "@interop/webkms-client": "^14.7.5",
     "@scure/base": "^2.2.0",
     "byoe-context": "^0.5.0",

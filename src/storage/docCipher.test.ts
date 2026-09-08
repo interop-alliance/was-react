@@ -13,21 +13,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  createEdvEncryption,
   initRecipients,
   mintHmacKey,
   ownerRecipient,
   epochKeyIdFor,
   wrapEpochSecret
 } from '@interop/was-client/edv'
-import type {
-  CollectionEncryption,
-  ResourceMetadataCustom
-} from '@interop/was-client'
-import type {
-  IKeyAgreementKey,
-  IKeyResolver
-} from '@interop/data-integrity-core'
+import type { CollectionEncryption } from '@interop/was-client'
+import type { IKeyAgreementKey } from '@interop/data-integrity-core'
 import {
   isEncryptedEnvelope,
   isUnknownEpochError
@@ -35,6 +28,7 @@ import {
 import { deriveIdentity } from '../identity/agents.js'
 import { createDocCipher, createUnprovisionedDocCipher } from './docCipher.js'
 import type { Json } from '@interop/was-sync'
+import { encodeIndexSchemaMeta } from '../../test/fixtures/indexSchemaMeta.js'
 
 // A fixed 32-byte master seed drives the deterministic identity derivation.
 const SEED = new Uint8Array(32).map((_, index) => (index * 5 + 1) & 0xff)
@@ -126,48 +120,6 @@ async function mintIndexableDescriptor(
 }
 
 /**
- * The stored `/meta` `custom` value a collection carrying this index schema
- * holds: the opaque metadata envelope, built through the very codec the direct
- * (Collection handle) path writes it with.
- *
- * @param options {object}
- * @param options.encryption {CollectionEncryption}
- * @param options.keys {object}   the reader's key material
- * @param options.keys.keyAgreementKey {IKeyAgreementKey}
- * @param options.keys.keyResolver {IKeyResolver}
- * @returns {Promise<unknown>}
- */
-async function encodeIndexSchemaMeta({
-  encryption,
-  keys
-}: {
-  encryption: CollectionEncryption
-  keys: { keyAgreementKey: IKeyAgreementKey; keyResolver: IKeyResolver }
-}): Promise<unknown> {
-  const provider = createEdvEncryption({ resolveKeys: async () => keys })
-  const codec = await provider.codecFor({
-    spaceId: 'space-1',
-    collectionId: COLLECTION_ID,
-    scheme: 'edv',
-    encryption
-  })
-  if (!codec) {
-    throw new Error('Expected an EDV codec for the descriptor.')
-  }
-  codec.indexing?.applySchema(INDEX_SCHEMA)
-  const { custom } = await codec.encodeMeta({
-    custom: { indexSchema: INDEX_SCHEMA } as unknown as ResourceMetadataCustom,
-    slot: { kind: 'collection' }
-  })
-  return custom
-}
-
-const INDEX_SCHEMA = {
-  revision: 1,
-  indexes: [{ attribute: 'content.title', addedIn: 1 }]
-}
-
-/**
  * The blinded index entries of a stored envelope.
  *
  * @param envelope {Json}
@@ -185,6 +137,7 @@ describe('createDocCipher (blinded index schema)', () => {
     const encryption = await mintIndexableDescriptor(keyAgreementKey)
     const custom = await encodeIndexSchemaMeta({
       encryption,
+      collectionId: COLLECTION_ID,
       keys: { keyAgreementKey, keyResolver }
     })
     const cipher = await createDocCipher({
@@ -218,6 +171,7 @@ describe('createDocCipher (blinded index schema)', () => {
     const encryption = await mintIndexableDescriptor(keyAgreementKey)
     const custom = await encodeIndexSchemaMeta({
       encryption,
+      collectionId: COLLECTION_ID,
       keys: { keyAgreementKey, keyResolver }
     })
     const cipher = await createDocCipher({

@@ -355,8 +355,11 @@ describe('WasRemoteStore.declareCollectionIndexes', () => {
     })
   })
 
-  it('PUTs the declared indexes on a public collection', async () => {
-    const { calls, zcapClient: stub } = stubZcapClient([{ status: 200 }])
+  it('reads the description, then PUTs the declared indexes', async () => {
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 200, data: { id: 'microblog-posts', type: ['Collection'] } },
+      { status: 200 }
+    ])
     const store = WasRemoteStore.fromGrants({
       parsed,
       zcapClient: stub,
@@ -375,8 +378,12 @@ describe('WasRemoteStore.declareCollectionIndexes', () => {
       ok: true,
       status: 200
     })
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(2)
     expect(calls[0]).toMatchObject({
+      url: 'https://was.example/space/space-1/microblog-posts',
+      method: 'GET'
+    })
+    expect(calls[1]).toMatchObject({
       url: 'https://was.example/space/space-1/microblog-posts',
       method: 'PUT',
       json: {
@@ -384,6 +391,89 @@ describe('WasRemoteStore.declareCollectionIndexes', () => {
         plaintext: { indexes: ['author', 'inReplyTo'] }
       }
     })
+  })
+
+  it('skips the PUT when the stored declaration already matches', async () => {
+    // The server may echo the expanded form of a bare-string entry; that is
+    // the same declaration, not drift.
+    const { calls, zcapClient: stub } = stubZcapClient([
+      {
+        status: 200,
+        data: {
+          id: 'microblog-posts',
+          plaintext: {
+            indexes: ['author', { name: 'inReplyTo', source: 'content' }]
+          }
+        }
+      }
+    ])
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient: stub,
+      collections: [
+        {
+          key: 'posts',
+          id: 'microblog-posts',
+          visibility: 'public',
+          indexes: ['author', 'inReplyTo']
+        }
+      ]
+    })
+    expect(await store.declareCollectionIndexes('microblog-posts')).toEqual({
+      collectionId: 'microblog-posts',
+      ok: true,
+      skipped: true
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ method: 'GET' })
+  })
+
+  it('PUTs over a stale declaration and over a failed read', async () => {
+    const collections = [
+      {
+        key: 'posts',
+        id: 'microblog-posts',
+        visibility: 'public' as const,
+        indexes: ['author', 'inReplyTo']
+      }
+    ]
+    const stale = stubZcapClient([
+      {
+        status: 200,
+        data: { id: 'microblog-posts', plaintext: { indexes: ['author'] } }
+      },
+      { status: 200 }
+    ])
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient: stale.zcapClient,
+      collections
+    })
+    expect(await store.declareCollectionIndexes('microblog-posts')).toEqual({
+      collectionId: 'microblog-posts',
+      ok: true,
+      status: 200
+    })
+    expect(stale.calls.map(call => call.method)).toEqual(['GET', 'PUT'])
+
+    const unreadable = stubZcapClient([
+      {
+        status: 502,
+        error: Object.assign(new Error('Bad Gateway'), { status: 502 })
+      },
+      { status: 200 }
+    ])
+    const retry = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient: unreadable.zcapClient,
+      collections
+    })
+    expect(await retry.declareCollectionIndexes('microblog-posts')).toEqual({
+      collectionId: 'microblog-posts',
+      ok: true,
+      status: 200
+    })
+    expect(unreadable.calls.map(call => call.method)).toEqual(['GET', 'PUT'])
   })
 })
 

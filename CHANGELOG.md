@@ -20,14 +20,24 @@
   owner since `@interop/wallet-core` 0.69.0 stopped re-exporting them from
   `./descriptors`.
 
+- `WasRemoteStore.declareCollectionIndexes` reads the public collection's
+  description first and skips the PUT when the stored `plaintext.indexes`
+  already matches the configured list, like the encryption-descriptor and
+  blinded-index declarations, so a returning session writes nothing. A read that
+  fails still leads to the PUT.
+
+- The collection-description PUT body is typed as the client's
+  `CollectionDescription` rather than an untyped record, so a drift from the
+  shape the server reads is a compile error.
+
+### Fixed
+
 - A public collection's equality indexes are declared under the collection
   description's `plaintext` member (`plaintext: { indexes }`), the shape
   `was-teaching-server` 0.26.0 reads (after `@interop/storage-core` 0.10.0). A
   top-level `indexes` is no longer read by the server, so the bootstrap's
   declaration was being accepted and dropped, and equality queries on a public
   collection failed with a 400.
-
-### Fixed
 
 - `test/node/conditionalWrites.test.ts` follows the opaque `ETag` contract: the
   assumed rows carry the acked `etag` / `metaEtag`, which the push handler
