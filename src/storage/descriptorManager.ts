@@ -71,7 +71,7 @@ export function createDescriptorManager({
   anonStore: SeedStore
 }): DescriptorManager {
   // The offline encryption-descriptor cache, presented as the seam
-  // `@interop/wallet-core/descriptors` acquires through. Reads serve the
+  // `@interop/was-client/edv` acquires through. Reads serve the
   // connected replica's epoch-aware open (cache-only, no network); writes land
   // the descriptors the sync bootstrap fetched. Bound per controller DID at
   // each use: a login under a different controller than the one that cached

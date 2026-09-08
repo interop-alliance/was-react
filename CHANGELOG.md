@@ -4,10 +4,36 @@
 
 ### Changed
 
+- `createWasSyncPort` returns the client's port as is. The runtime `putMeta`
+  probe and the feed-page cast are gone, since `@interop/was-client` 0.54.0
+  types the port as what it implements (`putMeta` required, `Json` bodies), so a
+  divergence at the seam is now a compile error.
+
 - `setLogger` also installs the logger into `@interop/was-sync`, so the
   replication driver's diagnostics (the controller core, conflict handling, push
   and pull) arrive under the app's namespace. The driver's per-call `log` option
   is gone with `@interop/was-sync`'s adoption of the logging port.
+
+- The descriptor seam imports (`EncryptionDescriptorCache`,
+  `EncryptionDescriptorSource`, `DescriptorRefreshPolicy`,
+  `createRefreshingEdvDocCipher`) come from `@interop/was-client/edv`, their
+  owner since `@interop/wallet-core` 0.69.0 stopped re-exporting them from
+  `./descriptors`.
+
+- A public collection's equality indexes are declared under the collection
+  description's `plaintext` member (`plaintext: { indexes }`), the shape
+  `was-teaching-server` 0.26.0 reads (after `@interop/storage-core` 0.10.0). A
+  top-level `indexes` is no longer read by the server, so the bootstrap's
+  declaration was being accepted and dropped, and equality queries on a public
+  collection failed with a 400.
+
+### Fixed
+
+- `test/node/conditionalWrites.test.ts` follows the opaque `ETag` contract: the
+  assumed rows carry the acked `etag` / `metaEtag`, which the push handler
+  echoes as `If-Match`, instead of rebuilding a validator from `version`. The
+  dev server moves to `was-teaching-server` 0.29.0, whose `ETag` carries the
+  generation prefix `parseEtag` reads the revision from.
 
 ## 0.22.0 - 2026-09-05
 

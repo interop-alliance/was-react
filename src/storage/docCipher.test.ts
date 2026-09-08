@@ -156,7 +156,8 @@ async function encodeIndexSchemaMeta({
   }
   codec.indexing?.applySchema(INDEX_SCHEMA)
   const { custom } = await codec.encodeMeta({
-    custom: { indexSchema: INDEX_SCHEMA } as unknown as ResourceMetadataCustom
+    custom: { indexSchema: INDEX_SCHEMA } as unknown as ResourceMetadataCustom,
+    slot: { kind: 'collection' }
   })
   return custom
 }

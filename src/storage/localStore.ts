@@ -45,7 +45,7 @@ import type { CollectionEncryption } from '@interop/was-client'
 import {
   DescriptorRefreshPolicy,
   type EncryptionDescriptorSource
-} from '@interop/wallet-core/descriptors'
+} from '@interop/was-client/edv'
 import {
   makeLwwConflictHandler,
   syncedDocSchema,

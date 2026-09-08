@@ -45,7 +45,7 @@ import {
   createRefreshingEdvDocCipher,
   type EncryptionDescriptorCache,
   type EncryptionDescriptorSource
-} from '@interop/wallet-core/descriptors'
+} from '@interop/was-client/edv'
 import { isEncryptedEnvelope, type DocCipher } from '@interop/was-client/sync'
 import type { Json } from '@interop/was-sync'
 import {

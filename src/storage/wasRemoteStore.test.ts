@@ -379,7 +379,10 @@ describe('WasRemoteStore.declareCollectionIndexes', () => {
     expect(calls[0]).toMatchObject({
       url: 'https://was.example/space/space-1/microblog-posts',
       method: 'PUT',
-      json: { id: 'microblog-posts', indexes: ['author', 'inReplyTo'] }
+      json: {
+        id: 'microblog-posts',
+        plaintext: { indexes: ['author', 'inReplyTo'] }
+      }
     })
   })
 })

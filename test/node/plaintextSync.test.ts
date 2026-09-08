@@ -225,11 +225,11 @@ describe('plaintext-collection sync against was-teaching-server', () => {
     })
     const description = response.data as {
       encryption?: unknown
-      indexes?: unknown
+      plaintext?: { indexes?: unknown }
     }
     expect(description.encryption).toBeUndefined()
     // The sync bootstrap announced the registry's equality indexes.
-    expect(description.indexes).toEqual(['title'])
+    expect(description.plaintext?.indexes).toEqual(['title'])
   }, 60000)
 
   it('answers an equality query over the GET filter', async () => {

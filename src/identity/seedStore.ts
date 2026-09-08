@@ -13,7 +13,7 @@
  *
  * {@link createDescriptorCache} presents the descriptor record of one such
  * store as the `EncryptionDescriptorCache` seam
- * (`@interop/wallet-core/descriptors`), which is what the session's
+ * (`@interop/was-client/edv`), which is what the session's
  * descriptor acquisition reads and writes through. It adds two BULK operations
  * on top of that seam ({@link SessionDescriptorCache}): the whole cache in one
  * read, and a whole set of descriptors in one read-modify-write. A session
@@ -22,7 +22,7 @@
  * collection.
  */
 import type { CollectionEncryption } from '@interop/was-client'
-import type { EncryptionDescriptorCache } from '@interop/wallet-core/descriptors'
+import type { EncryptionDescriptorCache } from '@interop/was-client/edv'
 
 const SESSION_STORE = 'session'
 const SEED_RECORD = 'seed'
@@ -157,7 +157,7 @@ export function createSeedStore({
 
 /**
  * The session's descriptor cache: the `EncryptionDescriptorCache` seam
- * `@interop/wallet-core/descriptors` acquires through, plus the two bulk
+ * `@interop/was-client/edv` acquires through, plus the two bulk
  * operations a session bring-up works in. Every op reads (or read-modify-writes)
  * the same single stored blob, so doing a whole phase at once costs one
  * IndexedDB open/close rather than one per collection.
@@ -185,7 +185,7 @@ export interface SessionDescriptorCache extends EncryptionDescriptorCache {
 
 /**
  * Presents a {@link SeedStore}'s persisted descriptor record as the
- * `EncryptionDescriptorCache` seam that `@interop/wallet-core/descriptors`
+ * `EncryptionDescriptorCache` seam that `@interop/was-client/edv`
  * acquires through: per-collection get/put over the single stored blob, already
  * scoped to one session's Space by the store it is bound to.
  *

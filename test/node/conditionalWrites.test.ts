@@ -49,7 +49,6 @@ import {
   withFeedPrimaryRead,
   type PushWriteAck
 } from '@interop/was-sync/rxdb'
-import { formatEtag } from '@interop/was-client/sync'
 import { hasKeyEpochs } from '@interop/was-client/edv'
 import { createDocCipher, type DocCipher } from '../../src/storage/docCipher.js'
 import { createWasSyncPort } from '../../src/storage/wasSyncPort.js'
@@ -207,6 +206,8 @@ async function runPush(rows: PushRow[]): Promise<{
  * @param options.sealed {Sealed}
  * @param options.updatedAt {string}
  * @param options.version {number}
+ * @param [options.etag] {string}   the opaque content validator the push
+ *   handler echoes as `If-Match`; a row without one pushes unconditionally
  * @param [options.custom] {Json}
  * @returns {WithDeleted<SyncedDoc>}
  */
@@ -214,11 +215,13 @@ function row({
   sealed,
   updatedAt,
   version,
+  etag,
   custom
 }: {
   sealed: Sealed
   updatedAt: string
   version: number
+  etag?: string
   custom?: Json
 }): WithDeleted<SyncedDoc> {
   return {
@@ -228,18 +231,20 @@ function row({
     _deleted: false,
     data: sealed.envelope,
     ...(sealed.epoch !== undefined && { epoch: sealed.epoch }),
+    ...(etag !== undefined && { etag }),
     ...(custom !== undefined && { custom })
   }
 }
 
 /**
  * Creates one resource through the push handler (the `If-None-Match: *` create
- * path) and returns the sealed body plus the acked content version.
+ * path) and returns the sealed body plus the acked content version and its
+ * opaque `ETag` (the validator a later conditional write echoes back).
  *
  * @param options {object}
  * @param options.title {string}
  * @param options.updatedAt {string}
- * @returns {Promise<{ sealed: Sealed, version: number }>}
+ * @returns {Promise<{ sealed: Sealed, version: number, etag: string }>}
  */
 async function createRow({
   title,
@@ -247,14 +252,15 @@ async function createRow({
 }: {
   title: string
   updatedAt: string
-}): Promise<{ sealed: Sealed; version: number }> {
+}): Promise<{ sealed: Sealed; version: number; etag: string }> {
   const sealed = await cipher.encrypt({ data: payload({ title, updatedAt }) })
   const { conflicts, acks } = await runPush([
     { newDocumentState: row({ sealed, updatedAt, version: 0 }) }
   ])
   expect(conflicts).toEqual([])
   expect(acks[0]?.version).toBeTypeOf('number')
-  return { sealed, version: acks[0]!.version! }
+  expect(acks[0]?.etag).toBeTypeOf('string')
+  return { sealed, version: acks[0]!.version!, etag: acks[0]!.etag! }
 }
 
 /**
@@ -291,10 +297,10 @@ describe('conditional writes against an encrypted collection', () => {
       data: winnerPayload,
       current: base.sealed.envelope
     })
-    const winnerVersion = await port.putContent({
+    const { version: winnerVersion } = await port.putContent({
       id: winner.id,
       data: winner.envelope,
-      ifMatch: formatEtag(base.version),
+      ifMatch: base.etag,
       ...(winner.epoch !== undefined && { epoch: winner.epoch })
     })
     expect(winnerVersion).toBeTypeOf('number')
@@ -311,7 +317,8 @@ describe('conditional writes against an encrypted collection', () => {
     const assumed = row({
       sealed: base.sealed,
       updatedAt: '2026-01-01T00:00:00.000Z',
-      version: base.version
+      version: base.version,
+      etag: base.etag
     })
     const { conflicts } = await runPush([
       {
@@ -379,7 +386,7 @@ describe('conditional writes against an encrypted collection', () => {
     // 237-239), which since was-client 0.42.0 applies on an encrypted
     // collection like the content half's. Both forms -- `If-None-Match: *`
     // when the replica believes no metadata exists, and a stale `If-Match` on
-    // `metaVersion` -- must come back as conflict entries rather than
+    // the metadata validator -- must come back as conflict entries rather than
     // propagating an error out of the push handler.
     const base = await createRow({
       title: 'with metadata',
@@ -388,7 +395,8 @@ describe('conditional writes against an encrypted collection', () => {
     const assumedNoMeta = row({
       sealed: base.sealed,
       updatedAt: '2026-03-01T00:00:00.000Z',
-      version: base.version
+      version: base.version,
+      etag: base.etag
     })
     // On an encrypted collection the server refuses a plaintext `custom`, so
     // every metadata body here is a sealed envelope like the content bodies.
@@ -410,6 +418,8 @@ describe('conditional writes against an encrypted collection', () => {
     expect(written.conflicts).toEqual([])
     const metaVersion = written.acks[0]?.metaVersion
     expect(metaVersion).toBeTypeOf('number')
+    const metaEtag = written.acks[0]?.metaEtag
+    expect(metaEtag).toBeTypeOf('string')
 
     // A replica that still believes there is no metadata: `If-None-Match: *`
     // now fails against the metadata just written.
@@ -426,17 +436,20 @@ describe('conditional writes against an encrypted collection', () => {
     ).toEqual({ label: 'first' })
 
     // Another replica commits a metadata update, moving `metaVersion` on.
-    const bumped = await port.putMeta({
-      id: base.sealed.id,
-      custom: third,
-      ifMatch: formatEtag(metaVersion!)
-    })
+    const bumped = (
+      await port.putMeta({
+        id: base.sealed.id,
+        custom: third,
+        ifMatch: metaEtag!
+      })
+    )?.version
     expect(bumped).toBeTypeOf('number')
 
-    // A stale `If-Match` on `metaVersion` is refused the same way.
+    // A stale `If-Match` on the metadata validator is refused the same way.
     const assumedStaleMeta: WithDeleted<SyncedDoc> = {
       ...assumedNoMeta,
       metaVersion: metaVersion!,
+      metaEtag: metaEtag!,
       custom: first
     }
     const lost = await runPush([
@@ -465,7 +478,8 @@ describe('conditional writes against an encrypted collection', () => {
     const assumed = row({
       sealed: base.sealed,
       updatedAt: '2026-04-01T00:00:00.000Z',
-      version: base.version
+      version: base.version,
+      etag: base.etag
     })
 
     const earlierAt = '2026-04-01T00:01:00.000Z'

@@ -17,8 +17,9 @@
  *   either way -- envelopes replicate into an unmarked (plaintext) collection
  *   just the same. A PUBLIC collection is never marked: public implies
  *   plaintext, so the descriptor PUT is skipped outright;
- * - the sibling best-effort index declarations -- the `indexes` description PUT
- *   for public collections and the blinded-index schema write for private ones
+ * - the sibling best-effort index declarations -- the `plaintext.indexes`
+ *   description PUT for public collections and the blinded-index schema write
+ *   for private ones
  *   ({@link WasRemoteStore.declareBlindedIndexes}) -- plus the equality query
  *   verb itself ({@link WasRemoteStore.queryCollectionByEquality}), which
  *   routes on the collection's visibility: the canonical sorted
@@ -40,7 +41,7 @@ import {
 } from '@interop/was-client'
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
-import type { EncryptionDescriptorSource } from '@interop/wallet-core/descriptors'
+import type { EncryptionDescriptorSource } from '@interop/was-client/edv'
 import {
   collectionItems,
   collectionMeta,
@@ -380,8 +381,10 @@ export class WasRemoteStore {
 
   /**
    * Best-effort declaration of a public collection's equality-indexed
-   * attributes (`{ indexes: [...] }`) on its collection description, invoked
-   * with that collection's delegated RW zcap. The server rejects
+   * attributes (`{ plaintext: { indexes: [...] } }`) on its collection
+   * description, invoked with that collection's delegated RW zcap. The
+   * `plaintext` member is the counterpart of `encryption`, and a supplied
+   * object replaces the stored one. The server rejects
    * `filter[attr]=value` queries on undeclared attributes fail-closed, so a
    * public collection that wants `store.query()` must announce its `indexes`
    * here. Non-fatal like the encryption descriptor: returns the outcome rather
@@ -404,7 +407,10 @@ export class WasRemoteStore {
     }
     return this.#putDescription({
       collectionId,
-      description: { id: collectionId, indexes: config.indexes }
+      description: {
+        id: collectionId,
+        plaintext: { indexes: config.indexes }
+      }
     })
   }
 
@@ -759,7 +765,7 @@ export class WasRemoteStore {
 }
 
 /**
- * The `EncryptionDescriptorSource` (`@interop/wallet-core/descriptors`) over a
+ * The `EncryptionDescriptorSource` (`@interop/was-client/edv`) over a
  * delegated {@link WasRemoteStore}: one Collection Description read per
  * collection, invoked with THAT collection's delegated zcap. It is the seam the
  * descriptor-refresh machinery -- the local store's unknown-epoch policy and a

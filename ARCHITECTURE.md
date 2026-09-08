@@ -696,8 +696,8 @@ since a restore adopts nothing.
 
 `createDescriptorCache` (`src/identity/seedStore.ts`) presents the seed store's
 single persisted descriptor record as the `EncryptionDescriptorCache` seam
-`@interop/wallet-core/descriptors` acquires through. The blob is stamped with
-the controller DID whose descriptors it holds, and a cache bound to a different
+`@interop/was-client/edv` acquires through. The blob is stamped with the
+controller DID whose descriptors it holds, and a cache bound to a different
 controller reads it as empty and overwrites the stamp on its first write: a
 descriptor names an epoch roster a specific identity is a recipient of, so a
 login under another controller must never build ciphers from it. Puts are

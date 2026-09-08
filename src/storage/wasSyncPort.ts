@@ -24,11 +24,7 @@
 import type { WasClient } from '@interop/was-client'
 import { createWasSyncPort as createClientSyncPort } from '@interop/was-client/sync'
 import type { IZcap } from '@interop/data-integrity-core'
-import type {
-  SyncCheckpoint,
-  WasSyncBasePort,
-  WireDoc
-} from '@interop/was-sync'
+import type { WasSyncBasePort } from '@interop/was-sync'
 
 /**
  * Builds a `WasSyncBasePort` bound to a single Space + Collection on the remote
@@ -54,40 +50,13 @@ export function createWasSyncPort({
   collectionId: string
   capability?: IZcap
 }): WasSyncBasePort {
-  const port = createClientSyncPort({
+  // The client's port is this package's base port by construction (was-sync
+  // aliases the wire types from it), so a divergence fails to compile here.
+  return createClientSyncPort({
     was,
     spaceId,
     collectionId,
     ...(capability !== undefined && { capability }),
     mapAuthErrors: true
   })
-  // The client types `putMeta` as optional (a port may replicate content only);
-  // its own implementation always supplies it, and this package's replication
-  // always writes the `/meta` half, so require it at the boundary rather than
-  // guarding at every call site.
-  const { putMeta } = port
-  if (putMeta === undefined) {
-    throw new Error(
-      'The WAS sync port does not implement `putMeta`, which this ' +
-        "package's replication requires."
-    )
-  }
-
-  return {
-    async query(options) {
-      // The feed page's bodies are `unknown` upstream (a stored body is any
-      // JSON, and a future encryption scheme's envelope need not be an EDV
-      // document); this layer moves them verbatim as `Json`.
-      return (await port.query(options)) as {
-        documents: WireDoc[]
-        checkpoint: SyncCheckpoint | null
-      }
-    },
-
-    putContent: options => port.putContent(options),
-
-    deleteContent: options => port.deleteContent(options),
-
-    putMeta: options => putMeta(options)
-  }
 }
