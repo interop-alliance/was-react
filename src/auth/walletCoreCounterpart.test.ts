@@ -6,23 +6,14 @@
  * Counterpart tests: both halves of the App Connect contract, run against
  * `@interop/wallet-request`'s REAL wallet-side implementation rather than
  * against a fixture of it. The request this library builds must be one the
- * wallet pipeline accepts, and the app-key credential it mints (fresh, or
- * re-issued from a legacy pre-`appUrl` one) must be one this library locates
- * and parses.
- *
- * The legacy case is the one worth stating plainly: a legacy credential's seed
- * -- and therefore the app's identity and its access to everything encrypted
- * under it -- must survive the re-issue unchanged. A fresh mint would roll the
- * seed and orphan the app, so the assertion here is that the controller DID
- * recovered after the re-issue is the SAME one the legacy credential carried.
+ * wallet pipeline accepts, and the app-key credential it mints must be one
+ * this library locates and parses.
  */
 import { describe, expect, it } from 'vitest'
 import {
   appConnectRequestOf,
   composeVp,
-  findLegacyAppKeyCredential,
   mintAppKeyCredential,
-  reissueAppKeyCredential,
   serializedAppUrl
 } from '@interop/wallet-request'
 import { agentsFromSeed } from '@interop/wallet-core/identity'
@@ -34,7 +25,6 @@ import type {
 import { deriveIdentity } from '../identity/agents.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
 import {
-  bytesToBase64url,
   findSeedCredential,
   parseSeedCredential
 } from '../identity/seedCredential.js'
@@ -354,68 +344,6 @@ describe('the credential half, against wallet-core', () => {
     expect(Date.parse(checked.expires)).toBeLessThan(
       Date.now() + requestedTtlMs
     )
-  })
-
-  it('preserves the identity across wallet-core legacy re-issuance', async () => {
-    // A legacy (pre-appUrl) app key: the marker plus a per-app third type
-    // entry, an inline context, no `appUrl` claim. Self-issued and seed-bound,
-    // which is all the re-issue path checks -- it verifies no proof, so an
-    // unsigned fixture is enough.
-    const seed = crypto.getRandomValues(new Uint8Array(32))
-    const { controllerDid: legacyDid } = await deriveIdentity({ seed })
-    const legacy = {
-      '@context': [
-        'https://www.w3.org/2018/credentials/v1',
-        {
-          '@protected': true,
-          AppKeyCredential: 'https://w3id.org/byoe#AppKeyCredential',
-          ExampleNotesAppKey: 'urn:example-notes:vocab#ExampleNotesAppKey',
-          seed: 'https://w3id.org/byoe#seed',
-          origin: 'https://w3id.org/byoe#origin'
-        }
-      ],
-      id: `urn:uuid:${crypto.randomUUID()}`,
-      type: ['VerifiableCredential', 'AppKeyCredential', 'ExampleNotesAppKey'],
-      issuanceDate: '2026-01-01T00:00:00Z',
-      issuer: legacyDid,
-      credentialSubject: {
-        id: legacyDid,
-        seed: bytesToBase64url(seed),
-        origin: ORIGIN
-      }
-    } as unknown as IVerifiableCredential
-
-    const found = await findLegacyAppKeyCredential({
-      credentials: [legacy],
-      origin: ORIGIN
-    })
-    expect(found).toBe(legacy)
-
-    const { credential: reissued, subjectDid } = await reissueAppKeyCredential({
-      credential: found as IVerifiableCredential,
-      app: {
-        name: APP_NAME,
-        appUrl: serializedAppUrl({ appUrl: APP_URL, origin: ORIGIN })
-      },
-      origin: ORIGIN
-    })
-
-    // The re-issued credential is an ordinary current-shape app key ...
-    const located = findSeedCredential({
-      presentation: presentationWith([reissued]),
-      appUrl: APP_URL
-    })
-    expect(located).toBe(reissued)
-    const parsed = await parseSeedCredential({
-      credential: located as IVerifiableCredential,
-      origin: ORIGIN,
-      appUrl: APP_URL
-    })
-    // ... carrying the SAME identity, end to end. A rolled seed here would
-    // orphan everything the app encrypted under the legacy DID.
-    expect(subjectDid).toBe(legacyDid)
-    expect(parsed.controllerDid).toBe(legacyDid)
-    expect(parsed.seed).toEqual(seed)
   })
 
   it('does not locate a legacy credential (it carries no appUrl)', () => {

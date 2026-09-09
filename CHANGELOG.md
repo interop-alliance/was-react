@@ -1,5 +1,12 @@
 # @interop/was-react Changelog
 
+## 0.23.1 - TBD
+
+### Changed
+
+- `@interop/wallet-request` 0.2.0. The counterpart test no longer exercises
+  the legacy (pre-`appUrl`) app-key re-issue path, which that release removed.
+
 ## 0.23.0 - 2026-09-09
 
 ### Changed
