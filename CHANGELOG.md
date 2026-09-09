@@ -1,5 +1,15 @@
 # @interop/was-react Changelog
 
+## 0.23.0 - TBD
+
+### Changed
+
+- The App Connect request vocabulary and the app-key credential issuer
+  (`serializedAppUrl`, `issueAppKeyCredential`, the credential's pinned wire
+  constants, the wallet-request types) are imported from
+  `@interop/wallet-request` 0.1.0; wallet-core 0.70.0 no longer ships the
+  `request` subpath. `@interop/wallet-core` stays for `keyring` and `identity`.
+
 ## 0.22.2 - 2026-09-08
 
 ### Changed

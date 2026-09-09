@@ -51,7 +51,7 @@
  * to sign; `challenge` must be fresh per request (echoed into the DIDAuth
  * proof and checked in verifyResponse).
  */
-import { serializedAppUrl } from '@interop/wallet-core/request'
+import { serializedAppUrl } from '@interop/wallet-request'
 import type {
   IAppConnectCapabilityQuery,
   IVPRDetails

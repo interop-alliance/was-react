@@ -4,10 +4,11 @@
 // @vitest-environment node
 /**
  * Counterpart tests: both halves of the App Connect contract, run against
- * `@interop/wallet-core`'s REAL wallet-side implementation rather than against
- * a fixture of it. The request this library builds must be one wallet-core
- * accepts, and the app-key credential wallet-core mints (fresh, or re-issued
- * from a legacy pre-`appUrl` one) must be one this library locates and parses.
+ * `@interop/wallet-request`'s REAL wallet-side implementation rather than
+ * against a fixture of it. The request this library builds must be one the
+ * wallet pipeline accepts, and the app-key credential it mints (fresh, or
+ * re-issued from a legacy pre-`appUrl` one) must be one this library locates
+ * and parses.
  *
  * The legacy case is the one worth stating plainly: a legacy credential's seed
  * -- and therefore the app's identity and its access to everything encrypted
@@ -23,7 +24,7 @@ import {
   mintAppKeyCredential,
   reissueAppKeyCredential,
   serializedAppUrl
-} from '@interop/wallet-core/request'
+} from '@interop/wallet-request'
 import { agentsFromSeed } from '@interop/wallet-core/identity'
 import type {
   IVerifiableCredential,

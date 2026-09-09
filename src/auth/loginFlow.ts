@@ -26,7 +26,7 @@ import type {
   IVerifiablePresentation,
   IZcap
 } from '@interop/data-integrity-core'
-import { serializedAppUrl } from '@interop/wallet-core/request'
+import { serializedAppUrl } from '@interop/wallet-request'
 import type { DocumentLoader } from '../identity/documentLoader.js'
 import {
   findSeedCredential,

@@ -27,7 +27,7 @@ import type {
 import type {
   IAppConnectCapabilityQuery,
   IAppConnectQuery as IUpstreamAppConnectQuery
-} from '@interop/wallet-core/request'
+} from '@interop/wallet-request'
 
 /**
  * A request for a proof of DID Authentication (a signed VerifiablePresentation

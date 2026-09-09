@@ -262,9 +262,8 @@ presentation request carrying a `DIDAuthentication` query plus exactly one
   applications served from its origin. It must parse as an absolute URL, must
   carry no fragment, and its origin must equal the attested requesting origin;
   the value emitted is the parsed URL's serialization (`serializedAppUrl` from
-  `@interop/wallet-core/request`), so spellings differing only in a default
-  port, in percent-encoding case, or in dot-segments do not name distinct
-  applications.
+  `@interop/wallet-request`), so spellings differing only in a default port, in
+  percent-encoding case, or in dot-segments do not name distinct applications.
 - `capabilityQuery` -- one collection-scoped entry per requested collection:
   `invocationTarget` (an invocation target descriptor), `allowedAction`
   (non-empty), and `referenceId`. The entries carry no `controller` (the wallet
@@ -318,11 +317,11 @@ carry only one.
 
 `issueSeedCredential({ seed, origin, appUrl, appName, documentLoader })`
 self-issues that credential (for app-side or test self-issuance; the wallet
-mints it in production). It is a thin wrapper over wallet-core's
+mints it in production). It is a thin wrapper over wallet-request's
 `issueAppKeyCredential`, the same issuer the wallet mints with, so the
 credential's shape is maintained in one place; the wrapper enforces the 32-byte
 seed rule, injects this library's document loader, and returns the bare
-credential rather than wallet-core's `{ credential, subjectDid }` pair. The
+credential rather than wallet-request's `{ credential, subjectDid }` pair. The
 exported names `issueSeedCredential`, `parseSeedCredential`, and
 `findSeedCredential` predate the spec's term for the artifact -- read "seed
 credential" in an identifier as the spec's app-key credential.
@@ -464,7 +463,7 @@ key; a public one left plaintext), and delegates per-collection zcaps to the
 app's controller DID, which `connectWithGrants({ seed, grants })` then adopts
 directly. `issueSeedCredential` stays exported for app-side or test
 self-issuance; it signs the wallet's own credential shape by delegating to
-wallet-core's issuer rather than maintaining a copy of it.
+wallet-request's issuer rather than maintaining a copy of it.
 
 ## The three kinds of collection
 

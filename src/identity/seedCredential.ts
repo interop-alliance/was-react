@@ -30,7 +30,7 @@ import {
   APP_KEY_CREDENTIAL_TYPE,
   APP_KEY_TYPE_ARRAY,
   issueAppKeyCredential
-} from '@interop/wallet-core/request'
+} from '@interop/wallet-request'
 import { asArray } from '../jsonLd.js'
 import {
   assertSeedLength,
@@ -41,7 +41,7 @@ import type { DocumentLoader } from './documentLoader.js'
 
 /**
  * The pinned wire constants of the app-key credential, owned by
- * `@interop/wallet-core/request` (the wallet mints against the same values) and
+ * `@interop/wallet-request` (the wallet mints against the same values) and
  * re-exported here so an application reads them from one place:
  *
  * - `APP_KEY_CREDENTIAL_TYPE` -- the marker type every app key carries, mapped
@@ -87,7 +87,7 @@ export function base64urlToBytes(text: string): Uint8Array {
 
 /**
  * Self-issues the app-key credential for `seed`, signed Ed25519Signature2020 by
- * the seed-derived signer. Delegates to wallet-core's `issueAppKeyCredential`,
+ * the seed-derived signer. Delegates to wallet-request's `issueAppKeyCredential`,
  * the same issuer the wallet mints with, so the credential's shape (context
  * pair, type array, self-issued issuer/subject, seed claim) is maintained in
  * one place; this wrapper only enforces the 32-byte seed rule up front and
