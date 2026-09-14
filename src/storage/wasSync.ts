@@ -3,20 +3,20 @@
  */
 /**
  * Shared WAS replication bootstrap: given a parsed grant set and the invoking
- * ZcapClient, builds the delegated {@link WasRemoteStore}, best-effort marks
- * each private collection encrypted and declares each collection's equality
- * indexes -- in the collection description for a public one, in the
- * collection's encrypted metadata (as blinded-index attributes) for a private
- * one -- and starts the supplied {@link SyncController} with
- * reactive store patching. The caller injects the opened localStore, the
- * controller, and the per-doc `onRemoteChange` patcher (typically wired to the
- * rehydrate mechanism over the app's store registry) rather than this module
- * reaching for app-side globals.
+ * ZcapClient, builds the delegated {@link WasRemoteStore}, reads each granted
+ * collection's Metadata object once, best-effort marks each private collection
+ * encrypted and declares each collection's equality indexes -- as the object's
+ * plaintext `plaintext.indexes` member for a public one, inside its encrypted
+ * `custom` envelope (as blinded-index attributes) for a private one -- and
+ * starts the supplied {@link SyncController} with reactive store patching. The
+ * caller injects the opened localStore, the controller, and the per-doc
+ * `onRemoteChange` patcher (typically wired to the rehydrate mechanism over the
+ * app's store registry) rather than this module reaching for app-side globals.
  *
  * SHARED collections are handled apart from all of that. They belong to the
  * wallet, so they never enter replication, never get a local replica, and are
- * excluded from the best-effort description PUTs (a read-only grant would draw
- * nothing but a pointless 403). Instead one {@link SharedCollectionReader} is
+ * excluded from the best-effort declaration writes (a read-only grant would
+ * draw nothing but a pointless 403). Instead one {@link SharedCollectionReader} is
  * opened per configured shared collection the grant set actually covers; a
  * shared collection with no covering grant, or one this app turns out not to be
  * a recipient of, is skipped with a warning rather than failing the session.
@@ -36,7 +36,11 @@ import {
   type WasCollectionConfig
 } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
-import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
+import {
+  WasRemoteStore,
+  remoteDescriptorSource,
+  type CollectionMetaRead
+} from './wasRemoteStore.js'
 import { SharedCollectionReader } from './sharedCollectionReader.js'
 import type { LocalStore } from './localStore.js'
 import type { SyncController } from './syncController.js'
@@ -55,23 +59,26 @@ export interface WasSyncBootstrap {
 /**
  * The one read-filter-cache pass over a grant set, shared by the login-time
  * {@link readRemoteDescriptors} and the sync bootstrap: per REGISTERED
- * collection the grants actually cover, read the private ones' encryption
- * descriptor ONCE (reusing one the caller already read) and keep only the
- * epoch-bearing ones -- a rosterless descriptor cannot build a cipher. A
- * granted id the app never registered is nobody's business here, and a public
- * collection carries no descriptor at all.
+ * collection the grants actually cover, read its Metadata object ONCE (unless
+ * the caller already read the private one's descriptor, or a public one
+ * declares no indexes and so wants nothing from its object) and keep only the
+ * epoch-bearing encryption descriptors -- a rosterless descriptor cannot build
+ * a cipher. A granted id the app never registered is nobody's business here,
+ * and a public collection carries no descriptor.
  *
  * `onCollection` is the bootstrap's hook: it runs per granted collection --
- * public ones included -- with the RAW descriptor as read (epoch-bearing or
- * not), so the description PUTs and the cipher rebuild ride the same single
- * read. Collections are processed concurrently, hook included, so one slow
- * collection never holds up the others.
+ * public ones included -- with the RAW object as read and the descriptor
+ * (epoch-bearing or not) known for it, so the encryption declaration, the
+ * public indexes declaration, and the cipher rebuild ride that one read. The
+ * blinded-index declaration and its schema install read the object again on
+ * their own. Collections are processed concurrently, hook included, so one
+ * slow collection never holds up the others.
  *
- * A read that FAILS (rather than answering "no descriptor") is never taken
- * for an absent descriptor. The collection is skipped entirely, hook included,
- * and reported on `failures`, so neither a placeholder cipher nor a bare
- * descriptor PUT is built on a guess about a collection whose roster could not
- * be read. Every collection settles: an outage affecting several reports each
+ * A read that FAILS (rather than answering "no object") is never taken for an
+ * absent descriptor. The collection is skipped entirely, hook included, and
+ * reported on `failures`, so neither a placeholder cipher nor a declaration
+ * write is built on a guess about a collection whose roster could not be
+ * read. Every collection settles: an outage affecting several reports each
  * of them, and the caller decides what a non-empty `failures` means (the
  * login-time read rejects on it, the bootstrap warns and skips).
  *
@@ -82,7 +89,9 @@ export interface WasSyncBootstrap {
  * @param [options.knownDescriptors] {Record<string, CollectionEncryption>}
  *   descriptors already read live in this bring-up, reused instead of re-read
  * @param [options.onCollection] {(options) => Promise<void>}   per granted
- *   collection, with its raw descriptor (absent for a public one)
+ *   collection, with the object this pass read (absent when the read was
+ *   skipped for a known descriptor) and the descriptor known for it (absent
+ *   for a public one, or one carrying none)
  * @returns {Promise<DescriptorReadOutcome>}   the epoch-bearing descriptors,
  *   keyed by WAS collection id, and the collections whose read failed
  */
@@ -100,6 +109,7 @@ async function readGrantedEncryption({
   onCollection?: (options: {
     collection: WasCollectionConfig
     encryption?: CollectionEncryption
+    current?: CollectionMetaRead
   }) => Promise<void>
 }): Promise<DescriptorReadOutcome> {
   const granted = collections.filter(
@@ -110,28 +120,36 @@ async function readGrantedEncryption({
   await Promise.all(
     granted.map(async collection => {
       const { id: collectionId } = collection
-      let encryption: CollectionEncryption | undefined
-      if (!isPublicCollection(collection)) {
-        // A descriptor the caller read seconds ago is reused as-is; only ids it
-        // did not cover (or a hot restore, which passes none) are read live.
-        encryption = knownDescriptors[collectionId]
-        if (!encryption) {
-          try {
-            encryption =
-              await remoteStore.readCollectionEncryption(collectionId)
-          } catch (err) {
-            failures.push({ collection, err })
-            return
-          }
+      const isPublic = isPublicCollection(collection)
+      // A descriptor the caller read seconds ago is reused as-is; only ids it
+      // did not cover (or a hot restore, which passes none) are read live. A
+      // public collection has no descriptor to know; its object is read only
+      // when it declares indexes, since the `plaintext` declaration on that
+      // object is the one thing wanted from it.
+      let encryption = isPublic ? undefined : knownDescriptors[collectionId]
+      let current: CollectionMetaRead | undefined
+      const wanted = isPublic
+        ? (collection.indexes?.length ?? 0) > 0
+        : encryption === undefined
+      if (wanted) {
+        try {
+          current = await remoteStore.readCollectionMeta(collectionId)
+        } catch (err) {
+          failures.push({ collection, err })
+          return
         }
-        if (hasKeyEpochs(encryption)) {
-          descriptors[collectionId] = encryption
+        if (!isPublic) {
+          encryption = current?.description.encryption
         }
+      }
+      if (encryption && hasKeyEpochs(encryption)) {
+        descriptors[collectionId] = encryption
       }
       if (onCollection) {
         await onCollection({
           collection,
-          ...(encryption && { encryption })
+          ...(encryption && { encryption }),
+          ...(current && { current })
         })
       }
     })
@@ -140,9 +158,9 @@ async function readGrantedEncryption({
 }
 
 /**
- * What one pass of descriptor reads settled to: the epoch-bearing descriptors
+ * What one pass of Metadata reads settled to: the epoch-bearing descriptors
  * (a rosterless one cannot build a cipher) and, apart from them, every
- * collection whose read failed rather than answering "no descriptor".
+ * collection whose read failed rather than answering "no object".
  */
 export type DescriptorReadOutcome = {
   descriptors: Record<string, CollectionEncryption>
@@ -183,7 +201,15 @@ export async function readRemoteDescriptors({
     zcapClient,
     collections
   })
-  return await readGrantedEncryption({ remoteStore, collections, parsed })
+  // A public collection has no descriptor, and nothing else on its object is
+  // wanted before replication exists: it is left to the bootstrap's pass.
+  return await readGrantedEncryption({
+    remoteStore,
+    collections: collections.filter(
+      collection => !isPublicCollection(collection)
+    ),
+    parsed
+  })
 }
 
 /**
@@ -264,32 +290,47 @@ export async function startWasSync({
 
   // One pass per REGISTERED collection the grant set covers -- the registry is
   // what this app declared, so a granted id it never registered is none of this
-  // bootstrap's business. Two things happen per collection:
+  // bootstrap's business. Each collection's Metadata object is READ ONCE (the
+  // pass above skips the read for a private collection whose descriptor the
+  // caller read moments ago, and for a public one declaring no indexes), and
+  // that one object feeds the declaration
+  // writes and the cipher rebuild below. A private collection with a blinding
+  // key costs extra reads of its own, described further down:
   //
-  // - the best-effort collection-description PUTs; non-fatal either way
-  //   (envelopes replicate into an unmarked collection just the same, and a
-  //   query against undeclared indexes fails with a descriptive 400). Each
-  //   helper skips the collections it does not apply to (reported ok +
-  //   skipped): the encryption descriptor skips public collections, the indexes
-  //   declaration skips private ones and public ones with no declared indexes;
-  // - the private collection's encryption descriptor is fetched: rebuild that
-  //   collection's cipher when its epoch roster differs from what the local
-  //   store opened with (a wallet-side rotation, or first-ever epochs), and hand
-  //   the fresh set to the descriptor-cache refresher so an offline session can
-  //   rebuild its epoch-aware ciphers without a live read.
+  // - the best-effort declaration writes, each a read-modify-write of the
+  //   object the pass read, since under WAS v0.5 the object is replaced whole
+  //   and a partial body would clear the members this app never touched. They
+  //   are non-fatal either way (envelopes replicate into an unmarked collection
+  //   just the same, and a query against undeclared indexes fails with a
+  //   descriptive 400). Each helper skips the collections it does not apply to
+  //   (reported ok + skipped): the encryption descriptor skips public
+  //   collections and ones already carrying a descriptor, the `plaintext`
+  //   indexes declaration skips private ones and public ones with no declared
+  //   indexes;
+  // - the private collection's encryption descriptor, read off the same
+  //   object: rebuild that collection's cipher when its epoch roster differs
+  //   from what the local store opened with (a wallet-side rotation, or
+  //   first-ever epochs), and hand the fresh set to the descriptor-cache
+  //   refresher so an offline session can rebuild its epoch-aware ciphers
+  //   without a live read.
   //
-  // A private collection with a blinding key gets one more ride-along on the
-  // same pass: its stored collection metadata is fetched RAW (the opaque
-  // envelope, not the decoded form) and installed on that collection's local
-  // cipher, which carries the persisted blinded-index schema. Documents written
-  // from then on carry blinded `indexed` entries and are findable by
-  // `collection.find()`. It runs AFTER the declaration deliberately: the
-  // declaration may have written fresh attributes into the persisted schema, and
-  // the metadata read must see them.
+  // A private collection with a blinding key gets one more ride-along: the
+  // object's `custom` envelope (RAW, the opaque form, not the decoded one) is
+  // installed on that collection's local cipher, which carries the persisted
+  // blinded-index schema. Documents written from then on carry blinded
+  // `indexed` entries and are findable by `collection.find()`. It runs AFTER
+  // the blinded-index declaration deliberately, and the declaration is the one
+  // write here that changes `custom`: when it reports having written, the
+  // object the pass read is stale and the envelope is read again; when it
+  // wrote nothing (a returning session), the pre-read envelope is installed
+  // as it is, and the collection costs no second round trip. A known
+  // descriptor skips the pass's read, so the install reads then too.
   //
-  // The description is READ ONCE per collection and feeds both: the same
-  // descriptor answers the encryption PUT's read-before-write roster-clobber
-  // guard and the cipher rebuild, rather than each fetching it separately.
+  // The two writes on a private collection contend on the object's one
+  // validator. The encryption descriptor lands first, and only on a
+  // collection carrying no descriptor at all -- which is also a collection
+  // with no blinding key, so nothing follows it. The blinded-index
+  // declaration reads the object fresh for its own compare-and-swap.
   //
   // SHARED collections never appear here: they are wallet-owned, absent from
   // the app-owned registry, and a read-only grant would draw nothing but a
@@ -299,7 +340,7 @@ export async function startWasSync({
     collections,
     parsed,
     knownDescriptors,
-    onCollection: async ({ collection, encryption }) => {
+    onCollection: async ({ collection, encryption, current }) => {
       const { id: collectionId } = collection
       if (!isPublicCollection(collection)) {
         // Only an epoch-bearing descriptor enters the offline cache or
@@ -316,21 +357,25 @@ export async function startWasSync({
             { collectionId }
           )
         }
+        // A collection already carrying a descriptor (read live, or known
+        // from the login-time read) is skipped inside the call: the bare
+        // descriptor must never overwrite a roster.
         const declared = await remoteStore.markCollectionEncrypted(
           collectionId,
-          { encryption }
+          { ...(current && { current }), ...(encryption && { encryption }) }
         )
         if (!declared.ok) {
-          log.warn('Encryption descriptor PUT not authorized.', {
+          log.warn('Encryption descriptor write not authorized.', {
             collectionId,
-            status: declared.status ?? 'n/a'
+            status: declared.status ?? 'n/a',
+            error: declared.error ?? 'unknown error'
           })
         }
-        // The private-collection counterpart of the public `indexes` PUT: the
-        // blinded-index schema lives in the collection's own encrypted
-        // metadata, so it is written through the collection handle rather than
-        // the description. Non-fatal: an unqueryable collection is still a
-        // fully replicating one.
+        // The private-collection counterpart of the public `indexes`
+        // declaration: the blinded-index schema lives in the object's
+        // encrypted `custom` envelope, so it is written through the collection
+        // handle's own compare-and-swap. Non-fatal: an unqueryable collection
+        // is still a fully replicating one.
         const blinded = await remoteStore.declareBlindedIndexes(collectionId, {
           encryption
         })
@@ -344,19 +389,23 @@ export async function startWasSync({
         // The schema the declaration just settled is then installed on this
         // collection's local cipher, so the documents this replica writes from
         // now on carry blinded `indexed` entries. A descriptor with no `hmac`
-        // carries no blinding key at all, so the install could only be a no-op:
-        // the metadata read is skipped rather than spent.
-        // A read that fails (rather than answering "no metadata") skips the
-        // install for this session with a warning: the answer is unknown, and
-        // an install skipped over a guess is the same outcome either way, but
-        // the warning says why.
+        // carries no blinding key at all, so the install could only be a no-op
+        // and is skipped rather than spent. The envelope comes from the
+        // object the pass read unless the declaration replaced it, or the
+        // pass never read it; a read that fails (rather than answering "no
+        // object") skips the install for this session with a warning: the
+        // answer is unknown, and an install skipped over a guess is the same
+        // outcome either way, but the warning says why.
         if (hasKeyEpochs(encryption) && encryption.hmac) {
           try {
-            const meta = await remoteStore.readCollectionMeta(collectionId)
-            if (meta) {
+            const read =
+              current !== undefined && !blinded.wrote
+                ? current
+                : await remoteStore.readCollectionMeta(collectionId)
+            if (read) {
               await localStore.applyCollectionMeta({
                 collectionId,
-                custom: meta.custom
+                custom: read.description.custom
               })
             }
           } catch (err) {
@@ -367,22 +416,25 @@ export async function startWasSync({
           }
         }
       }
-      const indexes = await remoteStore.declareCollectionIndexes(collectionId)
+      const indexes = await remoteStore.declareCollectionIndexes(collectionId, {
+        ...(current && { current })
+      })
       if (!indexes.ok) {
-        log.warn('Indexes declaration PUT not authorized.', {
+        log.warn('Indexes declaration write not authorized.', {
           collectionId,
-          status: indexes.status ?? 'n/a'
+          status: indexes.status ?? 'n/a',
+          error: indexes.error ?? 'unknown error'
         })
       }
     }
   })
   // A read that failed degrades that one collection: it keeps the cipher it
   // opened with (the cached descriptor, or fail-closed) and receives no
-  // description PUT this session. It is not "no descriptor".
+  // declaration write this session. It is not "no object".
   for (const { collection, err } of failures) {
     log.warn(
-      'Skipping the sync bootstrap of a collection: its encryption ' +
-        'descriptor could not be read.',
+      'Skipping the sync bootstrap of a collection: its metadata object ' +
+        'could not be read.',
       { collectionId: collection.id, err }
     )
   }

@@ -484,8 +484,8 @@ Three kinds, and the distinctions are load-bearing:
   collections that the user chooses to let this app read and decrypt. Requested
   with `https://w3id.org/byoe#shared-wallet-collection` and the read-only
   `SHARED_ACTIONS` set. It is read-only by construction: no RxDB collection, no
-  local replica, no replication, no writes, and the sync bootstrap's
-  collection-description PUTs skip it. Reads go straight to the server through a
+  local replica, no replication, no writes, and the sync bootstrap's declaration
+  writes skip it. Reads go straight to the server through a
   `SharedCollectionReader`, which fetches the stored EDV envelope raw (the
   `encryption: 'plaintext'` handle override) and decrypts it locally.
 
@@ -585,90 +585,137 @@ inside `start()` and resets the status store on stop.
 
 `startWasSync` (`src/storage/wasSync.ts`) is the replication bootstrap: given
 the parsed grant set and the invoking `ZcapClient` it builds the delegated
-`WasRemoteStore`, and then, per registered collection the grants actually cover,
-reads the collection description once and uses it twice -- to rebuild that
-collection's cipher when its epoch roster differs from what the local store
-opened with, and as the read-before-write guard on the best-effort encryption
-descriptor PUT. Public collections skip the encryption half. Every collection
-that configures equality `indexes` then declares them, and where the declaration
-lives depends on the visibility: a public collection announces them in its
-plaintext collection description (read first, and written only when the stored
-declaration differs from the configured list), while a private one declares them
-as blinded-index attributes in its own encrypted metadata, through a
-compare-and-swap write (`declareBlindedIndexes`, over was-client's
-`Collection.declareIndex`). The encrypted form is what lets every recipient
-discover what is queryable while the server never learns the attribute names.
-Only attributes missing from the persisted schema are written, so a returning
-session writes nothing. After the declaration, the bootstrap reads the
-collection's stored `/meta` value raw (the opaque encrypted metadata envelope;
-`Collection.meta()` would decode it, and the cipher wants it as stored) and
-installs the persisted blinded-index schema on that collection's own document
-cipher (`LocalStore.applyCollectionMeta`, over the upstream cipher's
+`WasRemoteStore`. A collection's `encryption` descriptor, its public
+`plaintext.indexes` declaration, and its encrypted `custom` envelope (where a
+private collection's blinded-index schema lives) are three members of one
+Collection Metadata object, served at `/space/{s}/{c}/meta` under one
+`metaVersion` validator. The bootstrap reads that object once per registered
+collection the grants cover, public collections included (a public collection
+that declares no indexes wants nothing from its object and is not read). That
+one read feeds the cipher rebuild, the encryption declaration, and the public
+indexes declaration. The blinded-index declaration and its schema install read
+the object again on their own (see below).
+
+The private collection's cipher is rebuilt from the descriptor read off that
+object, when its epoch roster differs from what the local store opened with, and
+the fresh set is handed to the descriptor-cache refresher so an offline session
+can rebuild its epoch-aware ciphers without a live read. The encryption
+declaration writes `{ scheme: 'edv' }` onto a private collection that carries no
+descriptor yet, through was-client's `configure`, which merges the change over
+the object already read, pins the write to that object's validator, and retries
+a lost race on its own. It is skipped, and reported ok, on a public collection
+(public implies plaintext) and on one that already carries a descriptor -- the
+wallet's own epoch roster, which a bare descriptor must never overwrite. With no
+readable object there is nothing to merge into, so the write is skipped and
+reported failed rather than sent as a body that would replace the whole object.
+
+Every collection that configures equality `indexes` then declares them, and
+where the declaration lives still depends on visibility. A public collection's
+declaration goes on the same object's plaintext `plaintext.indexes` member,
+through the same `Collection.configure` path as the encryption declaration. It
+merges the change over the object already read, carries `name`, `custom`, and
+every member this client does not model forward, and pins the write to the
+read's validator. A lost race is re-read and rebased by was-client's own
+compare-and-swap; only a race lost repeatedly is reported here, and the next
+session's pass repairs it. The declaration is skipped once the stored
+declaration already matches the configured list. A private collection declares
+its indexes as blinded-index attributes inside the object's encrypted `custom`
+envelope instead, through a compare-and-swap write (`declareBlindedIndexes`,
+over was-client's `Collection.declareIndexes`, one write for every missing
+attribute). The encrypted form is what lets every recipient discover what is
+queryable while the server never learns the attribute names. Only attributes
+missing from the persisted schema are written, so a returning session writes
+nothing, and the declaration reports whether it actually wrote.
+
+The persisted blinded-index schema is then installed on that collection's own
+document cipher (`LocalStore.applyCollectionMeta`, over the upstream cipher's
 `applyMeta`), so every document the app writes from then on carries blinded
-`indexed` entries and is findable by an equality query. The install is
-remembered per collection and re-applied whenever the cipher is rebuilt (an
-epoch rotation, the unknown-epoch refresh): a schema change rotates no epochs,
-so the schema deliberately does not ride the descriptor-equality gate. The
-residue is prospective-only stamping -- a document sealed before the schema was
-installed (anything written offline before the first connect, including the
-adoption merge's pre-sync writes) carries no entries until it is rewritten. All
-of it is non-fatal and warns on refusal, including a private collection
-provisioned without a blinded-index key (no `hmac` member on its descriptor),
-which also skips the meta read outright: an unqueryable collection still
-replicates in full. The meta read keeps the same two non-answers apart as the
-description read below: not-found and a backend without metadata support mean
-"no schema", while any other failure is thrown, which the bootstrap warns about
-and skips the install for that session. The remote store is built with this
-app's identity keys when they are available, which is what lets the client's EDV
-keystore construct the codec the blinded-index verbs need; replication itself
-still moves envelopes verbatim and never goes through that codec. A private
-collection whose descriptor carries no key epochs stays fail-closed, warned
-about plainly rather than surfacing later as per-row decrypt failures. The
-fetched descriptors are handed to `onDescriptorsFetched` (the offline descriptor
-cache) and a live descriptor source is installed on the local store, so a
-decrypt that meets an unseen epoch (a rotation elsewhere) re-reads and rebuilds
-once per collection per session. An unseen epoch is the only signal that spends
-that refresh; a decrypt that fails because this app holds no key for an epoch
-the descriptor already lists surfaces as `KeyUnwrapError` and leaves the refresh
-untouched. Shared collections are handled apart from all of that: they never
-enter replication and never receive a description PUT, and instead one
-`SharedCollectionReader` is opened per configured shared collection the grants
-cover, concurrently, each failure a warn-and-skip.
+`indexed` entries and is findable by an equality query. Because the
+blinded-index declaration is the one write that can change `custom`, the install
+reuses the object the bootstrap already read when that declaration reported no
+write, and reads the object again when it did. `Collection.meta()` is not used
+for this read: it decodes `custom` to plaintext, and the cipher wants the
+envelope exactly as stored. The install is remembered per collection and
+re-applied whenever the cipher is rebuilt (an epoch rotation, the unknown-epoch
+refresh), since a schema change rotates no epochs and so does not ride the
+descriptor-equality gate. The residue is prospective-only stamping: a document
+sealed before the schema was installed (anything written offline before the
+first connect, including the adoption merge's pre-sync writes) carries no
+entries until it is rewritten. All of it is non-fatal and warns on refusal,
+including a private collection provisioned without a blinded-index key (no
+`hmac` member on its descriptor), which also skips the schema read outright: an
+unqueryable collection still replicates in full. The object read keeps the same
+two non-answers apart as the Metadata read described below: not-found and a
+backend without metadata support mean "no schema", while any other failure is
+thrown, which the bootstrap warns about and skips the install for that session.
 
-`readRemoteDescriptors` is the login-time counterpart: one descriptor read per
-granted private collection BEFORE any replication exists, because the connected
-replica must open epoch-aware -- epoch-from-birth leaves no single-key fallback,
-and the adoption merge writes into it before sync starts. Both it and the
-bootstrap's per-collection pass run the same read-filter sequence, written once
-in `wasSync.ts`: skip the public and ungranted collections, read each remaining
-collection's description exactly once (reusing one the caller already read), and
-keep only the epoch-bearing descriptors. The bootstrap hangs its own
-per-collection work off that pass, so the description PUTs and the cipher
-rebuild ride the same single read.
+The encryption declaration and the blinded-index declaration contend on the
+object's single validator. Only one of them ever fires on a given collection in
+a given pass: the encryption declaration applies only to a collection carrying
+no descriptor at all, and such a collection carries no blinding key either, so
+the blinded-index declaration never follows it there. The blinded-index
+declaration reads the object fresh for its own compare-and-swap rather than
+trusting the copy the pass read, so it is never caught out by a write that
+landed first.
 
-A description read has two distinct non-answers, and the pass keeps them apart.
-"No descriptor" is a fact about the collection: the read answered not-found
-(which is also how WAS answers an unauthorized read), or the description carries
-no `encryption` member. `readCollectionEncryption` answers `undefined` for that
-alone. A read that fails for any other reason (a dropped connection, a 5xx) is
-thrown, because the answer is unknown rather than absent, and a caller that took
-it for "no descriptor" would open a correctly provisioned collection under the
-fail-closed placeholder cipher, fail the adoption merge on it, and let the
-best-effort descriptor PUT write a bare descriptor over a roster it never saw.
-Neither read retries on its own; the HTTP client underneath already retries
-transient status codes and network errors on every GET. The pass settles every
-collection and reports the failed ones beside the descriptors, and each caller
-decides what a failure costs. A login rejects the whole connected activation,
-which falls back to `local` with the error surfaced and the anonymous replica
-intact for a retry. A hot restore adopts nothing, so it warns and opens that
-collection fail-closed instead, and a reload while offline still restores the
-connected session. The bootstrap skips that one collection entirely, hook
-included, with a warning: it keeps whatever cipher it opened with (the cached
-descriptor, or fail-closed) and receives no PUT this session, and when the read
-succeeds on a later session it repairs the cipher then. The unknown-epoch
-refresh source is tolerant too, warning and answering `undefined`, since the
-refresh is already spent by the time it is consulted and the decrypt retry fails
-the same way it would under no refresh at all.
+The remote store is built with this app's identity keys when they are available,
+which is what lets the client's EDV keystore construct the codec the
+blinded-index verbs need; replication itself still moves envelopes verbatim and
+never goes through that codec. A private collection whose descriptor carries no
+key epochs stays fail-closed, warned about plainly rather than surfacing later
+as per-row decrypt failures. The fetched descriptors are handed to
+`onDescriptorsFetched` (the offline descriptor cache) and a live descriptor
+source is installed on the local store, so a decrypt that meets an unseen epoch
+(a rotation elsewhere) re-reads and rebuilds once per collection per session. An
+unseen epoch is the only signal that spends that refresh; a decrypt that fails
+because this app holds no key for an epoch the descriptor already lists surfaces
+as `KeyUnwrapError` and leaves the refresh untouched. Shared collections are
+handled apart from all of that: they never enter replication and never receive a
+declaration write, and instead one `SharedCollectionReader` is opened per
+configured shared collection the grants cover, concurrently, each failure a
+warn-and-skip.
+
+`readRemoteDescriptors` is the login-time counterpart. It reads one encryption
+descriptor per granted private collection before any replication exists, because
+the connected replica must open epoch-aware. Epoch-from-birth leaves no
+single-key fallback, and the adoption merge writes into the replica before sync
+starts. Public collections are excluded here: nothing on their Metadata object
+is needed before replication exists, so they are left to the bootstrap's own
+pass. Both this read and the bootstrap's per-collection pass run the same
+read-filter-cache logic, written once in `wasSync.ts` as
+`readGrantedEncryption`. It skips the ungranted collections, reads each
+remaining collection's Metadata object exactly once (reusing a descriptor the
+caller already read for a private one), and keeps only the epoch-bearing
+descriptors. The bootstrap runs that same pass over every granted collection,
+public ones with indexes included, so the encryption declaration, the public
+indexes declaration, and the cipher rebuild ride that one read. The
+blinded-index declaration reads the object again on its own, as noted above.
+
+A Metadata read has two distinct non-answers, and the pass keeps them apart. "No
+descriptor" is a fact about the collection: the read answered not-found (which
+is also how WAS answers an unauthorized read), the backend has no metadata
+support, or the object carries no `encryption` member.
+`readCollectionEncryption` answers `undefined` for exactly that, as a narrow
+read over the same object `readCollectionMeta` returns. A read that fails for
+any other reason (a dropped connection, a 5xx) is thrown, because the answer is
+unknown rather than absent. A caller that took it for "no descriptor" would open
+a correctly provisioned collection under the fail-closed placeholder cipher,
+fail the adoption merge on it, and let a best-effort declaration write a bare
+descriptor over a roster it never saw. Neither read retries on its own; the HTTP
+client underneath already retries transient status codes and network errors on
+every GET. The pass settles every collection and reports the failed ones beside
+the descriptors, and each caller decides what a failure costs. A login rejects
+the whole connected activation, which falls back to `local` with the error
+surfaced and the anonymous replica intact for a retry. A hot restore adopts
+nothing, so it warns and opens that collection fail-closed instead, and a reload
+while offline still restores the connected session. The bootstrap skips that one
+collection entirely, hook included, with a warning. It keeps whatever cipher it
+opened with (the cached descriptor, or fail-closed) and receives no declaration
+write this session; when the read succeeds on a later session it repairs the
+cipher then. The unknown-epoch refresh source is tolerant too, warning and
+answering `undefined`, since the refresh is already spent by the time it is
+consulted and the decrypt retry fails the same way it would under no refresh at
+all.
 
 A descriptor's epoch roster can also simply not include this app: not "no
 descriptor" and not "no epochs", but a roster whose recipients never wrapped a

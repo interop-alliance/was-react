@@ -19,7 +19,8 @@
  *   4. returns the signed grants and (optionally) writes them to a JSON file the
  *      app loads in dev-sync mode;
  *   5. optionally probes the open question: does the delegated, collection-scoped
- *      RW zcap authorize an RP-side PUT of the collection description?
+ *      RW zcap authorize an RP-side PUT of the Collection Metadata object (the
+ *      `meta` sub-resource the description now lives at)?
  *
  * Node only (uses `fs`); consumed through the package `./dev` subpath.
  */
@@ -28,9 +29,10 @@ import { dirname } from 'node:path'
 import { WasClient, type ActionInput } from '@interop/was-client'
 import { ensureFirstEpoch, ownerRecipient } from '@interop/was-client/edv'
 import type { IDelegatedZcap } from '@interop/data-integrity-core'
-import { CapabilityAgent } from '@interop/webkms-client'
-import { agentsFromKeyAgent } from '@interop/wallet-core/identity'
+import { CapabilityAgent } from '@interop/capability-agent'
+import { agentsFromKeyAgent } from '@interop/was-client/identity'
 import {
+  collectionMeta,
   collectionPath,
   rootCapability,
   spacePath,
@@ -66,7 +68,8 @@ export interface ProvisionDevGrantsResult {
    */
   spaceId: string
   /**
-   * The absolute space URL (`<serverUrl>/space/<spaceId>`).
+   * The canonical absolute space URL (`<serverUrl>/space/<spaceId>/`, with
+   * the trailing slash a container URL carries).
    */
   spaceUrl: string
   /**
@@ -79,8 +82,8 @@ export interface ProvisionDevGrantsResult {
   provisionerDid: string
   /**
    * Present only when `probe` was requested: the result of PUTting the
-   * collection description (read first, written back verbatim) with the app's
-   * delegated RW zcap.
+   * Collection Metadata object (read first, written back verbatim) with the
+   * app's delegated RW zcap.
    */
   probe?: {
     authorized: boolean
@@ -140,8 +143,8 @@ async function provisionerClient({
  * @param [options.actions] {ActionInput[]}   the RW action set delegated per
  *   collection (defaults to the auth layer's `RW_ACTIONS`)
  * @param [options.probe] {boolean}   when true, probe whether the delegated RW
- *   zcap authorizes a PUT of the collection description (read first and written
- *   back verbatim, so an installed epoch roster is never clobbered)
+ *   zcap authorizes a PUT of the Collection Metadata object (read first and
+ *   written back verbatim, so an installed epoch roster is never clobbered)
  * @param [options.log] {(message: string) => void}   progress sink (defaults to
  *   a no-op; the CLI passes `console.log`)
  * @returns {Promise<ProvisionDevGrantsResult>}
@@ -196,13 +199,15 @@ export async function provisionDevGrants({
   })
   log(`  space id:        ${space.id}`)
 
-  // Each collection grant is delegated from the SPACE ROOT (not the collection
-  // root) attenuating down to the collection URL. This is what the reference
-  // server authorizes for a collection's sub-resources: a chain rooted at the
-  // space root, whose invocationTarget (the collection URL) is a RESTful prefix
-  // of every `/<collection>/<resource>` and `/<collection>/query` request. A
-  // grant rooted at the collection's own root authorizes only the exact
-  // collection-description URL, not its resources or the changes feed.
+  // Each collection grant is delegated from the Space's ROOT capability,
+  // attenuating the target down to the collection's container URL. The root
+  // is the one capability the provisioner controls (the server mints one per
+  // Space, naming the Space's controller), so it is the only parent a chain the
+  // provisioner signs can start from; `grant()` would default to it anyway,
+  // and it is passed explicitly here so the chain's shape is stated where the
+  // grant is minted. The collection container URL (canonical trailing slash)
+  // then prefix-covers everything the app invokes under it: its resources,
+  // the `query` endpoint, the listing, and its Metadata object at `meta`.
   const spaceUrl = toUrl({ serverUrl, path: spacePath(space.id) })
   const spaceRoot = rootCapability({
     target: spaceUrl,
@@ -246,7 +251,7 @@ export async function provisionDevGrants({
       const zcap = await provisioner.grant({
         to: appDid,
         actions,
-        target: `${spaceUrl}/${id}`,
+        target: toUrl({ serverUrl, path: collectionPath(space.id, id) }),
         capability: spaceRoot
       })
       log(`  collection "${id}": created (${visibility}) + delegated RW to app`)
@@ -272,21 +277,20 @@ export async function provisionDevGrants({
     return result
   }
 
-  // --- Description-write probe --------------------------------------------------
+  // --- Metadata-write probe -----------------------------------------------------
   // Using the app's OWN delegated RW zcap (not the provisioner root key),
-  // attempt to PUT the collection description. The description is read first
-  // and written back verbatim: authorization is what is probed, and a blind
-  // descriptor PUT would try to clobber the installed epoch roster (which the
-  // server refuses -- epochs are append-only -- muddying the answer).
+  // attempt to PUT the Collection Metadata object at `meta`. The object is read
+  // first and written back verbatim: authorization is what is probed, the PUT
+  // replaces the whole object, and a blind body would try to clobber the
+  // installed epoch roster (which the server refuses -- epochs are append-only
+  // -- muddying the answer).
   const appWas = new WasClient({ serverUrl, zcapClient: appZcapClient })
   const firstEntry = collections[0]!
   const probeCollectionId =
     typeof firstEntry === 'string' ? firstEntry : firstEntry.id
   const probeCapability = grants[0]!
-  const probePath = collectionPath(space.id, probeCollectionId)
-  log(
-    `\nDescription-write probe on "${probeCollectionId}" (delegated RW zcap):`
-  )
+  const probePath = collectionMeta(space.id, probeCollectionId)
+  log(`\nMetadata-write probe on "${probeCollectionId}" (delegated RW zcap):`)
   try {
     const current = await appWas.request({
       capability: probeCapability,

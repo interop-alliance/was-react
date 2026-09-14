@@ -13,16 +13,14 @@ import { describe, expect, it } from 'vitest'
 import {
   appConnectRequestOf,
   composeVp,
-  mintAppKeyCredential,
-  serializedAppUrl
+  mintAppKeyCredential
 } from '@interop/wallet-request'
-import { agentsFromSeed } from '@interop/wallet-core/identity'
+import { agentsFromSeed } from '@interop/was-client/identity'
 import type {
   IVerifiableCredential,
   IVerifiablePresentation,
   IZcap
 } from '@interop/data-integrity-core'
-import { deriveIdentity } from '../identity/agents.js'
 import { createDocumentLoader } from '../identity/documentLoader.js'
 import {
   findSeedCredential,

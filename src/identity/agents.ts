@@ -5,7 +5,7 @@
  * WAS master-identity derivation from a 32-byte master seed.
  *
  * SEED-DERIVATION CONVENTION (pinned, part of the shared-key contract): the
- * pinned `@interop/webkms-client` exposes `CapabilityAgent.fromSeed({ seed })`,
+ * pinned `@interop/capability-agent` exposes `CapabilityAgent.fromSeed({ seed })`,
  * which takes the raw 32 bytes AS-IS (no hashing). We use it for the master
  * identity, feeding raw bytes -- never `fromSecret`, which salt-hashes a STRING
  * and would derive a different key for a byte array vs its text form.
@@ -41,12 +41,12 @@
  * key to a third party -- is what key-epoch rosters replaced.
  *
  * Not test-node-safe on React Native, but fine under Node/Vitest: the crypto
- * stack (`webkms-client`, `x25519-key-agreement-key`) runs on the standard Web
+ * stack (`capability-agent`, `x25519-key-agreement-key`) runs on the standard Web
  * Crypto that Node 24 provides.
  */
-import { CapabilityAgent } from '@interop/webkms-client'
+import { CapabilityAgent } from '@interop/capability-agent'
 import type { ZcapClient } from '@interop/ezcap'
-import { agentsFromKeyAgent } from '@interop/wallet-core/identity'
+import { agentsFromKeyAgent } from '@interop/was-client/identity'
 import type {
   IKeyAgreementKey,
   IKeyResolver

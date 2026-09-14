@@ -1,7 +1,7 @@
 /*!
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ZcapClient } from '@interop/ezcap'
 import type {
   IKeyAgreementKey,
@@ -9,6 +9,7 @@ import type {
   IZcap
 } from '@interop/data-integrity-core'
 import { NotImplementedError, WasServerError } from '@interop/was-client'
+import type { CollectionMetadata } from '@interop/was-client'
 import { WasRemoteStore, remoteDescriptorSource } from './wasRemoteStore.js'
 import type { ParsedGrants } from '../grants.js'
 import { captureLogger } from '@interop/logger'
@@ -26,11 +27,51 @@ const parsed: ParsedGrants = {
 const zcapClient = {} as unknown as ZcapClient
 
 /**
+ * The service description a v0.5 server publishes, answered by a stubbed
+ * global `fetch`. From was-client 0.62 on, every signed request first
+ * discovers the server's version through an unsigned `HEAD` of the server URL
+ * and an unsigned `GET` of the linked document, neither of which goes through
+ * the stubbed `ZcapClient`; an earlier client never calls `fetch` here, and
+ * the stub is idle.
+ */
+const serviceDescription = {
+  url: 'https://was.example',
+  specs: { 'https://w3id.org/pws': [{ version: '0.5' }] }
+}
+
+beforeAll(() => {
+  vi.stubGlobal(
+    'fetch',
+    async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Response(
+        init?.method === 'HEAD' ? null : JSON.stringify(serviceDescription),
+        {
+          status: 200,
+          headers: {
+            link: '<https://was.example/service>; rel="service"',
+            'content-type': 'application/json'
+          }
+        }
+      )
+  )
+})
+
+afterAll(() => {
+  vi.unstubAllGlobals()
+})
+
+/**
  * A stub ZcapClient capturing every signed request and answering each with the
- * queued responses (the last one repeating).
+ * queued responses (the last one repeating). A response's `etag` is served as
+ * its `ETag` header, the validator a metadata read hands back.
  */
 function stubZcapClient(
-  responses: Array<{ status: number; data?: unknown; error?: unknown }>
+  responses: Array<{
+    status: number
+    data?: unknown
+    etag?: string
+    error?: unknown
+  }>
 ) {
   const calls: Array<{
     url: string
@@ -38,6 +79,7 @@ function stubZcapClient(
     action?: string
     capability?: unknown
     json?: unknown
+    headers?: Record<string, string>
   }> = []
   let callIndex = 0
   const client = {
@@ -49,10 +91,30 @@ function stubZcapClient(
       if (response?.error !== undefined) {
         throw response.error
       }
-      return response
+      return {
+        ...response,
+        headers: new Headers(
+          response?.etag !== undefined ? { etag: response.etag } : {}
+        )
+      }
     }
   }
   return { calls, zcapClient: client as unknown as ZcapClient }
+}
+
+/**
+ * A Collection Metadata object as the read pass hands it to a declaration:
+ * the stored object plus the validator the write pins to (`null` for a
+ * backend that serves none).
+ */
+function metaRead(
+  description: Record<string, unknown>,
+  etag: string | null = '"v1"'
+) {
+  return {
+    description: description as unknown as CollectionMetadata,
+    ...(etag !== null && { etag })
+  }
 }
 
 /**
@@ -71,7 +133,7 @@ const identityKeys = {
 /**
  * Replaces the store's `WasClient` with a stand-in whose
  * `space().collection()` chain answers from `handlers`, capturing the handle
- * arguments and every `find` / `declareIndex` call. The codec is what would
+ * arguments and every `find` / `declareIndexes` call. The codec is what would
  * blind the terms and decrypt the results; faking at the handle boundary keeps
  * the assertions on this library's own routing.
  */
@@ -80,7 +142,9 @@ function fakeCollectionHandle(
   handlers: {
     find?: (options: Record<string, unknown>) => Promise<unknown>
     indexes?: () => Promise<Array<{ attribute: string | string[] }>>
-    declareIndex?: (options: { attribute: string }) => Promise<unknown>
+    declareIndexes?: (options: {
+      indexes: Array<{ attribute: string }>
+    }) => Promise<unknown>
   }
 ) {
   const calls: {
@@ -89,16 +153,22 @@ function fakeCollectionHandle(
     capability?: unknown
     find: Array<Record<string, unknown>>
     declared: string[]
-  } = { find: [], declared: [] }
+    declareCalls: number
+  } = { find: [], declared: [], declareCalls: 0 }
   const collection = {
     find: async (options: Record<string, unknown>) => {
       calls.find.push(options)
       return await (handlers.find?.(options) ?? Promise.resolve({}))
     },
     indexes: async () => await (handlers.indexes?.() ?? Promise.resolve([])),
-    declareIndex: async ({ attribute }: { attribute: string }) => {
-      calls.declared.push(attribute)
-      return await (handlers.declareIndex?.({ attribute }) ??
+    declareIndexes: async ({
+      indexes
+    }: {
+      indexes: Array<{ attribute: string }>
+    }) => {
+      calls.declared.push(...indexes.map(({ attribute }) => attribute))
+      calls.declareCalls += 1
+      return await (handlers.declareIndexes?.({ indexes }) ??
         Promise.resolve({ revision: 1, indexes: [] }))
     }
   }
@@ -122,7 +192,7 @@ function fakeCollectionHandle(
 }
 
 describe('WasRemoteStore.markCollectionEncrypted', () => {
-  it('skips the descriptor PUT for a public collection (ok + skipped)', async () => {
+  it('skips the descriptor write for a public collection (ok + skipped)', async () => {
     const store = WasRemoteStore.fromGrants({
       parsed,
       zcapClient,
@@ -131,9 +201,9 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
         { key: 'notes', id: 'notes' }
       ]
     })
-    // Resolves without any network round trip: the PUT is never attempted.
+    // Resolves without any network round trip: the write is never attempted.
     const result = await store.markCollectionEncrypted('microblog-posts', {
-      encryption: undefined
+      current: metaRead({ id: 'microblog-posts', type: ['Collection'] })
     })
     expect(result).toEqual({
       collectionId: 'microblog-posts',
@@ -144,9 +214,7 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
 
   it('reports a missing capability for an ungranted private collection', async () => {
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient })
-    const result = await store.markCollectionEncrypted('unknown-collection', {
-      encryption: undefined
-    })
+    const result = await store.markCollectionEncrypted('unknown-collection', {})
     expect(result).toEqual({
       collectionId: 'unknown-collection',
       ok: false,
@@ -154,57 +222,107 @@ describe('WasRemoteStore.markCollectionEncrypted', () => {
     })
   })
 
-  it('skips the PUT when the collection already carries an epoch roster', async () => {
-    // The caller's read returned a descriptor with epochs; the bare-descriptor
-    // PUT that would clobber it must never be attempted.
+  it('skips the write when the collection already carries an epoch roster', async () => {
+    // The caller knows a descriptor with epochs for the collection; the
+    // bare-descriptor write that would clobber it must never be attempted.
     const { calls, zcapClient: stub } = stubZcapClient([{ status: 200 }])
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
-    const result = await store.markCollectionEncrypted('notes', {
-      encryption: {
-        scheme: 'edv',
-        currentEpoch: 'did:key:zEpoch1',
-        epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
-      }
-    })
-    expect(result).toEqual({ collectionId: 'notes', ok: true, skipped: true })
-    // No round trips at all: the guard turns on the descriptor handed in.
+    const encryption = {
+      scheme: 'edv' as const,
+      currentEpoch: 'did:key:zEpoch1',
+      epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
+    }
+    expect(
+      await store.markCollectionEncrypted('notes', {
+        current: metaRead({ id: 'notes', type: ['Collection'], encryption }),
+        encryption
+      })
+    ).toEqual({ collectionId: 'notes', ok: true, skipped: true })
+    // No round trips at all: the guard turns on the descriptor already on
+    // the read object, before a capability or a write is even considered.
     expect(calls).toHaveLength(0)
   })
 
-  it('PUTs the bare descriptor when no encryption block is present', async () => {
+  it('refuses the write when the metadata object was not read', async () => {
+    // Under v0.5 the write replaces the whole object; with nothing read there
+    // is nothing to merge into, and a bare descriptor would clear the rest.
+    const { calls, zcapClient: stub } = stubZcapClient([{ status: 204 }])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    const result = await store.markCollectionEncrypted('notes', {})
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/was not read/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('merges the bare descriptor into the object it was handed', async () => {
     const { calls, zcapClient: stub } = stubZcapClient([
-      { status: 200 } // PUT
+      { status: 204, etag: '"v2"' } // PUT
     ])
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
     const result = await store.markCollectionEncrypted('notes', {
-      encryption: undefined
+      current: metaRead({
+        id: 'notes',
+        type: ['Collection'],
+        name: 'Notes',
+        url: 'https://was.example/space/space-1/notes/',
+        createdAt: '2026-01-01T00:00:00Z'
+      })
     })
-    expect(result).toEqual({ collectionId: 'notes', ok: true, status: 200 })
+    expect(result).toEqual({ collectionId: 'notes', ok: true })
+    // One PUT of the whole object at `meta`, pinned to the read's validator:
+    // the stored `name` rides along, the server-managed members do not, and
+    // no second read was spent.
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
+      url: 'https://was.example/space/space-1/notes/meta',
       method: 'PUT',
-      json: { id: 'notes', encryption: { scheme: 'edv' } }
+      capability: { id: 'urn:zcap:priv' },
+      json: { id: 'notes', name: 'Notes', encryption: { scheme: 'edv' } },
+      headers: { 'if-match': '"v1"' }
     })
+    expect(calls[0]?.json).not.toHaveProperty('type')
+    expect(calls[0]?.json).not.toHaveProperty('createdAt')
+  })
+
+  it('reports a refused write rather than throwing', async () => {
+    const forbidden = Object.assign(new Error('Forbidden'), { status: 403 })
+    const { zcapClient: stub } = stubZcapClient([
+      { status: 403, error: forbidden }
+    ])
+    const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
+    const result = await store.markCollectionEncrypted('notes', {
+      current: metaRead({ id: 'notes', type: ['Collection'] })
+    })
+    expect(result.ok).toBe(false)
+    expect(result.status).toBe(403)
   })
 })
 
 describe('WasRemoteStore.readCollectionEncryption', () => {
-  it('returns the encryption descriptor from the collection description', async () => {
+  it('returns the encryption descriptor from the collection metadata object', async () => {
     const descriptor = {
       scheme: 'edv',
       currentEpoch: 'did:key:zEpoch1',
       epochs: [{ id: 'did:key:zEpoch1', recipients: [] }]
     }
-    const { zcapClient: stub } = stubZcapClient([
-      { status: 200, data: { id: 'notes', encryption: descriptor } }
+    const { calls, zcapClient: stub } = stubZcapClient([
+      {
+        status: 200,
+        data: { id: 'notes', type: ['Collection'], encryption: descriptor }
+      }
     ])
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
     expect(await store.readCollectionEncryption('notes')).toEqual(descriptor)
+    expect(calls[0]).toMatchObject({
+      url: 'https://was.example/space/space-1/notes/meta',
+      method: 'GET',
+      capability: { id: 'urn:zcap:priv' }
+    })
   })
 
   it('returns undefined for an unmarked collection and a missing capability', async () => {
     const { zcapClient: stub } = stubZcapClient([
-      { status: 200, data: { id: 'notes' } }
+      { status: 200, data: { id: 'notes', type: ['Collection'] } }
     ])
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
     expect(await store.readCollectionEncryption('notes')).toBeUndefined()
@@ -272,15 +390,32 @@ describe('remoteDescriptorSource', () => {
 })
 
 describe('WasRemoteStore.readCollectionMeta', () => {
-  it('returns the raw stored custom value from the collection meta path', async () => {
+  it('returns the whole stored object, custom raw, with its validator', async () => {
     // The stored (opaque) envelope, NOT the decoded plaintext: it is what the
     // local store's cipher decodes itself to recover the index schema.
     const stored = { jwe: { protected: 'opaque' } }
     const { calls, zcapClient: stub } = stubZcapClient([
-      { status: 200, data: { custom: stored } }
+      {
+        status: 200,
+        etag: '"v7"',
+        data: {
+          id: 'notes',
+          type: ['Collection'],
+          encryption: { scheme: 'edv' },
+          custom: stored
+        }
+      }
     ])
     const store = WasRemoteStore.fromGrants({ parsed, zcapClient: stub })
-    expect(await store.readCollectionMeta('notes')).toEqual({ custom: stored })
+    expect(await store.readCollectionMeta('notes')).toEqual({
+      description: {
+        id: 'notes',
+        type: ['Collection'],
+        encryption: { scheme: 'edv' },
+        custom: stored
+      },
+      etag: '"v7"'
+    })
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({
       url: 'https://was.example/space/space-1/notes/meta',
@@ -334,6 +469,15 @@ describe('WasRemoteStore.readCollectionMeta', () => {
 })
 
 describe('WasRemoteStore.declareCollectionIndexes', () => {
+  const collections = [
+    {
+      key: 'posts',
+      id: 'microblog-posts',
+      visibility: 'public' as const,
+      indexes: ['author', 'inReplyTo']
+    }
+  ]
+
   it('skips a private collection and a public one without indexes', async () => {
     const store = WasRemoteStore.fromGrants({
       parsed,
@@ -343,137 +487,188 @@ describe('WasRemoteStore.declareCollectionIndexes', () => {
         { key: 'notes', id: 'notes' }
       ]
     })
-    expect(await store.declareCollectionIndexes('notes')).toEqual({
+    expect(await store.declareCollectionIndexes('notes', {})).toEqual({
       collectionId: 'notes',
       ok: true,
       skipped: true
     })
-    expect(await store.declareCollectionIndexes('microblog-posts')).toEqual({
-      collectionId: 'microblog-posts',
-      ok: true,
-      skipped: true
-    })
+    expect(await store.declareCollectionIndexes('microblog-posts', {})).toEqual(
+      {
+        collectionId: 'microblog-posts',
+        ok: true,
+        skipped: true
+      }
+    )
   })
 
-  it('reads the description, then PUTs the declared indexes', async () => {
-    const { calls, zcapClient: stub } = stubZcapClient([
-      { status: 200, data: { id: 'microblog-posts', type: ['Collection'] } },
-      { status: 200 }
-    ])
+  it('merges the indexes into the object it was handed, pinned to its validator', async () => {
+    const { calls, zcapClient: stub } = stubZcapClient([{ status: 204 }])
     const store = WasRemoteStore.fromGrants({
       parsed,
       zcapClient: stub,
-      collections: [
-        {
-          key: 'posts',
-          id: 'microblog-posts',
-          visibility: 'public',
-          indexes: ['author', 'inReplyTo']
-        }
-      ]
+      collections
     })
-    const result = await store.declareCollectionIndexes('microblog-posts')
-    expect(result).toEqual({
-      collectionId: 'microblog-posts',
-      ok: true,
-      status: 200
-    })
-    expect(calls).toHaveLength(2)
-    expect(calls[0]).toMatchObject({
-      url: 'https://was.example/space/space-1/microblog-posts',
-      method: 'GET'
-    })
-    expect(calls[1]).toMatchObject({
-      url: 'https://was.example/space/space-1/microblog-posts',
-      method: 'PUT',
-      json: {
+    const result = await store.declareCollectionIndexes('microblog-posts', {
+      current: metaRead({
         id: 'microblog-posts',
-        plaintext: { indexes: ['author', 'inReplyTo'] }
-      }
+        type: ['Collection'],
+        name: 'Posts',
+        custom: { name: 'Posts', tags: { topic: 'birds' } },
+        url: 'https://was.example/space/space-1/microblog-posts/',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-02T00:00:00Z'
+      })
+    })
+    expect(result).toEqual({ collectionId: 'microblog-posts', ok: true })
+    // One PUT at `meta` through `Collection.configure`, no read of its own:
+    // the stored `name` and `custom` are carried forward beside the
+    // declaration, the server-managed members stay out of the body, and
+    // `If-Match` pins the write to the read's validator.
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      url: 'https://was.example/space/space-1/microblog-posts/meta',
+      method: 'PUT',
+      capability: { id: 'urn:zcap:pub' },
+      headers: { 'if-match': '"v1"' }
+    })
+    expect(calls[0]?.json).toEqual({
+      id: 'microblog-posts',
+      name: 'Posts',
+      custom: { name: 'Posts', tags: { topic: 'birds' } },
+      plaintext: { indexes: ['author', 'inReplyTo'] }
     })
   })
 
-  it('skips the PUT when the stored declaration already matches', async () => {
+  it('skips the write when the stored declaration already matches', async () => {
     // The server may echo the expanded form of a bare-string entry; that is
     // the same declaration, not drift.
-    const { calls, zcapClient: stub } = stubZcapClient([
-      {
-        status: 200,
-        data: {
+    const { calls, zcapClient: stub } = stubZcapClient([{ status: 204 }])
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient: stub,
+      collections
+    })
+    expect(
+      await store.declareCollectionIndexes('microblog-posts', {
+        current: metaRead({
           id: 'microblog-posts',
+          type: ['Collection'],
           plaintext: {
             indexes: ['author', { name: 'inReplyTo', source: 'content' }]
           }
-        }
-      }
-    ])
-    const store = WasRemoteStore.fromGrants({
-      parsed,
-      zcapClient: stub,
-      collections: [
-        {
-          key: 'posts',
-          id: 'microblog-posts',
-          visibility: 'public',
-          indexes: ['author', 'inReplyTo']
-        }
-      ]
-    })
-    expect(await store.declareCollectionIndexes('microblog-posts')).toEqual({
+        })
+      })
+    ).toEqual({
       collectionId: 'microblog-posts',
       ok: true,
       skipped: true
     })
-    expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatchObject({ method: 'GET' })
+    expect(calls).toHaveLength(0)
   })
 
-  it('PUTs over a stale declaration and over a failed read', async () => {
-    const collections = [
-      {
-        key: 'posts',
-        id: 'microblog-posts',
-        visibility: 'public' as const,
-        indexes: ['author', 'inReplyTo']
-      }
-    ]
-    const stale = stubZcapClient([
+  it('writes over a stale declaration, keeping the rest of plaintext', async () => {
+    const { calls, zcapClient: stub } = stubZcapClient([{ status: 204 }])
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient: stub,
+      collections
+    })
+    expect(
+      await store.declareCollectionIndexes('microblog-posts', {
+        current: metaRead(
+          {
+            id: 'microblog-posts',
+            type: ['Collection'],
+            plaintext: { indexes: ['author'], other: 'kept' }
+          },
+          null
+        )
+      })
+    ).toEqual({ collectionId: 'microblog-posts', ok: true })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.json).toEqual({
+      id: 'microblog-posts',
+      plaintext: { indexes: ['author', 'inReplyTo'], other: 'kept' }
+    })
+    // No validator served, no precondition sent.
+    expect(calls[0]?.headers?.['if-match']).toBeUndefined()
+  })
+
+  it('refuses the write when the metadata object was not read', async () => {
+    // Writing the list alone would replace the whole object with it.
+    const { calls, zcapClient: stub } = stubZcapClient([{ status: 204 }])
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient: stub,
+      collections
+    })
+    const result = await store.declareCollectionIndexes('microblog-posts', {})
+    expect(result.ok).toBe(false)
+    expect(result.error).toMatch(/was not read/)
+    expect(calls).toHaveLength(0)
+  })
+
+  it('rebases a lost race on a fresh read and writes again', async () => {
+    // was-client's compare-and-swap: the pinned PUT loses (412), the object
+    // is re-read, and the declaration is merged over what landed meanwhile.
+    const stale = Object.assign(new Error('Precondition Failed'), {
+      status: 412
+    })
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 412, error: stale },
       {
         status: 200,
-        data: { id: 'microblog-posts', plaintext: { indexes: ['author'] } }
+        etag: '"v2"',
+        data: {
+          id: 'microblog-posts',
+          type: ['Collection'],
+          name: 'Renamed meanwhile',
+          custom: { tags: { topic: 'birds' } }
+        }
       },
-      { status: 200 }
+      { status: 204, etag: '"v3"' }
     ])
     const store = WasRemoteStore.fromGrants({
       parsed,
-      zcapClient: stale.zcapClient,
+      zcapClient: stub,
       collections
     })
-    expect(await store.declareCollectionIndexes('microblog-posts')).toEqual({
-      collectionId: 'microblog-posts',
-      ok: true,
-      status: 200
+    const result = await store.declareCollectionIndexes('microblog-posts', {
+      current: metaRead({ id: 'microblog-posts', type: ['Collection'] })
     })
-    expect(stale.calls.map(call => call.method)).toEqual(['GET', 'PUT'])
+    expect(result).toEqual({ collectionId: 'microblog-posts', ok: true })
+    expect(calls.map(call => call.method)).toEqual(['PUT', 'GET', 'PUT'])
+    expect(calls[0]?.headers?.['if-match']).toBe('"v1"')
+    expect(calls[2]?.headers?.['if-match']).toBe('"v2"')
+    expect(calls[2]?.json).toEqual({
+      id: 'microblog-posts',
+      name: 'Renamed meanwhile',
+      custom: { tags: { topic: 'birds' } },
+      plaintext: { indexes: ['author', 'inReplyTo'] }
+    })
+  })
 
-    const unreadable = stubZcapClient([
-      {
-        status: 502,
-        error: Object.assign(new Error('Bad Gateway'), { status: 502 })
-      },
-      { status: 200 }
+  it('reports a race lost repeatedly rather than throwing', async () => {
+    const stale = Object.assign(new Error('Precondition Failed'), {
+      status: 412
+    })
+    const { calls, zcapClient: stub } = stubZcapClient([
+      { status: 412, error: stale }
     ])
-    const retry = WasRemoteStore.fromGrants({
+    const store = WasRemoteStore.fromGrants({
       parsed,
-      zcapClient: unreadable.zcapClient,
+      zcapClient: stub,
       collections
     })
-    expect(await retry.declareCollectionIndexes('microblog-posts')).toEqual({
-      collectionId: 'microblog-posts',
-      ok: true,
-      status: 200
+    const result = await store.declareCollectionIndexes('microblog-posts', {
+      current: metaRead({ id: 'microblog-posts', type: ['Collection'] })
     })
-    expect(unreadable.calls.map(call => call.method)).toEqual(['GET', 'PUT'])
+    expect(result.ok).toBe(false)
+    // The compare-and-swap gives up after its attempt budget; the exhaustion
+    // error names the race (it carries the last 412 as its cause, not as a
+    // status of its own).
+    expect(result.error).toMatch(/compare-and-swap race/)
+    expect(calls.length).toBeGreaterThan(1)
   })
 })
 
@@ -785,9 +980,48 @@ describe('WasRemoteStore.declareBlindedIndexes', () => {
     })
     expect(
       await store.declareBlindedIndexes('notes', { encryption: withHmac })
-    ).toEqual({ collectionId: 'notes', ok: true })
+    ).toEqual({ collectionId: 'notes', ok: true, wrote: true })
     expect(calls.declared).toEqual(['content.inReplyTo'])
     expect(calls.capability).toEqual({ id: 'urn:zcap:priv' })
+  })
+
+  it('declares every missing attribute in one batch call', async () => {
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [
+        { key: 'notes', id: 'notes', indexes: ['author', 'inReplyTo'] }
+      ],
+      keys: identityKeys
+    })
+    const calls = fakeCollectionHandle(store, {})
+    expect(
+      await store.declareBlindedIndexes('notes', { encryption: withHmac })
+    ).toEqual({ collectionId: 'notes', ok: true, wrote: true })
+    expect(calls.declareCalls).toBe(1)
+    expect(calls.declared).toEqual(['content.author', 'content.inReplyTo'])
+  })
+
+  it('reports no write when every attribute is already persisted', async () => {
+    // A returning session: the caller's pre-read `custom` is still current.
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient,
+      collections: [
+        { key: 'notes', id: 'notes', indexes: ['author', 'inReplyTo'] }
+      ],
+      keys: identityKeys
+    })
+    const calls = fakeCollectionHandle(store, {
+      indexes: async () => [
+        { attribute: 'content.author' },
+        { attribute: 'content.inReplyTo' }
+      ]
+    })
+    expect(
+      await store.declareBlindedIndexes('notes', { encryption: withHmac })
+    ).toEqual({ collectionId: 'notes', ok: true, wrote: false })
+    expect(calls.declared).toEqual([])
   })
 
   it('reports a failed declaration rather than throwing', async () => {

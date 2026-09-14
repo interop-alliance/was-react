@@ -12,14 +12,22 @@
  *   the seed-derived controller the grants were delegated to);
  * - per-collection capability routing, so each sync request invokes the exact
  *   collection grant;
- * - a best-effort encryption-descriptor PUT (whether a delegated collection-scoped
- *   RW zcap authorizes writing the collection description). It is non-fatal
- *   either way -- envelopes replicate into an unmarked (plaintext) collection
- *   just the same. A PUBLIC collection is never marked: public implies
- *   plaintext, so the descriptor PUT is skipped outright;
- * - the sibling best-effort index declarations -- the `plaintext.indexes`
- *   description PUT for public collections and the blinded-index schema write
- *   for private ones
+ * - one raw read of a collection's Metadata object
+ *   ({@link WasRemoteStore.readCollectionMeta}): the `encryption` descriptor,
+ *   the `plaintext` declaration, and the opaque `custom` envelope arrive as one
+ *   object under one validator, so every consumer here reads it once;
+ * - two best-effort declarations written back onto that object, each a merge
+ *   into the object the caller read (`Collection.configure`, which carries
+ *   every other member forward and rebases on a lost race; under WAS v0.5 the
+ *   `PUT` at `meta` is a full replacement, so a partial body would clear the
+ *   members the caller never read): the `{ scheme: 'edv' }` encryption
+ *   descriptor on a private
+ *   collection that carries none (whether a delegated collection-scoped RW
+ *   zcap authorizes the write is the server's call; non-fatal either way, since
+ *   envelopes replicate into an unmarked collection just the same, and a
+ *   PUBLIC collection is never marked because public implies plaintext), and
+ *   the `plaintext.indexes` list on a public one;
+ * - the blinded-index schema write for private ones
  *   ({@link WasRemoteStore.declareBlindedIndexes}) -- plus the equality query
  *   verb itself ({@link WasRemoteStore.queryCollectionByEquality}), which
  *   routes on the collection's visibility: the canonical sorted
@@ -40,26 +48,22 @@ import {
   mapError
 } from '@interop/was-client'
 import type {
-  CollectionDescription,
-  CollectionEncryption
+  Collection,
+  CollectionEncryption,
+  CollectionMetadata,
+  CollectionWritableFields
 } from '@interop/was-client'
 import { createEdvEncryption } from '@interop/was-client/edv'
 import type { EncryptionDescriptorSource } from '@interop/was-client/edv'
-import {
-  collectionItems,
-  collectionMeta,
-  collectionPath,
-  resourcePath,
-  toUrl
-} from '@interop/was-client/paths'
+import { collectionPath, resourcePath, toUrl } from '@interop/was-client/paths'
 import { errorStatus, errorMessage } from '@interop/was-client/sync'
 import type { WasCollectionConfig } from '../config.js'
 import type { ParsedGrants } from '../grants.js'
 import { log } from '../log.js'
 
 /**
- * The outcome of a best-effort declaration write (an encryption-descriptor PUT,
- * an `indexes` PUT, or a blinded-index schema write), for diagnostics.
+ * The outcome of a best-effort declaration write (the encryption descriptor,
+ * the public `indexes` list, or the blinded-index schema), for diagnostics.
  */
 export interface DeclarationResult {
   collectionId: string
@@ -70,11 +74,28 @@ export interface DeclarationResult {
    * True when no write was attempted -- the declaration does not apply to this
    * collection at all (e.g. the encryption descriptor on a public collection),
    * or it already carries an `encryption` block (e.g. an epoch roster the wallet
-   * provisioned at consent time, which a bare-descriptor PUT must never clobber).
-   * Reported as `ok` since the goal state holds either way.
+   * provisioned at consent time, which a bare-descriptor write must never
+   * clobber). Reported as `ok` since the goal state holds either way.
    */
   skipped?: boolean
+  /**
+   * Whether the declaration actually landed a write on the collection's
+   * Metadata object, as opposed to finding the goal state already in place.
+   * Reported by {@link WasRemoteStore.declareBlindedIndexes}, so a caller
+   * holding a copy of the object read before the declaration knows whether
+   * that copy is still current.
+   */
+  wrote?: boolean
 }
+
+/**
+ * One collection's Metadata object as read through its delegated capability:
+ * was-client's own `describeWithEtag` shape, with `custom` exactly as stored
+ * and the `metaVersion` validator (when the backend serves one) beside it.
+ */
+export type CollectionMetaRead = NonNullable<
+  Awaited<ReturnType<Collection['describeWithEtag']>>
+>
 
 /**
  * One page of equality-query results: the shared shape of the GET
@@ -150,11 +171,11 @@ async function readOrAbsent<T>({
 }
 
 /**
- * One entry of a collection description's `plaintext.indexes` declaration, as
- * the client types it.
+ * One entry of a Collection Metadata object's `plaintext.indexes` declaration,
+ * as the client types it.
  */
 type DeclaredIndex = NonNullable<
-  NonNullable<CollectionDescription['plaintext']>['indexes']
+  NonNullable<CollectionMetadata['plaintext']>['indexes']
 >[number]
 
 /**
@@ -162,7 +183,7 @@ type DeclaredIndex = NonNullable<
  * configured list says, compared in the server's normalized shape (a bare
  * string is `{ name, source: 'content', unique: false }`) and in order.
  *
- * @param stored {DeclaredIndex[]}   the declaration read from the description
+ * @param stored {DeclaredIndex[]}   the declaration read from the object
  * @param configured {DeclaredIndex[]}   the configured list
  * @returns {boolean}
  */
@@ -178,6 +199,31 @@ function sameIndexDeclaration(
     stored.length === configured.length &&
     stored.map(normalize).join('\n') === configured.map(normalize).join('\n')
   )
+}
+
+/**
+ * Turns a caught declaration-write failure into a {@link DeclarationResult}:
+ * the HTTP status when the mapped error carries one, and its message.
+ * Shared by every declaration write's catch block -- the encryption
+ * descriptor, the public `indexes` list, and the blinded-index schema --
+ * so a refused or raced write is reported rather than thrown, uniformly.
+ *
+ * @param collectionId {string}   the WAS collection id
+ * @param err {unknown}   the caught error
+ * @returns {DeclarationResult}
+ */
+function declarationFailure(
+  collectionId: string,
+  err: unknown
+): DeclarationResult {
+  const status = errorStatus(err)
+  const message = errorMessage(err)
+  return {
+    collectionId,
+    ok: false,
+    ...(status !== undefined && { status }),
+    error: message
+  }
 }
 
 export class WasRemoteStore {
@@ -287,19 +333,140 @@ export class WasRemoteStore {
   }
 
   /**
-   * Reads one collection's `encryption` descriptor from its Collection Description,
-   * invoked with that collection's delegated zcap. Returns the
-   * {@link CollectionEncryption} block (a multi-recipient descriptor carries key
-   * epochs), or `undefined` only when the answer is genuinely "no descriptor":
-   * no capability covers the collection, the collection is not found (which is
-   * also how WAS answers an unauthorized read), or the description carries no
-   * `encryption` member.
+   * The navigational handle for one collection, bound to its delegated
+   * capability: every codec-driven or description-level verb here goes
+   * through it, so the routing is written once.
    *
-   * Any other failure (a dropped connection, a 5xx) is thrown, wrapped with
-   * the collection id. It must NOT read as "no descriptor": a caller that takes
-   * it for one opens the collection under the fail-closed placeholder cipher,
-   * and a correctly provisioned collection then fails its first write or
-   * decrypt for a network hiccup.
+   * @param collectionId {string}   the WAS collection id
+   * @param capability {IZcap}   the delegated zcap covering it
+   * @returns {Collection}
+   */
+  #collection(collectionId: string, capability: IZcap): Collection {
+    return this.was.space(this.spaceId).collection(collectionId, { capability })
+  }
+
+  /**
+   * The shared tail of a best-effort `configure`-based declaration write onto
+   * one collection's Metadata object: {@link markCollectionEncrypted} and
+   * {@link declareCollectionIndexes} both end here. With no readable object
+   * there is nothing to merge into, and writing a bare change would replace
+   * the whole object under WAS v0.5's full-replacement `PUT`: the write is
+   * refused and reported NOT ok rather than attempted.
+   *
+   * `change` is called only once `current` is known to be present, and may
+   * itself report "nothing to do" by returning `undefined` -- the caller's
+   * own skip condition (a stored declaration already matching the configured
+   * one), evaluated against the object this method guarantees is there.
+   *
+   * The write merges into the object the caller already read
+   * (`Collection.configure`, which carries every other member -- `name`,
+   * `backend`, the `custom` envelope -- forward and rebases on a lost race,
+   * pinned to the read's validator).
+   *
+   * @param collectionId {string}   the WAS collection id
+   * @param options {object}
+   * @param options.current {CollectionMetaRead | undefined}   the collection's
+   *   Metadata object as the caller read it, the merge baseline
+   * @param options.change {(current: CollectionMetaRead) => CollectionWritableFields | undefined}
+   *   the fields to merge over `current.description`, or `undefined` to skip
+   *   the write (the goal state already holds)
+   * @returns {Promise<DeclarationResult>}
+   */
+  async #configure(
+    collectionId: string,
+    {
+      current,
+      change
+    }: {
+      current: CollectionMetaRead | undefined
+      change: (
+        current: CollectionMetaRead
+      ) => CollectionWritableFields | undefined
+    }
+  ): Promise<DeclarationResult> {
+    const capability = this.collectionCapability(collectionId)
+    if (!capability) {
+      return { collectionId, ok: false, error: 'no capability' }
+    }
+    if (!current) {
+      return {
+        collectionId,
+        ok: false,
+        error:
+          'the collection metadata object was not read, so there is nothing ' +
+          'to merge the declaration into'
+      }
+    }
+    const fields = change(current)
+    if (!fields) {
+      return { collectionId, ok: true, skipped: true }
+    }
+    try {
+      await this.#collection(collectionId, capability).configure({
+        ...fields,
+        current: {
+          ...current.description,
+          ...(current.etag !== undefined && { etag: current.etag })
+        }
+      })
+      return { collectionId, ok: true }
+    } catch (err) {
+      return declarationFailure(collectionId, err)
+    }
+  }
+
+  /**
+   * Reads one collection's Metadata object RAW, invoked with that collection's
+   * delegated zcap: the `encryption` descriptor, the public `plaintext`
+   * declaration, and the `custom` envelope, as one object under one
+   * `metaVersion` validator (returned beside it as `etag` when the backend
+   * serves one). On an encrypted collection the returned `custom` is the
+   * opaque metadata envelope exactly as stored -- which is what the local
+   * store's cipher wants, since it decodes the envelope itself (`applyMeta`)
+   * to recover the persisted blinded-index schema. Deliberately NOT
+   * `Collection.meta()`: that one DECODES `custom` to plaintext, which
+   * `applyMeta` cannot consume.
+   *
+   * Answers `undefined` for exactly the outcomes that mean "no object": no
+   * capability covers the collection, the read answered not-found (which is
+   * also how WAS answers an unauthorized read), or the backend has no metadata
+   * support (`501`). Any other failure (a dropped connection, a 5xx) is
+   * thrown, wrapped with the collection id. It must NOT read as "no object":
+   * a caller that takes it for one opens the collection under the fail-closed
+   * placeholder cipher, skips the blinded-index install over a guess, or
+   * writes a declaration over a roster it never saw.
+   *
+   * @param collectionId {string}   the WAS collection id
+   * @returns {Promise<CollectionMetaRead | undefined>}
+   */
+  async readCollectionMeta(
+    collectionId: string
+  ): Promise<CollectionMetaRead | undefined> {
+    const capability = this.collectionCapability(collectionId)
+    if (!capability) {
+      return undefined
+    }
+    return await readOrAbsent({
+      read: async () =>
+        (await this.#collection(collectionId, capability).describeWithEtag()) ??
+        undefined,
+      isAbsent: err =>
+        err instanceof NotFoundError || err instanceof NotImplementedError,
+      description: `the metadata object of collection "${collectionId}"`
+    })
+  }
+
+  /**
+   * Reads one collection's `encryption` descriptor: the {@link readCollectionMeta}
+   * read, narrowed to its {@link CollectionEncryption} member (a
+   * multi-recipient descriptor carries key epochs). It is the
+   * `EncryptionDescriptorSource` seam and the login-time read, so it keeps
+   * that read's contract: `undefined` only when the answer is genuinely "no
+   * descriptor" (no capability, not-found, no metadata support, or an object
+   * with no `encryption` member), and a throw for every other failure, which
+   * must not be taken for "no descriptor" -- a correctly provisioned
+   * collection would then fail its first write or decrypt for a network
+   * hiccup.
    *
    * @param collectionId {string}   the WAS collection id
    * @returns {Promise<CollectionEncryption | undefined>}
@@ -307,99 +474,49 @@ export class WasRemoteStore {
   async readCollectionEncryption(
     collectionId: string
   ): Promise<CollectionEncryption | undefined> {
-    const capability = this.collectionCapability(collectionId)
-    if (!capability) {
-      return undefined
-    }
-    return await readOrAbsent({
-      read: async () => {
-        const response = await this.was.request({
-          capability,
-          path: collectionPath(this.spaceId, collectionId),
-          method: 'GET'
-        })
-        const description = response.data as
-          { encryption?: CollectionEncryption } | undefined
-        return description?.encryption
-      },
-      // A not-found (which is also how WAS answers an unauthorized read) is
-      // the one outcome that genuinely means "no descriptor visible to this
-      // app".
-      isAbsent: err => err instanceof NotFoundError,
-      description: `the encryption descriptor of collection "${collectionId}"`
-    })
-  }
-
-  /**
-   * Reads one collection's stored `/meta` value RAW, invoked with that
-   * collection's delegated zcap. On an encrypted collection the returned
-   * `custom` is the opaque metadata envelope exactly as stored -- which is what
-   * the local store's cipher wants, since it decodes the envelope itself
-   * (`applyMeta`) to recover the persisted blinded-index schema. Deliberately
-   * NOT `Collection.meta()`: that one DECODES `custom` to plaintext, which
-   * `applyMeta` cannot consume.
-   *
-   * Answers `undefined` for exactly the outcomes that mean "no metadata": no
-   * capability covers the collection, the read answered not-found (which is
-   * also how WAS answers an unauthorized read), or the backend has no metadata
-   * support (`501`). Any other failure is thrown, wrapped with the collection
-   * id, like {@link readCollectionEncryption}: a dropped connection is an
-   * unknown answer, not an absent one, and a caller that took it for "no
-   * schema" would skip the blinded-index install over a guess.
-   *
-   * @param collectionId {string}   the WAS collection id
-   * @returns {Promise<{ custom?: unknown } | undefined>}
-   */
-  async readCollectionMeta(
-    collectionId: string
-  ): Promise<{ custom?: unknown } | undefined> {
-    const capability = this.collectionCapability(collectionId)
-    if (!capability) {
-      return undefined
-    }
-    return await readOrAbsent({
-      read: async () => {
-        const response = await this.was.request({
-          capability,
-          path: collectionMeta(this.spaceId, collectionId),
-          method: 'GET'
-        })
-        const stored = response.data as { custom?: unknown } | undefined
-        return { custom: stored?.custom }
-      },
-      isAbsent: err =>
-        err instanceof NotFoundError || err instanceof NotImplementedError,
-      description: `the metadata of collection "${collectionId}"`
-    })
+    const read = await this.readCollectionMeta(collectionId)
+    return read?.description.encryption
   }
 
   /**
    * Best-effort declaration of the `{ encryption: { scheme: 'edv' } }` descriptor on
    * one collection, invoked with that collection's delegated RW zcap. Non-fatal:
    * returns the outcome rather than throwing, so a server that does not authorize
-   * a delegated description write leaves replication untouched (the collection
-   * simply stays unmarked / plaintext, which still stores envelopes). A PUBLIC
-   * collection is never marked (public implies plaintext): the PUT is skipped
-   * and reported as `ok` + `skipped`.
+   * a delegated write of the Metadata object leaves replication untouched (the
+   * collection simply stays unmarked / plaintext, which still stores envelopes).
+   * A PUBLIC collection is never marked (public implies plaintext): the write is
+   * skipped and reported as `ok` + `skipped`.
    *
    * A collection that ALREADY carries an `encryption` block is also skipped: the
    * wallet provisions a multi-recipient epoch roster on the descriptor at consent
    * time, and overwriting it with the bare `{ scheme: 'edv' }` descriptor would
-   * destroy that roster. The description is read first, so this method is a
-   * no-op fallback for servers/wallets that did not provision the roster.
+   * destroy that roster. So this method is a no-op fallback for servers/wallets
+   * that did not provision the roster. The caller passes the descriptor it
+   * knows for the collection (read off `current`, or from an earlier live
+   * read), and the skip is checked before the merge baseline is even looked
+   * for: a collection already carrying a roster needs no write regardless of
+   * whether its object was read this bring-up.
+   *
+   * With no readable object there is nothing to merge into, and a blind write
+   * would replace the whole object with a bare descriptor: the write is
+   * refused and reported NOT ok instead (the shared merge tail below).
    *
    * @param collectionId {string}   the WAS collection id
    * @param options {object}
-   * @param options.encryption {CollectionEncryption | undefined}   the
-   *   already-read descriptor the caller fetched from the collection
-   *   description (the bootstrap reads it once and feeds both the cipher
-   *   rebuild and this guard). `undefined` means "read, and the collection
-   *   carries no descriptor" -- not "unknown"
+   * @param [options.current] {CollectionMetaRead}   the collection's Metadata
+   *   object as the caller read it, the baseline the declaration merges into;
+   *   absent when the caller did not read it or could not
+   * @param [options.encryption] {CollectionEncryption}   the descriptor the
+   *   caller knows the collection carries; present means there is nothing to
+   *   declare
    * @returns {Promise<DeclarationResult>}
    */
   async markCollectionEncrypted(
     collectionId: string,
-    { encryption }: { encryption: CollectionEncryption | undefined }
+    {
+      current,
+      encryption
+    }: { current?: CollectionMetaRead; encryption?: CollectionEncryption }
   ): Promise<DeclarationResult> {
     if (this.#configById.get(collectionId)?.visibility === 'public') {
       return { collectionId, ok: true, skipped: true }
@@ -407,38 +524,51 @@ export class WasRemoteStore {
     if (encryption) {
       return { collectionId, ok: true, skipped: true }
     }
-    return this.#putDescription({
-      collectionId,
-      description: { id: collectionId, encryption: { scheme: 'edv' } }
+    return await this.#configure(collectionId, {
+      current,
+      change: () => ({ encryption: { scheme: 'edv' } })
     })
   }
 
   /**
    * Best-effort declaration of a public collection's equality-indexed
-   * attributes (`{ plaintext: { indexes: [...] } }`) on its collection
-   * description, invoked with that collection's delegated RW zcap. The
-   * `plaintext` member is the counterpart of `encryption`, and a supplied
-   * object replaces the stored one. The server rejects
+   * attributes (`{ plaintext: { indexes: [...] } }`) on its Metadata object,
+   * invoked with that collection's delegated RW zcap. The `plaintext` member
+   * is the counterpart of `encryption`. The server rejects
    * `filter[attr]=value` queries on undeclared attributes fail-closed, so a
    * public collection that wants `store.query()` must announce its `indexes`
    * here. Non-fatal like the encryption descriptor: returns the outcome rather
    * than throwing. Skipped (reported `ok` + `skipped`) for a private
    * collection or one that declares no indexes.
    *
-   * The description is read first, and a stored declaration that already
-   * matches the configured list is skipped too, so a returning session writes
-   * nothing. The comparison is over the server's normalized shape (a bare
-   * string entry is `{ name, source: 'content', unique: false }`), so the
-   * server echoing an expanded entry is not read as drift. A read that fails
-   * (or answers not-found) does not block the write: the list is
-   * configuration this app owns, so writing it over an unknown stored value
-   * is the repair the declaration exists for, not a clobber.
+   * A stored declaration that already matches the configured list is skipped
+   * too, so a returning session writes nothing. The comparison is over the
+   * server's normalized shape (a bare string entry is
+   * `{ name, source: 'content', unique: false }`), so the server echoing an
+   * expanded entry is not read as drift.
+   *
+   * The write is a merge into the object the caller already read
+   * (`Collection.configure`, the same path {@link markCollectionEncrypted}
+   * takes): the stored `plaintext` object is sent back with its `indexes`
+   * replaced, and every other member -- `name`, `backend`, the `custom`
+   * envelope, anything this client does not model -- is carried forward,
+   * pinned to the read's validator. A lost race is re-read and rebased by
+   * was-client's compare-and-swap; only a race lost repeatedly is reported
+   * here, and the next session's pass repairs it. With no readable object
+   * there is nothing to merge into, and writing the list alone would replace
+   * the whole object with it: the write is refused and reported NOT ok (see
+   * the shared merge tail below). The already-matches check runs after
+   * that guard, against the object it confirms is there.
    *
    * @param collectionId {string}   the WAS collection id
+   * @param options {object}
+   * @param [options.current] {CollectionMetaRead}   the collection's Metadata
+   *   object as the caller read it; absent when it could not be read
    * @returns {Promise<DeclarationResult>}
    */
   async declareCollectionIndexes(
-    collectionId: string
+    collectionId: string,
+    { current }: { current?: CollectionMetaRead }
   ): Promise<DeclarationResult> {
     const config = this.#configById.get(collectionId)
     if (
@@ -448,49 +578,31 @@ export class WasRemoteStore {
     ) {
       return { collectionId, ok: true, skipped: true }
     }
-    const capability = this.collectionCapability(collectionId)
-    if (!capability) {
-      return { collectionId, ok: false, error: 'no capability' }
-    }
-    let declared: DeclaredIndex[] | undefined
-    try {
-      const response = await this.was.request({
-        capability,
-        path: collectionPath(this.spaceId, collectionId),
-        method: 'GET'
-      })
-      declared = (response.data as CollectionDescription | undefined)?.plaintext
-        ?.indexes
-    } catch (err) {
-      log.warn(
-        'Could not read the stored index declaration of a public ' +
-          'collection; declaring the configured indexes regardless.',
-        { collectionId, err }
-      )
-    }
-    if (declared && sameIndexDeclaration(declared, config.indexes)) {
-      return { collectionId, ok: true, skipped: true }
-    }
-    return this.#putDescription({
-      collectionId,
-      description: {
-        id: collectionId,
-        plaintext: { indexes: config.indexes }
-      }
+    const { indexes } = config
+    return await this.#configure(collectionId, {
+      current,
+      change: ({ description: { plaintext } }) =>
+        plaintext?.indexes && sameIndexDeclaration(plaintext.indexes, indexes)
+          ? undefined
+          : { plaintext: { ...plaintext, indexes } }
     })
   }
 
   /**
    * Best-effort declaration of a PRIVATE collection's blinded-index attributes.
-   * Unlike the public `indexes` PUT, the schema is collection state stored in
-   * the collection's own ENCRYPTED metadata (a compare-and-swap write through
-   * `Collection.declareIndex`), so every recipient discovers what is queryable
-   * without out-of-band coordination and the server never sees the attribute
-   * names. Only the attributes not already in the persisted schema are
-   * declared, so a returning session issues no writes at all. Non-fatal like
-   * the descriptor PUTs: returns the outcome rather than throwing. Skipped
-   * (reported `ok` + `skipped`) for a public collection or one that declares no
-   * indexes.
+   * Unlike the public `indexes` declaration, the schema lives inside the
+   * Metadata object's ENCRYPTED `custom` envelope (a compare-and-swap write
+   * through `Collection.declareIndexes`, which reads the object, re-seals the
+   * envelope, and writes the whole object back under its validator), so every
+   * recipient discovers what is queryable without out-of-band coordination and
+   * the server never sees the attribute names. Only the attributes not already
+   * in the persisted schema are declared, all of them in that one write, so a
+   * returning session issues no writes at all; `wrote` on the result says
+   * whether one landed, since a write replaces the `custom` a caller may have
+   * read before it. Non-fatal
+   * like the other declarations: returns the outcome rather than throwing.
+   * Skipped (reported `ok` + `skipped`) for a public collection or one that
+   * declares no indexes.
    *
    * A collection whose descriptor carries no `hmac` member is reported NOT ok
    * (rather than skipped): the blinding key is installed with the collection's
@@ -538,9 +650,7 @@ export class WasRemoteStore {
       return { collectionId, ok: false, error: 'no identity keys' }
     }
     try {
-      const collection = this.was
-        .space(this.spaceId)
-        .collection(collectionId, { capability })
+      const collection = this.#collection(collectionId, capability)
       const persisted = await collection.indexes()
       const already = new Set(
         persisted.map(declaration =>
@@ -549,22 +659,19 @@ export class WasRemoteStore {
             : declaration.attribute
         )
       )
-      for (const name of config.indexes) {
-        const attribute = blindedAttribute(name)
-        if (!already.has(attribute)) {
-          await collection.declareIndex({ attribute })
-        }
+      // Every missing attribute lands in ONE compare-and-swap write (one
+      // read, one conditional write) rather than one per attribute.
+      const missing = config.indexes
+        .map(name => blindedAttribute(name))
+        .filter(attribute => !already.has(attribute))
+      if (missing.length > 0) {
+        await collection.declareIndexes({
+          indexes: missing.map(attribute => ({ attribute }))
+        })
       }
-      return { collectionId, ok: true }
+      return { collectionId, ok: true, wrote: missing.length > 0 }
     } catch (err) {
-      const status = errorStatus(err)
-      const message = errorMessage(err)
-      return {
-        collectionId,
-        ok: false,
-        ...(status !== undefined && { status }),
-        error: message
-      }
+      return declarationFailure(collectionId, err)
     }
   }
 
@@ -670,11 +777,11 @@ export class WasRemoteStore {
     if (cursor !== undefined) {
       params.push(`cursor=${encodeURIComponent(cursor)}`)
     }
-    // The list endpoint is the trailing-slash collection items URL.
+    // The list endpoint is the collection container URL itself (canonical
+    // trailing slash), the same URL was-client's own listing walks.
     const response = await this.was.request({
       capability,
-      path:
-        collectionItems(this.spaceId, collectionId) + `?${params.join('&')}`,
+      path: `${collectionPath(this.spaceId, collectionId)}?${params.join('&')}`,
       method: 'GET'
     })
     const page = response.data as Partial<EqualityQueryPage> | undefined
@@ -767,19 +874,16 @@ export class WasRemoteStore {
           `collection's own keys).`
       )
     }
-    const page = await this.was
-      .space(this.spaceId)
-      .collection(collectionId, { capability })
-      .find({
-        equals: Object.fromEntries(
-          Object.entries(equals).map(([name, value]) => [
-            blindedAttribute(name),
-            value
-          ])
-        ),
-        ...(limit !== undefined && { limit }),
-        ...(cursor !== undefined && { cursor })
-      })
+    const page = await this.#collection(collectionId, capability).find({
+      equals: Object.fromEntries(
+        Object.entries(equals).map(([name, value]) => [
+          blindedAttribute(name),
+          value
+        ])
+      ),
+      ...(limit !== undefined && { limit }),
+      ...(cursor !== undefined && { cursor })
+    })
     if (!('items' in page)) {
       throw new Error(
         `Malformed equality query response for "${collectionId}": expected a ` +
@@ -797,45 +901,11 @@ export class WasRemoteStore {
       ...(typeof page.cursor === 'string' && { cursor: page.cursor })
     }
   }
-
-  /**
-   * The shared best-effort collection-description PUT behind the encryption
-   * descriptor and the indexes declaration: invokes the collection's delegated RW
-   * zcap and reports the outcome rather than throwing. The body is typed as the
-   * client's description (partial, since neither PUT sends `type`), so a drift
-   * from the wire shape the server reads is a compile error here rather than
-   * a PUT that is accepted and dropped.
-   */
-  async #putDescription({
-    collectionId,
-    description
-  }: {
-    collectionId: string
-    description: Partial<CollectionDescription>
-  }): Promise<DeclarationResult> {
-    const capability = this.collectionCapability(collectionId)
-    if (!capability) {
-      return { collectionId, ok: false, error: 'no capability' }
-    }
-    try {
-      const response = await this.was.request({
-        capability,
-        path: collectionPath(this.spaceId, collectionId),
-        method: 'PUT',
-        json: description
-      })
-      return { collectionId, ok: true, status: response.status }
-    } catch (err) {
-      const status = errorStatus(err)
-      const message = errorMessage(err)
-      return { collectionId, ok: false, status, error: message }
-    }
-  }
 }
 
 /**
  * The `EncryptionDescriptorSource` (`@interop/was-client/edv`) over a
- * delegated {@link WasRemoteStore}: one Collection Description read per
+ * delegated {@link WasRemoteStore}: one Collection Metadata read per
  * collection, invoked with THAT collection's delegated zcap. It is the seam the
  * descriptor-refresh machinery -- the local store's unknown-epoch policy and a
  * shared collection's self-refreshing cipher -- re-reads a rotated key-epoch

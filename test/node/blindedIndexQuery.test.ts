@@ -195,7 +195,7 @@ describe('blinded-index query against was-teaching-server', () => {
     const again = await remoteStore.declareBlindedIndexes(PRIVATE_ID, {
       encryption: await remoteStore.readCollectionEncryption(PRIVATE_ID)
     })
-    expect(again).toEqual({ collectionId: PRIVATE_ID, ok: true })
+    expect(again).toEqual({ collectionId: PRIVATE_ID, ok: true, wrote: false })
     const unchanged = await collectionHandle().indexes()
     expect(unchanged.map(entry => entry.attribute)).toEqual(['content.title'])
   }, 60000)
@@ -292,11 +292,13 @@ describe('blinded-index query against was-teaching-server', () => {
     expect(found).toHaveLength(1)
   }, 60000)
 
-  it('reads the metadata only for a collection with a blinding key', async () => {
-    // A second bring-up over the same Space, watched: the metadata read must
-    // follow the declaration (which may have written fresh attributes into the
-    // schema) and must not be spent on the collection with no blinding key.
+  it('re-reads the metadata only after a declaration that wrote', async () => {
+    // A second bring-up over the same Space, watched: every granted
+    // collection's object is read once by the pass, and the install re-reads
+    // it only for the collection whose declaration replaced `custom`. The
+    // collection with no blinding key gets the pass read and nothing more.
     const order: string[] = []
+    const readMeta = WasRemoteStore.prototype.readCollectionMeta
     const declared = vi
       .spyOn(WasRemoteStore.prototype, 'declareBlindedIndexes')
       .mockImplementation(async function (
@@ -304,13 +306,16 @@ describe('blinded-index query against was-teaching-server', () => {
         collectionId: string
       ) {
         order.push(`declare:${collectionId}`)
-        return { collectionId, ok: true }
+        return { collectionId, ok: true, wrote: true }
       })
     const read = vi
       .spyOn(WasRemoteStore.prototype, 'readCollectionMeta')
-      .mockImplementation(async (collectionId: string) => {
+      .mockImplementation(async function (
+        this: WasRemoteStore,
+        collectionId: string
+      ) {
         order.push(`meta:${collectionId}`)
-        return { custom: undefined }
+        return readMeta.call(this, collectionId)
       })
     const applied = vi.spyOn(LocalStore.prototype, 'applyCollectionMeta')
 
@@ -335,11 +340,13 @@ describe('blinded-index query against was-teaching-server', () => {
         identityKeys
       })
       expect(order).toContain(`declare:${PRIVATE_ID}`)
-      expect(order.indexOf(`meta:${PRIVATE_ID}`)).toBeGreaterThan(
+      const privateReads = order.filter(step => step === `meta:${PRIVATE_ID}`)
+      expect(privateReads).toHaveLength(2)
+      expect(order.lastIndexOf(`meta:${PRIVATE_ID}`)).toBeGreaterThan(
         order.indexOf(`declare:${PRIVATE_ID}`)
       )
-      // No blinding key on the second collection: no metadata read at all.
-      expect(order).not.toContain(`meta:${PLAIN_ID}`)
+      // No blinding key on the second collection: the pass read only.
+      expect(order.filter(step => step === `meta:${PLAIN_ID}`)).toHaveLength(1)
       expect(
         applied.mock.calls.map(([options]) => options.collectionId)
       ).toEqual([PRIVATE_ID])
@@ -353,9 +360,28 @@ describe('blinded-index query against was-teaching-server', () => {
   }, 60000)
 
   it('warns and continues when the schema install fails', async () => {
+    // The pass's read is genuine (the descriptor must be real); only the
+    // envelope it carries is replaced with something the cipher cannot decode.
+    const readMeta = WasRemoteStore.prototype.readCollectionMeta
     const read = vi
       .spyOn(WasRemoteStore.prototype, 'readCollectionMeta')
-      .mockResolvedValue({ custom: { not: 'an envelope' } })
+      .mockImplementation(async function (
+        this: WasRemoteStore,
+        collectionId: string
+      ) {
+        const genuine = await readMeta.call(this, collectionId)
+        return (
+          genuine && {
+            ...genuine,
+            description: {
+              ...genuine.description,
+              custom: { not: 'an envelope' } as unknown as NonNullable<
+                typeof genuine.description.custom
+              >
+            }
+          }
+        )
+      })
     const applied = vi
       .spyOn(LocalStore.prototype, 'applyCollectionMeta')
       .mockRejectedValue(new Error('undecodable metadata envelope'))

@@ -1,11 +1,51 @@
 # @interop/was-react Changelog
 
-## 0.23.1 - TBD
+## 0.24.0 - TBD
+
+### Breaking
+
+- A collection's description and its metadata are one object under WAS v0.5. The
+  `encryption` descriptor, the public `plaintext.indexes` declaration, and the
+  encrypted `custom` envelope all live on the Collection Metadata object at
+  `meta`, under one validator. The old partial-body description `PUT` is gone;
+  every write now reads that object first and carries it forward whole, so a
+  declaration write no longer clears `custom` (where the blinded-index schema
+  lives). Both the encryption declaration and the public `indexes` declaration
+  go through was-client's `Collection.configure` merge rather than a raw `PUT`.
+- The sync bootstrap reads a granted collection's Metadata object once per
+  collection, public collections with indexes included, and feeds the cipher
+  rebuild, the encryption declaration, and the public indexes declaration from
+  that read. A private collection with a blinding key still costs extra reads:
+  the blinded-index declaration and its schema install read the object again on
+  their own.
+- `provisionDevGrants`'s per-collection grant target is the collection's
+  canonical container URL, and its write probe targets `meta`.
+- Minimum versions: `@interop/was-client` `^0.63.0`, `@interop/wallet-core`
+  `^0.76.0`, `@interop/was-sync` `^0.2.9`, and `was-teaching-server` `^0.33.0`
+  for the in-process tests.
+- `@interop/webkms-client` is replaced by `@interop/capability-agent` `^0.2.0`
+  for `CapabilityAgent`, following `@interop/wallet-core`'s drop of its
+  `./identity` subpath (now `@interop/was-client/identity`).
+- A server still on WAS v0.4 no longer works against this release.
+- `was-teaching-server` 0.33.0 admits a Collection-scoped grant at
+  `PUT /space/{s}/{c}/meta`, so the encryption descriptor, the public `indexes`
+  declaration, and the blinded-index schema all land under the per-collection
+  grants this library holds. The warn-and-skip path stays for a read-only or
+  withdrawn grant.
+- `WasRemoteStore.markCollectionEncrypted` drops its `encryption` option; the
+  skip check now reads `current.description.encryption` directly, since every
+  caller already had one or the other. A caller that already knows a
+  collection's descriptor without a read (the known-descriptor path in the sync
+  bootstrap) skips the call itself instead of passing an absent `current`.
+- The blinded-index declaration settles every missing attribute in one
+  compare-and-swap write through was-client's `Collection.declareIndexes`,
+  instead of one read-and-write per attribute. Minimum `@interop/was-client` is
+  `^0.63.0`.
 
 ### Changed
 
-- `@interop/wallet-request` 0.2.0. The counterpart test no longer exercises
-  the legacy (pre-`appUrl`) app-key re-issue path, which that release removed.
+- `@interop/wallet-request` 0.2.0. The counterpart test no longer exercises the
+  legacy (pre-`appUrl`) app-key re-issue path, which that release removed.
 
 ## 0.23.0 - 2026-09-09
 

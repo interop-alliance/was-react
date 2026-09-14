@@ -218,18 +218,14 @@ describe('plaintext-collection sync against was-teaching-server', () => {
   }, 60000)
 
   it('leaves the public collection unmarked and declares its indexes', async () => {
-    const response = await remoteStore.was.request({
-      capability: remoteStore.collectionCapability(PUBLIC_ID),
-      path: `/space/${remoteStore.spaceId}/${PUBLIC_ID}`,
-      method: 'GET'
-    })
-    const description = response.data as {
-      encryption?: unknown
-      plaintext?: { indexes?: unknown }
-    }
-    expect(description.encryption).toBeUndefined()
-    // The sync bootstrap announced the registry's equality indexes.
-    expect(description.plaintext?.indexes).toEqual(['title'])
+    // The Metadata object, read the way the bootstrap reads it.
+    const read = await remoteStore.readCollectionMeta(PUBLIC_ID)
+    expect(read).toBeDefined()
+    expect(read!.description.encryption).toBeUndefined()
+    // The sync bootstrap announced the registry's equality indexes, writing
+    // the object back whole under its validator.
+    expect(read!.description.plaintext?.indexes).toEqual(['title'])
+    expect(read!.etag).toBeDefined()
   }, 60000)
 
   it('answers an equality query over the GET filter', async () => {

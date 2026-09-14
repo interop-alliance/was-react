@@ -16,7 +16,7 @@ import http from 'node:http'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import * as vc from '@interop/vc'
 import { Ed25519Signature2020 } from '@interop/ed25519-signature'
-import { CapabilityAgent } from '@interop/webkms-client'
+import { CapabilityAgent } from '@interop/capability-agent'
 import {
   createDID,
   logToJsonlString,
