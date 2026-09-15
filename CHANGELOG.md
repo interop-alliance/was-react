@@ -1,5 +1,11 @@
 # @interop/was-react Changelog
 
+## 0.24.1 - TBD
+
+### Changed
+
+- Update to latest wallet-core@0.78.1 and was-client@0.65.0.
+
 ## 0.24.0 - 2026-09-14
 
 ### Breaking
