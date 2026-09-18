@@ -77,7 +77,7 @@ describe('createDocCipher (multi-recipient / key epochs)', () => {
       encryption
     })
 
-    const { envelope } = await cipher.encrypt({ data: DOC })
+    const { id, envelope } = await cipher.encrypt({ data: DOC })
     expect(isEncryptedEnvelope(envelope)).toBe(true)
     // The envelope names the epoch key id as its recipient (not the bare vault
     // key), proving the write went under the current epoch.
@@ -87,7 +87,7 @@ describe('createDocCipher (multi-recipient / key epochs)', () => {
     expect(kids).toContain(epochKeyIdFor(encryption.currentEpoch as string))
     expect(kids).not.toContain(keyAgreementKey.id)
     // The app's own identity key unwraps the epoch and recovers the doc.
-    expect(await cipher.decrypt({ envelope })).toEqual(DOC)
+    expect(await cipher.decrypt({ id, envelope })).toEqual(DOC)
   })
 })
 
@@ -207,9 +207,9 @@ describe('createDocCipher (blinded index schema)', () => {
     await expect(
       cipher.applyMeta!({ custom: undefined })
     ).resolves.toBeDefined()
-    const { envelope } = await cipher.encrypt({ data: DOC })
+    const { id, envelope } = await cipher.encrypt({ data: DOC })
     expect(indexedOf(envelope)).toEqual([])
-    expect(await cipher.decrypt({ envelope })).toEqual(DOC)
+    expect(await cipher.decrypt({ id, envelope })).toEqual(DOC)
   })
 })
 
@@ -225,8 +225,9 @@ describe('createUnprovisionedDocCipher', () => {
       cipher.encryptUpdate({ id: 'row-1', data: DOC, current: DOC })
     ).rejects.toThrow(/no key-epoch encryption descriptor/)
     // The decrypt signal is the SAME one a stale descriptor produces, so the
-    // store's unknown-epoch recovery re-reads the descriptor and retries.
-    const decrypt = cipher.decrypt({ envelope: { any: 'thing' } })
+    // store's unknown-epoch recovery re-reads the descriptor and retries. The
+    // id is irrelevant: this cipher never has a descriptor to check it against.
+    const decrypt = cipher.decrypt({ id: 'row-1', envelope: { any: 'thing' } })
     await expect(decrypt).rejects.toSatisfy(isUnknownEpochError)
   })
 })

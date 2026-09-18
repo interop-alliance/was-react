@@ -557,8 +557,15 @@ skipped with a warning rather than treated as corruption, alongside the other
 expected non-results (a body that is not an EDV envelope; an envelope left
 unreadable after the reader has spent its one descriptor refresh; an envelope
 whose listed epoch this app has no key for, which is what a mid-session revoke
-looks like). Every other failure -- no covering grant, no identity key supplied,
-not a recipient -- degrades one reader with a warning and never the session.
+looks like). `IntegrityError` is deliberately not on that list: an envelope
+served under a resource id it was not sealed for is the server serving one
+document's content under another's URL, so `get()` rethrows it rather than
+answering `undefined`, which the caller would read as "not there". A listing
+skips it instead, logged at `error` rather than `warn` because it is never
+expected: one mis-bound envelope must not make a wallet-owned collection this
+app can neither repair nor route around unlistable. Every other failure -- no
+covering grant, no identity key supplied, not a recipient -- degrades one reader
+with a warning and never the session.
 
 The other standing limit is the one the wallet states too: removing access stops
 future reads but cannot take back what has already been read.
@@ -582,6 +589,37 @@ does not cover is flagged `error` and kept out of the port entirely, so an
 uncovered collection never draws a fail-closed 403 that reads as expired access.
 `stop()` is terminal for a core instance, so the binding builds a fresh core
 inside `start()` and resets the status store on stop.
+
+Each collection's RxDB conflict handler (installed at `addCollections` in
+`LocalStore.init`) settles a 412 push conflict by decrypting both sides and
+comparing payload `updatedAt` (writer id tiebreak) through was-sync's
+`makeLwwConflictHandler`. Its decrypt closure is was-client's own
+`DocCipher.decrypt` shape,
+`({ id, envelope, context? }) => Promise<Json | Blob>`. was-sync calls it once
+per side with that side's own `SyncedDoc.id`, the row's/resource's own stored
+id. The closure does not read an id out of the decrypted payload: the server
+controls that field, and on a private (random-id) collection it is a different,
+logical uuid anyway. The cipher checks the envelope against the id it was given
+and raises `IntegrityError` on a mismatch (an envelope sealed for a different
+resource than the one it is read under). was-sync keeps that separate from its
+undecryptable-side handling: on a private collection the error propagates out of
+conflict resolution, and the collection's replication cycle fails the same way
+any other fatal conflict-resolution error does, reported through `onStatus` as
+`error`. No new status value or error-name contract exists for it.
+
+A public collection's pass-through codec (`createPlaintextDocCodec` in
+`docCipher.ts`) checks the same binding: the row id IS the payload's own `id`
+(see "The three kinds of collection" above), so a body read under a resource id
+that does not match its own `id` field raises `IntegrityError` there too, and so
+does a body carrying no string `id` at all. Both paths over a public collection
+treat that leniently, because a public collection takes writes from anything
+holding a grant on it and the binding there is a data-consistency check on a
+plaintext body, not a seal. Hydration skips such a row with a warning and
+hydrates the rest. The conflict handler warns and hands the malformed body back
+for comparison, so the side is settled on the last-write-wins stamp it still
+carries; failing the cycle instead would break that collection's replication
+permanently, since the server's body is unchanged on every retry. A private
+collection's `IntegrityError` propagates out of both paths unchanged.
 
 `startWasSync` (`src/storage/wasSync.ts`) is the replication bootstrap: given
 the parsed grant set and the invoking `ZcapClient` it builds the delegated

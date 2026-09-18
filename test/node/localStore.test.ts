@@ -23,6 +23,7 @@ import {
   wrapEpochSecret
 } from '@interop/was-client/edv'
 import type { CollectionEncryption } from '@interop/was-client'
+import { isIntegrityError } from '@interop/was-client/sync'
 import { LocalStore } from '../../src/storage/localStore.js'
 import { deriveIdentity } from '../../src/identity/agents.js'
 import type { WasCollectionConfig } from '../../src/config.js'
@@ -683,6 +684,42 @@ describe('LocalStore public (plaintext) collections', () => {
     expect(listed[0]).toEqual(secret)
   })
 
+  it('skips a row whose payload id does not match its row id, and hydrates the rest', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
+    const post = makeNote('Well-formed post')
+    await store.insertEntity(PUBLIC_COLLECTION, post)
+    // Written by something else holding a grant on the collection: one body
+    // naming a different id than its resource id, one naming none.
+    const now = new Date().toISOString()
+    await store.rxCollection(PUBLIC_COLLECTION).bulkInsert([
+      {
+        id: 'resource-a',
+        updatedAt: now,
+        version: 0,
+        data: { id: 'some-other-id', title: 'mismatched' }
+      },
+      { id: 'resource-b', updatedAt: now, version: 0, data: { title: 'no id' } }
+    ])
+
+    expect(await store.listEntities<NoteDoc>(PUBLIC_COLLECTION)).toEqual([post])
+    // The raw decrypt path still fails hard on both: the leniency is the
+    // caller's, not the cipher's.
+    await expect(
+      store.decryptEnvelope({
+        key: PUBLIC_COLLECTION,
+        id: 'resource-a',
+        envelope: { id: 'some-other-id' }
+      })
+    ).rejects.toSatisfy(isIntegrityError)
+    await expect(
+      store.decryptEnvelope({
+        key: PUBLIC_COLLECTION,
+        id: 'resource-b',
+        envelope: { title: 'no id' }
+      })
+    ).rejects.toSatisfy(isIntegrityError)
+  })
+
   it('refuses to read an EDV envelope out of a public collection', async () => {
     const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
     // Simulate a visibility misconfiguration: a ciphertext row (e.g. written
@@ -710,5 +747,113 @@ describe('LocalStore public (plaintext) collections', () => {
         dbName: `was-react-test-${++dbCounter}`
       })
     ).rejects.toThrow(/encrypted and public/)
+  })
+})
+
+describe('LocalStore LWW conflict-handler decrypt closure', () => {
+  it('decrypts each conflict side under its OWN row id, not a payload-embedded id', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    const older = makeNote('Older edit')
+    const newer: NoteDoc = {
+      ...makeNote('Newer edit'),
+      updatedAt: new Date(Date.now() + 60_000).toISOString()
+    }
+    await store.insertEntity(COLLECTION, older)
+    await store.insertEntity(COLLECTION, newer)
+
+    // The decoy this test relies on: for a private (random-id) collection the
+    // row id is never the payload's own logical uuid.
+    const olderEnvelopeId = store.envelopeIdFor(COLLECTION, older.id)!
+    const newerEnvelopeId = store.envelopeIdFor(COLLECTION, newer.id)!
+    expect(olderEnvelopeId).not.toBe(older.id)
+    expect(newerEnvelopeId).not.toBe(newer.id)
+
+    const olderRow = (await store
+      .rxCollection(COLLECTION)
+      .findOne(olderEnvelopeId)
+      .exec())!.toMutableJSON()
+    const newerRow = (await store
+      .rxCollection(COLLECTION)
+      .findOne(newerEnvelopeId)
+      .exec())!.toMutableJSON()
+
+    // The handler `LocalStore.init` actually wired at `addCollections` --
+    // not a hand-rolled stand-in for it.
+    const handler = store.rxCollection(COLLECTION).conflictHandler
+    const resolved = await handler.resolve(
+      {
+        realMasterState: { ...olderRow, _deleted: false },
+        newDocumentState: { ...newerRow, _deleted: false }
+      },
+      'test'
+    )
+
+    // The later payload won: proof both sides decrypted successfully, each
+    // addressed under its OWN row id (never the other side's, and never the
+    // decoy `id` field carried inside the decrypted payload).
+    expect(resolved.id).toBe(newerEnvelopeId)
+  })
+
+  it('propagates IntegrityError out of the conflict handler when an envelope is addressed under the wrong row id', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`)
+    await store.insertEntity(COLLECTION, makeNote('Envelope A'))
+    await store.insertEntity(COLLECTION, makeNote('Envelope B'))
+    const rows = (await store.rxCollection(COLLECTION).find().exec()).map(row =>
+      row.toMutableJSON()
+    )
+    expect(rows).toHaveLength(2)
+    const [rowA, rowB] = rows
+
+    const handler = store.rxCollection(COLLECTION).conflictHandler
+    // Row B's envelope, addressed under row A's id: a tampered or misfiled
+    // envelope, the exact case `IntegrityError` exists to catch. Resolution
+    // must reject rather than silently score row A as undecryptable.
+    await expect(
+      handler.resolve(
+        {
+          realMasterState: { ...rowA!, data: rowB!.data, _deleted: false },
+          newDocumentState: { ...rowB!, _deleted: false }
+        },
+        'test'
+      )
+    ).rejects.toSatisfy(isIntegrityError)
+  })
+
+  it('settles a public collection conflict on the LWW stamp when a side is mis-bound', async () => {
+    const store = await openStore(`was-react-test-${++dbCounter}`, MIXED)
+    const post = makeNote('Well-formed post')
+    await store.insertEntity(PUBLIC_COLLECTION, post)
+    const localRow = (await store
+      .rxCollection(PUBLIC_COLLECTION)
+      .findOne(post.id)
+      .exec())!.toMutableJSON()
+
+    // What another grant holder can write to a public collection: a body under
+    // this resource id naming a different `id`. Its LWW stamp is plaintext and
+    // readable, so the handler must compare on it rather than failing the
+    // cycle -- the server's body never changes, so a hard failure would break
+    // this collection's replication on every retry.
+    const misbound = {
+      ...localRow,
+      data: {
+        id: 'some-other-id',
+        title: 'mismatched',
+        updatedAt: new Date(Date.now() - 60_000).toISOString(),
+        writerId: 'someone-else'
+      }
+    }
+
+    const handler = store.rxCollection(PUBLIC_COLLECTION).conflictHandler
+    const resolved = await handler.resolve(
+      {
+        realMasterState: { ...misbound, _deleted: false },
+        newDocumentState: { ...localRow, _deleted: false }
+      },
+      'test'
+    )
+
+    // The well-formed local edit is the later one, so it wins and is re-pushed
+    // over the malformed remote body.
+    expect(resolved.data).toEqual(localRow.data)
   })
 })

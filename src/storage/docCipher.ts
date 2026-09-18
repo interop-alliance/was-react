@@ -29,7 +29,9 @@ import type {
 import type { CollectionEncryption } from '@interop/was-client'
 import { createEdvDocCipher, UnknownEpochError } from '@interop/was-client/edv'
 import {
+  IntegrityError,
   isEncryptedEnvelope,
+  requireResourceId,
   type DocCipher as ClientDocCipher
 } from '@interop/was-client/sync'
 import type { Json } from '@interop/was-sync'
@@ -38,15 +40,24 @@ import type { Json } from '@interop/was-sync'
  * A per-collection document cipher. `encrypt` is the create path (mints a random
  * envelope id); `encryptUpdate` is the in-place update path (re-encrypts under
  * an existing id, advancing `sequence` from the prior envelope); `decrypt`
- * reverses either. An EDV (key-epoch) cipher also surfaces the `epoch` id it
- * encrypted under, which rides the content push as the `Key-Epoch` header; the
- * plaintext codec returns none.
+ * reverses either, given the resource id the envelope is stored under -- the
+ * caller's own row/resource id, not anything read out of the decrypted
+ * payload, since the server controls that field -- and raises `IntegrityError`
+ * when the envelope does not verify against it. An EDV (key-epoch) cipher also
+ * surfaces the `epoch` id it encrypted under, which rides the content push as
+ * the `Key-Epoch` header; the plaintext codec returns none.
  *
  * `applyMeta` is the blinded-index schema install hook an EDV cipher exposes:
  * given the collection's stored `/meta` value, it installs the persisted index
  * schema so subsequent writes emit blinded `indexed` entries. It is absent on
  * the pass-through plaintext codec and on the fail-closed placeholder, neither
  * of which has a schema to install -- hence optional here.
+ *
+ * `decrypt`'s return type is narrower than `@interop/was-client/sync`'s
+ * `DocCipher['decrypt']` (`Json` rather than `Json | Blob`): no collection in
+ * this repo writes a chunked (binary) document, so a `Blob` result never
+ * occurs here. For the same reason the chunked-blob `context` / `spaceId`
+ * wiring is left out of {@link createDocCipher}: nothing would call it.
  */
 export interface DocCipher extends ClientDocCipher {
   encryptUpdate(options: {
@@ -54,6 +65,7 @@ export interface DocCipher extends ClientDocCipher {
     data: Json
     current: Json
   }): Promise<{ id: string; envelope: Json; epoch?: string }>
+  decrypt(options: Parameters<ClientDocCipher['decrypt']>[0]): Promise<Json>
   applyMeta?(options: { custom?: unknown }): Promise<unknown>
 }
 
@@ -66,7 +78,14 @@ export interface DocCipher extends ClientDocCipher {
  * {@link isEncryptedEnvelope}) rather than mis-reading its random envelope id
  * as a logical uuid -- a public collection holding ciphertext rows is a
  * visibility misconfiguration, surfaced as a read error instead of silent
- * garbage.
+ * garbage. It also verifies the id binding that IS real here (the row id
+ * equals the payload's own `id`): a body read under a resource id that does
+ * not match its own `id` field is a server serving one document's content
+ * under another's URL, and `decrypt` raises `IntegrityError` rather than
+ * silently returning the mismatched payload. A body carrying no string `id`
+ * at all fails that binding the same way, and a caller that passes no resource
+ * id to check against is refused outright by was-client's own
+ * `requireResourceId`, the guard both of its built-in ciphers run first.
  *
  * @param options {object}
  * @param options.collectionId {string}   labels errors only
@@ -105,8 +124,21 @@ export function createPlaintextDocCodec({
       return { id, envelope: data }
     },
 
-    async decrypt({ envelope }: { envelope: Json }) {
-      return assertPlaintext(envelope)
+    async decrypt({ id, envelope }: { id: string; envelope: Json }) {
+      // The same guard both of was-client's own ciphers run first: a decrypt
+      // carrying no resource id would silently skip the binding check below.
+      requireResourceId({ id, collectionId })
+      const body = assertPlaintext(envelope)
+      // Not `payloadId`: that helper words its error for a write. A stored
+      // body with no usable `id` fails the same binding a mismatched one does.
+      const bodyId = (body as { id?: unknown } | null)?.id
+      if (bodyId !== id) {
+        throw new IntegrityError(
+          `Collection "${collectionId}" served a document under resource id ` +
+            `"${id}" whose payload "id" is ${JSON.stringify(bodyId)}.`
+        )
+      }
+      return body
     }
   }
 }
@@ -199,6 +231,9 @@ export function createUnprovisionedDocCipher({
     async encryptUpdate() {
       return refuseWrite()
     },
+    // Ignores the caller's `id`: there is no descriptor to check a binding
+    // against, and the point of this cipher is to fail the same way regardless
+    // of what it is asked to open.
     async decrypt() {
       throw new UnknownEpochError({ collectionId, kids: [] })
     }

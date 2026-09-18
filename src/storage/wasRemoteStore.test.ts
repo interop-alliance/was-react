@@ -575,14 +575,11 @@ describe('WasRemoteStore.declareCollectionIndexes', () => {
     })
     expect(
       await store.declareCollectionIndexes('microblog-posts', {
-        current: metaRead(
-          {
-            id: 'microblog-posts',
-            type: ['Collection'],
-            plaintext: { indexes: ['author'], other: 'kept' }
-          },
-          null
-        )
+        current: metaRead({
+          id: 'microblog-posts',
+          type: ['Collection'],
+          plaintext: { indexes: ['author'], other: 'kept' }
+        })
       })
     ).toEqual({ collectionId: 'microblog-posts', ok: true })
     expect(calls).toHaveLength(1)
@@ -590,8 +587,29 @@ describe('WasRemoteStore.declareCollectionIndexes', () => {
       id: 'microblog-posts',
       plaintext: { indexes: ['author', 'inReplyTo'], other: 'kept' }
     })
-    // No validator served, no precondition sent.
-    expect(calls[0]?.headers?.['if-match']).toBeUndefined()
+    expect(calls[0]?.headers?.['if-match']).toBe('"v1"')
+  })
+
+  it('refuses the write when the read served no validator', async () => {
+    // An unpinned write could silently overwrite a concurrent change.
+    const { calls, zcapClient: stub } = stubZcapClient([{ status: 204 }])
+    const store = WasRemoteStore.fromGrants({
+      parsed,
+      zcapClient: stub,
+      collections
+    })
+    const result = await store.declareCollectionIndexes('microblog-posts', {
+      current: metaRead(
+        {
+          id: 'microblog-posts',
+          type: ['Collection'],
+          plaintext: { indexes: ['author'], other: 'kept' }
+        },
+        null
+      )
+    })
+    expect(result.ok).toBe(false)
+    expect(calls).toHaveLength(0)
   })
 
   it('refuses the write when the metadata object was not read', async () => {

@@ -17,6 +17,7 @@
  *
  * @vitest-environment node
  */
+import { isIntegrityError } from '@interop/was-client/sync'
 import { describe, expect, it, vi } from 'vitest'
 import {
   initRecipients,
@@ -185,6 +186,50 @@ describe('SharedCollectionReader', () => {
     expect(reader.collectionId).toBe(COLLECTION_ID)
     expect(await reader.get(id)).toEqual(payload)
     expect(await reader.list()).toEqual([{ id, data: payload }])
+  })
+
+  it('surfaces IntegrityError for an envelope served under another resource id', async () => {
+    const app = await deriveIdentity({ seed: APP_SEED })
+    const owner = await deriveIdentity({ seed: OWNER_SEED })
+    const encryption = await mintRoster({
+      recipients: [
+        ownerRecipient({ keyAgreementKey: owner.keyAgreementKey }),
+        x25519RecipientFromDidKey({ did: app.controllerDid })
+      ]
+    })
+    const ownerCipher = await createDocCipher({
+      keyAgreementKey: owner.keyAgreementKey,
+      keyResolver: owner.keyResolver,
+      collectionId: COLLECTION_ID,
+      encryption
+    })
+    const { envelope } = await ownerCipher.encrypt({
+      data: { id: 'credential-1', title: 'a shared credential' }
+    })
+    const readable = { id: 'credential-2', title: 'another shared credential' }
+    const sound = await ownerCipher.encrypt({ data: readable })
+
+    // The envelope is sealed for its own id; the server serves it elsewhere.
+    const reader = await SharedCollectionReader.open({
+      remoteStore: fakeRemoteStore({
+        encryption,
+        resources: {
+          'some-other-resource': envelope,
+          [sound.id]: sound.envelope
+        }
+      }),
+      keyAgreementKey: app.keyAgreementKey,
+      keyResolver: app.keyResolver,
+      collectionId: COLLECTION_ID
+    })
+
+    // Not folded into the warn-and-skip path the tolerated failures take.
+    await expect(reader.get('some-other-resource')).rejects.toSatisfy(
+      isIntegrityError
+    )
+    // The listing skips it instead: one mis-bound envelope must not make a
+    // wallet-owned collection this app cannot repair unlistable.
+    expect(await reader.list()).toEqual([{ id: sound.id, data: readable }])
   })
 
   it('refuses a collection with no key-epoch roster', async () => {

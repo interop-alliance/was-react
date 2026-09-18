@@ -31,7 +31,7 @@ function makeFakeStore({
   const remembered: Array<[string, string, string]> = []
   const forgotten: Array<[string, string]> = []
   const store = {
-    decryptEnvelope: async (_key: string, envelope: Json) => {
+    decryptEnvelope: async ({ envelope }: { envelope: Json }) => {
       if (failDecrypt) {
         throw new Error('decrypt failed')
       }
@@ -62,7 +62,7 @@ function makeGatedStore(): {
     release = resolve
   })
   const store = {
-    decryptEnvelope: async (_key: string, envelope: Json) => {
+    decryptEnvelope: async ({ envelope }: { envelope: Json }) => {
       await gate
       return (envelope as { jwe: Json }).jwe
     },

@@ -46,7 +46,11 @@ import {
   type EncryptionDescriptorCache,
   type EncryptionDescriptorSource
 } from '@interop/was-client/edv'
-import { isEncryptedEnvelope, type DocCipher } from '@interop/was-client/sync'
+import {
+  isEncryptedEnvelope,
+  isIntegrityError,
+  type DocCipher
+} from '@interop/was-client/sync'
 import type { Json } from '@interop/was-sync'
 import {
   remoteDescriptorSource,
@@ -174,9 +178,10 @@ export class SharedCollectionReader {
 
   /**
    * Lists the LIVE resources of the shared collection, decrypted. A body that is
-   * not an EDV envelope, or a pre-epoch legacy envelope this app is not a
-   * recipient of, is SKIPPED with a warning rather than failing the whole
-   * listing.
+   * not an EDV envelope, a pre-epoch legacy envelope this app is not a
+   * recipient of, or one sealed for a different resource id, is SKIPPED rather
+   * than failing the whole listing. Only the last of those is logged at
+   * `error`; `get()` surfaces it instead of skipping it.
    *
    * Two paths, same result. The fast path pages the `changes` feed
    * ({@link SharedCollectionReader.listViaChanges}), which returns whole pages of
@@ -250,7 +255,7 @@ export class SharedCollectionReader {
     // would only add latency to the read.
     const decrypted = await Promise.all(
       [...bodies].map(async ([id, body]) => {
-        const data = await this.#decryptBody({ id, body: body ?? null })
+        const data = await this.#decryptForListing({ id, body: body ?? null })
         return data === undefined ? null : { id, data }
       })
     )
@@ -269,7 +274,7 @@ export class SharedCollectionReader {
     const resources = await Promise.all(
       items.map(async item => {
         const body = (await collection.get(item.id)) as Json | null
-        const decrypted = await this.#decryptBody({ id: item.id, body })
+        const decrypted = await this.#decryptForListing({ id: item.id, body })
         return decrypted === undefined ? null : { id: item.id, data: decrypted }
       })
     )
@@ -280,7 +285,9 @@ export class SharedCollectionReader {
    * Reads and decrypts one resource of the shared collection by its WAS
    * resource id. Returns `undefined` for a missing resource, a body that is
    * not an EDV envelope, or an envelope this app cannot decrypt (each warned
-   * about, distinguishably).
+   * about, distinguishably). An envelope sealed for a different resource id
+   * raises `IntegrityError`: the caller asked for this one resource, so a
+   * silent `undefined` would read as "not there".
    *
    * @param resourceId {string}   the WAS resource id
    * @returns {Promise<Json | undefined>}
@@ -324,6 +331,18 @@ export class SharedCollectionReader {
    * is what a mid-session revoke looks like. All three are bodies this app
    * cannot read, and the reader's contract is to warn and skip them, never to
    * fail the listing: the listing degrades to the subset that still decrypts.
+   *
+   * An `IntegrityError` is a fourth kind and not a tolerated non-result: the
+   * envelope was sealed for a different resource than the one it was read
+   * under, which is the server serving one document's content under another's
+   * URL. It propagates, since `get()`'s caller asked for exactly that resource
+   * and a silent `undefined` would read as "not there". The listing paths
+   * absorb it themselves ({@link SharedCollectionReader.#decryptForListing}).
+   *
+   * @param options {object}
+   * @param options.id {string}   the WAS resource id the body was read under
+   * @param options.body {Json | null}
+   * @returns {Promise<Json | undefined>}
    */
   async #decryptBody({
     id,
@@ -344,9 +363,52 @@ export class SharedCollectionReader {
       return undefined
     }
     try {
-      return await this.#cipher.decrypt({ envelope: body })
+      // `id` is the WAS resource id this body was read under -- required so
+      // the cipher's binding check runs. No collection read through a
+      // `SharedCollectionReader` writes chunked (binary) documents, so the
+      // `Blob` member of the upstream return type never occurs here.
+      return (await this.#cipher.decrypt({ id, envelope: body })) as Json
     } catch (err) {
+      // Not one of the tolerated non-results: the body was not sealed for the
+      // id it was read under.
+      if (isIntegrityError(err)) {
+        throw err
+      }
       return this.#skipUndecryptable({ id, err })
+    }
+  }
+
+  /**
+   * {@link SharedCollectionReader.#decryptBody} for the two listing paths,
+   * which additionally skip a mis-bound envelope: one of them must not make a
+   * wallet-owned collection this app can neither repair nor route around
+   * unlistable. The skip is logged at `error` rather than `warn`, because
+   * unlike the non-results `#decryptBody` absorbs it is never expected.
+   *
+   * @param options {object}
+   * @param options.id {string}   the WAS resource id the body was read under
+   * @param options.body {Json | null}
+   * @returns {Promise<Json | undefined>}
+   */
+  async #decryptForListing({
+    id,
+    body
+  }: {
+    id: string
+    body: Json | null
+  }): Promise<Json | undefined> {
+    try {
+      return await this.#decryptBody({ id, body })
+    } catch (err) {
+      if (!isIntegrityError(err)) {
+        throw err
+      }
+      log.error(
+        'Skipping a resource of a shared collection: its envelope was ' +
+          'sealed for a different resource than the id it is stored under.',
+        { resourceId: id, collectionId: this.collectionId, err }
+      )
+      return undefined
     }
   }
 

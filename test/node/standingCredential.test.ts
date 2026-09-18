@@ -956,9 +956,9 @@ describe('an epoch this app cannot open', () => {
     const cipher = createUnprovisionedDocCipher({
       collectionId: COLLECTION_ID
     })
-    await expect(cipher.decrypt({ envelope: { jwe: {} } })).rejects.toSatisfy(
-      isUnknownEpochError
-    )
+    await expect(
+      cipher.decrypt({ id: 'row-1', envelope: { jwe: {} } })
+    ).rejects.toSatisfy(isUnknownEpochError)
   })
 })
 

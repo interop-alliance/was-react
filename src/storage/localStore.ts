@@ -58,9 +58,10 @@ import {
   createUnprovisionedDocCipher,
   type DocCipher
 } from './docCipher.js'
+import { log } from '../log.js'
 import { remotePayloadWins } from '@interop/social-core'
 import { epochRostersEqual, hasKeyEpochs } from '@interop/was-client/edv'
-import { isUnknownEpochError } from '@interop/was-client/sync'
+import { isIntegrityError, isUnknownEpochError } from '@interop/was-client/sync'
 import type {
   IKeyAgreementKey,
   IKeyResolver
@@ -93,6 +94,104 @@ export function dbNameForController({
     hash = Math.imul(hash, 0x01000193) >>> 0
   }
   return `${dbName}-${hash.toString(16).padStart(8, '0')}`
+}
+
+/**
+ * Whether a decrypt failure is the mis-bound payload id a PUBLIC collection
+ * tolerates, logging the recovery when it is. A public collection takes writes
+ * from anything holding a grant on it, so a body whose `id` does not match the
+ * resource id it is stored under is a malformed document rather than a broken
+ * seal, and neither hydration nor conflict resolution may fail over it -- the
+ * server's body is unchanged on every retry, so a hard failure would break that
+ * collection permanently. On a private collection the same error means an
+ * envelope sealed for another resource, and is never tolerated.
+ *
+ * @param options {object}
+ * @param options.isPublic {boolean}
+ * @param options.err {unknown}
+ * @param options.collectionKey {string}
+ * @param options.resourceId {string}   the row's own id
+ * @param options.recovery {string}   what the caller does instead, for the log
+ * @returns {boolean}
+ */
+function toleratesMisboundId({
+  isPublic,
+  err,
+  collectionKey,
+  resourceId,
+  recovery
+}: {
+  isPublic: boolean
+  err: unknown
+  collectionKey: string
+  resourceId: string
+  recovery: string
+}): boolean {
+  if (!isPublic || !isIntegrityError(err)) {
+    return false
+  }
+  log.warn(
+    'A public collection\'s payload "id" does not match the resource id it ' +
+      `is stored under; ${recovery}.`,
+    { resourceId, collectionKey, err }
+  )
+  return true
+}
+
+/**
+ * Builds one collection's LWW conflict-side decrypt closure. was-sync calls it
+ * once per side with that side's OWN `SyncedDoc.id` (the row's stored id), never
+ * an id read out of the decrypted payload: the payload's own `id` is a
+ * different, logical uuid on a private (random-id) collection, and trusting it
+ * would check an envelope against itself and prove nothing.
+ *
+ * It decrypts through the store's epoch-REFRESHING path, so a master written
+ * under an unseen key epoch triggers the one-shot descriptor re-read and cipher
+ * rebuild instead of scoring the master as undecryptable, and it reads the
+ * CURRENT cipher for this key at decrypt time (not a captured reference), so a
+ * `rebuildCipher` after a descriptor change takes effect here too.
+ *
+ * @param options {object}
+ * @param options.storeHolder {object}   filled in once `init` has constructed
+ *   the store, before any replication can run
+ * @param options.key {string}
+ * @param options.isPublic {boolean}
+ * @returns {function}
+ */
+function conflictSideDecrypt({
+  storeHolder,
+  key,
+  isPublic
+}: {
+  storeHolder: { current: LocalStore | null }
+  key: string
+  isPublic: boolean
+}): (options: { id: string; envelope: Json }) => Promise<Json> {
+  return async ({ id, envelope }) => {
+    try {
+      return await storeHolder.current!.decryptEnvelope({ key, id, envelope })
+    } catch (err) {
+      // A tolerated mis-binding is compared on the last-write-wins stamp the
+      // malformed body still carries (hydration skips it either way, see
+      // `#decodeAll`). A private collection's mismatch propagates, and was-sync
+      // keeps it separate from its undecryptable-side handling: it comes out of
+      // `resolve`, RxDB scores the resolution itself as failed, and that
+      // collection's replication cycle fails the way any other fatal
+      // replication error does.
+      if (
+        !toleratesMisboundId({
+          isPublic,
+          err,
+          collectionKey: key,
+          resourceId: id,
+          recovery: 'comparing the conflict side on its last-write-wins stamp'
+        })
+      ) {
+        throw err
+      }
+      return envelope
+    }
+  }
 }
 
 /**
@@ -285,15 +384,13 @@ export class LocalStore {
     // head) is settled by decrypting both sides and comparing payload
     // `updatedAt` (writerId tiebreak) rather than RxDB's default master-wins.
     // On a public collection the codec is pass-through, so the handler reads
-    // those fields directly off the plaintext payload.
-    // The handler decrypts through the store's epoch-REFRESHING path once the
-    // instance exists (`storeHolder` is assigned below, before any replication
-    // can run), so a master written under an unseen key epoch triggers the
-    // one-shot descriptor re-read + cipher rebuild instead of scoring the
-    // master as undecryptable.
+    // those fields directly off the plaintext payload. The decrypt side of it
+    // is {@link conflictSideDecrypt}, wired here once the instance exists
+    // (`storeHolder` is assigned below, before any replication can run).
     const storeHolder: { current: LocalStore | null } = { current: null }
     const collectionsConfig = Object.fromEntries(
-      collections.map(({ key }) => {
+      collections.map(collection => {
+        const { key } = collection
         if (!ciphers[key]) {
           throw new Error(`No cipher for collection "${key}".`)
         }
@@ -301,11 +398,12 @@ export class LocalStore {
           key,
           {
             schema: syncedDocSchema(),
-            // Reads the CURRENT cipher for this key at decrypt time (not a
-            // captured reference), so a `rebuildCipher` after a descriptor change
-            // takes effect here too.
             conflictHandler: makeLwwConflictHandler(
-              envelope => storeHolder.current!.decryptEnvelope(key, envelope),
+              conflictSideDecrypt({
+                storeHolder,
+                key,
+                isPublic: isPublicCollection(collection)
+              }),
               remotePayloadWins
             )
           }
@@ -382,10 +480,27 @@ export class LocalStore {
    * descriptor refresh and retry the decrypt once. A second failure propagates
    * rather than looping, and so does an unknown epoch met after the refresh is
    * spent.
+   *
+   * @param options {object}
+   * @param options.key {string}
+   * @param options.id {string}   the resource id the envelope is stored under
+   *   (the row's own id), passed to the cipher so its binding check runs. Not
+   *   an id read out of the decrypted payload: the server controls that field,
+   *   and the binding check exists to catch a mismatch against it.
+   * @param options.envelope {Json}
+   * @returns {Promise<Json>}
    */
-  async #decryptWithRefresh(key: string, envelope: Json): Promise<Json> {
+  async #decryptWithRefresh({
+    key,
+    id,
+    envelope
+  }: {
+    key: string
+    id: string
+    envelope: Json
+  }): Promise<Json> {
     try {
-      return await this.#cipher(key).decrypt({ envelope })
+      return await this.#cipher(key).decrypt({ id, envelope })
     } catch (err) {
       if (!isUnknownEpochError(err) || !this.#descriptorSource) {
         throw err
@@ -396,7 +511,7 @@ export class LocalStore {
       // already spent this is a purely local re-attempt that fails the same
       // way, so a genuinely foreign envelope still surfaces its unknown epoch
       // and never buys a second description read.
-      return await this.#cipher(key).decrypt({ envelope })
+      return await this.#cipher(key).decrypt({ id, envelope })
     }
   }
 
@@ -740,7 +855,8 @@ export class LocalStore {
 
   /**
    * Decrypts every live row of a collection, dropping rows that carry no
-   * ciphertext. Each result keeps its RxDocument alongside the plaintext, so a
+   * ciphertext, and (with a warning) a public collection's rows that fail the
+   * id binding. Each result keeps its RxDocument alongside the plaintext, so a
    * caller that goes on to remove a row (e.g. the singleton reconciler) needs no
    * second lookup.
    *
@@ -753,6 +869,7 @@ export class LocalStore {
     Array<{ envelopeId: string; payload: T; row: RxDocument<SyncedDoc> }>
   > {
     const rows = await this.#collection(key).find().exec()
+    const isPublicRow = isPublicCollection(this.collectionConfig(key))
     // Decrypt every row concurrently (the unlock hot path): the store is keyed
     // by logical uuid, so payload order does not matter and serializing the
     // per-row WebCrypto work would only add latency.
@@ -762,8 +879,28 @@ export class LocalStore {
         if (data === undefined) {
           return null
         }
-        const payload = (await this.#decryptWithRefresh(key, data)) as T
-        return { envelopeId, payload, row }
+        try {
+          const payload = (await this.#decryptWithRefresh({
+            key,
+            id: envelopeId,
+            envelope: data
+          })) as T
+          return { envelopeId, payload, row }
+        } catch (err) {
+          // One malformed row must not fail hydration of the rest.
+          if (
+            !toleratesMisboundId({
+              isPublic: isPublicRow,
+              err,
+              collectionKey: key,
+              resourceId: envelopeId,
+              recovery: 'skipping the row and hydrating the rest'
+            })
+          ) {
+            throw err
+          }
+          return null
+        }
       })
     )
     return decoded.filter(entry => entry !== null)
@@ -814,19 +951,29 @@ export class LocalStore {
   }
 
   /**
-   * Decrypts a single EDV envelope into its plaintext payload, for per-doc
-   * reactive patching of a pulled remote change (without a whole-collection
-   * re-hydrate).
+   * Decrypts a single EDV envelope into its plaintext payload: the sync
+   * layer's per-doc reactive patch (a pulled remote change, without a
+   * whole-collection re-hydrate) and the LWW conflict handler's decrypt
+   * closure both call this.
    *
-   * @param key {string}
-   * @param envelope {Json}   the `data` field of the at-rest row
+   * @param options {object}
+   * @param options.key {string}
+   * @param options.id {string}   the row's own id -- the RxDB primary key / WAS
+   *   resource id a patch is addressed by, or the `SyncedDoc.id` a conflict side
+   *   carries. See {@link LocalStore.#decryptWithRefresh}.
+   * @param options.envelope {Json}   the `data` field of the at-rest row
    * @returns {Promise<T>}
    */
-  async decryptEnvelope<T extends EntityPayload>(
-    key: string,
+  async decryptEnvelope<T extends EntityPayload>({
+    key,
+    id,
+    envelope
+  }: {
+    key: string
+    id: string
     envelope: Json
-  ): Promise<T> {
-    return (await this.#decryptWithRefresh(key, envelope)) as T
+  }): Promise<T> {
+    return (await this.#decryptWithRefresh({ key, id, envelope })) as T
   }
 
   /**

@@ -1,5 +1,41 @@
 # @interop/was-react Changelog
 
+## 0.25.0 - TBD
+
+### Breaking
+
+- Every decrypt is addressed by the row's/resource's own id, matching was-client
+  0.68's required `DocCipher.decrypt({ id, envelope })` shape. `DocCipher`
+  implementors must take `id`, and `LocalStore#decryptEnvelope` takes an options
+  object (`{ key, id, envelope }`) rather than positional arguments. Both are
+  root-entry API.
+
+### Changed
+
+- `@interop/was-client` bumped to `^0.69.0`, `@interop/was-sync` to `^0.4.0`,
+  `@interop/did-method-webvh` to `^5.10.0`, `@interop/ezcap` to `^7.4.9`.
+- The public plaintext codec checks the binding that is real on a public
+  collection: the row id must equal the payload's own `id`. A mismatch (or a
+  body carrying no string `id`) raises `IntegrityError`. It refuses a decrypt
+  carrying no resource id at all through was-client's own `requireResourceId`,
+  the guard both of that package's built-in ciphers run first.
+
+### Fixed
+
+- A private collection's `IntegrityError` fails that collection's replication
+  cycle the same way any other fatal conflict-resolution error does; no new
+  status or error-name contract was added for it.
+- `LocalStore` hydration skips, with a warning, a public collection's row whose
+  payload `id` is missing or differs from its row id, so one malformed document
+  no longer fails hydration of the rest. The LWW conflict handler is lenient the
+  same way: on a public collection a mis-bound side is compared on the
+  last-write-wins stamp it still carries instead of failing the cycle, which the
+  server's unchanged body would otherwise fail on every retry.
+- `SharedCollectionReader.get()` surfaces `IntegrityError` instead of skipping
+  the resource with the "not a recipient" warning. `list()` skips a mis-bound
+  envelope (logged at `error`) so one of them cannot make a wallet-owned
+  collection unlistable.
+
 ## 0.24.1 - 2026-09-15
 
 ### Changed

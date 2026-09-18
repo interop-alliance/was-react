@@ -266,14 +266,17 @@ async function createRow({
 /**
  * A sealed metadata body. On an encrypted collection the server requires the
  * user-writable `custom` to be a structurally valid encryption envelope, so a
- * `/meta` body is sealed exactly like a content body.
+ * `/meta` body is sealed exactly like a content body. Returns the id it was
+ * sealed under alongside the envelope, since a later decrypt of it must be
+ * addressed under that same id.
  *
  * @param label {string}
- * @returns {Promise<Json>}
+ * @returns {Promise<{ id: string; envelope: Json }>}
  */
-async function sealedMeta(label: string): Promise<Json> {
-  const { envelope } = await cipher.encrypt({ data: { label } })
-  return envelope
+async function sealedMeta(
+  label: string
+): Promise<{ id: string; envelope: Json }> {
+  return await cipher.encrypt({ data: { label } })
 }
 
 describe('conditional writes against an encrypted collection', () => {
@@ -338,9 +341,9 @@ describe('conditional writes against an encrypted collection', () => {
     expect(conflict.version).toBe(winnerVersion)
     // The conflict entry carries the WINNER's envelope, which decrypts under
     // this app's identity key: the stale write did not land.
-    expect(await cipher.decrypt({ envelope: conflict.data! })).toEqual(
-      winnerPayload
-    )
+    expect(
+      await cipher.decrypt({ id: conflict.id, envelope: conflict.data! })
+    ).toEqual(winnerPayload)
   }, 60000)
 
   it('reports a second create-if-absent as a conflict', async () => {
@@ -351,7 +354,10 @@ describe('conditional writes against an encrypted collection', () => {
       title: 'created once',
       updatedAt: '2026-02-01T00:00:00.000Z'
     })
-    const original = await cipher.decrypt({ envelope: base.sealed.envelope })
+    const original = await cipher.decrypt({
+      id: base.sealed.id,
+      envelope: base.sealed.envelope
+    })
 
     // A second replica that has never seen this resource pushes it as a create.
     const duplicate = await cipher.encryptUpdate({
@@ -377,7 +383,9 @@ describe('conditional writes against an encrypted collection', () => {
     expect(conflict.id).toBe(base.sealed.id)
     expect(conflict._deleted).toBe(false)
     expect(conflict.version).toBe(base.version)
-    expect(await cipher.decrypt({ envelope: conflict.data! })).toEqual(original)
+    expect(
+      await cipher.decrypt({ id: conflict.id, envelope: conflict.data! })
+    ).toEqual(original)
   }, 60000)
 
   it('reports a rejected /meta precondition as a conflict, not a throw', async () => {
@@ -411,7 +419,7 @@ describe('conditional writes against an encrypted collection', () => {
     // written, with `If-None-Match: *`.
     const written = await runPush([
       {
-        newDocumentState: { ...assumedNoMeta, custom: first },
+        newDocumentState: { ...assumedNoMeta, custom: first.envelope },
         assumedMasterState: assumedNoMeta
       }
     ])
@@ -425,21 +433,24 @@ describe('conditional writes against an encrypted collection', () => {
     // now fails against the metadata just written.
     const duplicate = await runPush([
       {
-        newDocumentState: { ...assumedNoMeta, custom: second },
+        newDocumentState: { ...assumedNoMeta, custom: second.envelope },
         assumedMasterState: assumedNoMeta
       }
     ])
     expect(duplicate.conflicts).toHaveLength(1)
     expect(duplicate.conflicts[0]!.metaVersion).toBe(metaVersion)
     expect(
-      await cipher.decrypt({ envelope: duplicate.conflicts[0]!.custom! })
+      await cipher.decrypt({
+        id: first.id,
+        envelope: duplicate.conflicts[0]!.custom!
+      })
     ).toEqual({ label: 'first' })
 
     // Another replica commits a metadata update, moving `metaVersion` on.
     const bumped = (
       await port.putMeta({
         id: base.sealed.id,
-        custom: third,
+        custom: third.envelope,
         ifMatch: metaEtag!
       })
     )?.version
@@ -450,18 +461,21 @@ describe('conditional writes against an encrypted collection', () => {
       ...assumedNoMeta,
       metaVersion: metaVersion!,
       metaEtag: metaEtag!,
-      custom: first
+      custom: first.envelope
     }
     const lost = await runPush([
       {
-        newDocumentState: { ...assumedStaleMeta, custom: stale },
+        newDocumentState: { ...assumedStaleMeta, custom: stale.envelope },
         assumedMasterState: assumedStaleMeta
       }
     ])
     expect(lost.conflicts).toHaveLength(1)
     expect(lost.conflicts[0]!.metaVersion).toBe(bumped)
     expect(
-      await cipher.decrypt({ envelope: lost.conflicts[0]!.custom! })
+      await cipher.decrypt({
+        id: third.id,
+        envelope: lost.conflicts[0]!.custom!
+      })
     ).toEqual({ label: 'third' })
   }, 60000)
 
@@ -525,9 +539,11 @@ describe('conditional writes against an encrypted collection', () => {
     expect(conflict.id).toBe(base.sealed.id)
 
     // The conflict entry is the input RxDB's LWW handler is written for: it
-    // resolves to a real document rather than throwing.
-    const handler = makeLwwConflictHandler(async envelope =>
-      cipher.decrypt({ envelope })
+    // resolves to a real document rather than throwing. The closure is called
+    // with each side's own row id (never one read out of the decrypted
+    // payload), the same shape `localStore.ts`'s conflict handler wires.
+    const handler = makeLwwConflictHandler(({ id, envelope }) =>
+      cipher.decrypt({ id, envelope })
     )
     const resolved = await handler.resolve({
       realMasterState: conflict,
@@ -535,7 +551,10 @@ describe('conditional writes against an encrypted collection', () => {
       assumedMasterState: assumed
     })
     // Later `updatedAt` wins, whichever push lost the race.
-    const winning = await cipher.decrypt({ envelope: resolved.data! })
+    const winning = await cipher.decrypt({
+      id: resolved.id,
+      envelope: resolved.data!
+    })
     expect((winning as { title: string }).title).toBe('later edit')
   }, 60000)
 })

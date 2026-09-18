@@ -312,10 +312,11 @@ export class StorageContext {
       try {
         return {
           store,
-          payload: await store.decryptEnvelope<{ id: string }>(
-            collectionKey,
+          payload: await store.decryptEnvelope<{ id: string }>({
+            key: collectionKey,
+            id: row.id,
             envelope
-          )
+          })
         }
       } catch {
         return null

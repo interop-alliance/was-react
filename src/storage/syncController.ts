@@ -172,7 +172,9 @@ export class SyncController {
       },
       // The core delivers the logical key first and the WAS id second; the
       // status store is keyed on the logical key, since two registry entries
-      // may share one WAS id.
+      // may share one WAS id. An `IntegrityError` out of the LWW conflict
+      // handler's decrypt closure reports here as `error` too, through no
+      // special case of its own.
       onStatus: (key, _collectionId, status) => setStatus(key, status),
       ...(onAuthError && { onAuthError }),
       ...(onRemoteChange && { onRemoteChange }),
