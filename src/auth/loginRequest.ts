@@ -168,7 +168,7 @@ function requestedActions({
  * `appUrl`, the application's canonical URL, which the wallet needs to MATCH an
  * existing app key or MINT a fresh one. The `appUrl` is validated and
  * serialized here against `domain` (this app's own live browser origin): it
- * must be an absolute, fragment-less, same-origin URL, and the serialization is
+ * must be an absolute, query- and fragment-less, same-origin URL, and the serialization is
  * what everything downstream stores and compares. `capabilityQuery` holds one
  * collection-scoped grant request per app collection -- the existing capability
  * shape MINUS `controller` (the wallet fills it with the app-key subject DID)
@@ -183,7 +183,7 @@ function requestedActions({
  * @param options.appName {string}   human-readable app name for the consent
  *   screen
  * @param options.appUrl {string}   the application's canonical URL, same-origin
- *   with `domain` and fragment-less; emitted in its serialized form
+ *   with `domain`, query- and fragment-less; emitted in its serialized form
  * @param options.collections {GrantRequestCollection[]}   the collections to
  *   request (WAS collection id + visibility)
  * @param [options.sharedCollections] {string[]}   WAS collection ids of

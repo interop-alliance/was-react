@@ -70,7 +70,7 @@ export type IVPRQuery = IDIDAuthenticationQuery | IAppConnectQuery
 /**
  * The one-popup App Connect query: it names the requesting app -- `name` for
  * the consent screen, and `appUrl`, the application's canonical URL (absolute,
- * fragment-less, same-origin with the request `domain`, in serialized form),
+ * query- and fragment-less, same-origin with the request `domain`, in serialized form),
  * which the wallet uses to MATCH an existing app key or MINT a fresh one --
  * alongside the collection grants to delegate to that app key's subject DID.
  * The app identity is scoped to the pair (origin, `appUrl`), so applications

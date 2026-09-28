@@ -65,7 +65,7 @@ export interface LoginConfig {
   appName: string
   /**
    * This app's canonical URL: the application's identity among the
-   * applications on its origin. It must be an absolute URL, carry no fragment,
+   * applications on its origin. It must be an absolute URL, carry no query or fragment,
    * and be same-origin with `appOrigin`; the flow serializes it once and uses
    * that serialization for the request, the credential lookup, and the parse
    * check alike.

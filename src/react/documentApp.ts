@@ -147,7 +147,7 @@ export interface DocumentApp<T extends object> {
  * @param options.appName {string}   human-readable name (consent reason lines)
  * @param options.appOrigin {string}   this app's own web origin
  * @param options.appUrl {string}   this app's canonical URL (absolute,
- *   fragment-less, same-origin with `appOrigin`)
+ *   query- and fragment-less, same-origin with `appOrigin`)
  * @param [options.mediatorBase] {string}   CHAPI mediator base URL
  * @param options.document {object}   `collectionId` (the WAS sandbox
  *   collection id) and `initial` (the document value before the first write)

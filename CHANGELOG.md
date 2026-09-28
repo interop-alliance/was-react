@@ -1,5 +1,11 @@
 # @interop/was-react Changelog
 
+## 0.26.0 - TBD
+
+### Changed
+
+- Bump wallet-request to 0.4.1 (appUrl rejects query).
+
 ## 0.25.0 - 2026-09-17
 
 ### Breaking
