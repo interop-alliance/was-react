@@ -8,7 +8,8 @@
  *   1. derives a throwaway "provisioner" identity (stands in for the wallet that
  *      owns the Space) and the app's own identity from the supplied seed;
  *   2. creates a Space (owned by the provisioner) and the requested collections,
- *      mirroring what a wallet does when it provisions RP-requested collections:
+ *      mirroring what a wallet does when it provisions the collections a
+ *      requester (an app, service, or agent) asked for:
  *      a PRIVATE collection is declared `edv` and gets its epoch[0] roster
  *      installed (`ensureFirstEpoch`) with the app's identity key-agreement key
  *      as the sole recipient -- epoch-from-birth, no plaintext interlude, and
@@ -19,7 +20,7 @@
  *   4. returns the signed grants and (optionally) writes them to a JSON file the
  *      app loads in dev-sync mode;
  *   5. optionally probes the open question: does the delegated, collection-scoped
- *      RW zcap authorize an RP-side PUT of the Collection Metadata object (the
+ *      RW zcap authorize an app-side PUT of the Collection Metadata object (the
  *      `meta` sub-resource the description now lives at)?
  *
  * Node only (uses `fs`); consumed through the package `./dev` subpath.
@@ -44,8 +45,9 @@ import { errorStatus } from '@interop/was-client/sync'
 
 /**
  * A fixed, distinct default provisioner seed -- the "wallet" that owns the dev
- * Space. Kept separate from the app seed (the relying party) so the delegation
- * is a genuine cross-identity grant, exactly as in the real wallet-to-RP flow.
+ * Space. Kept separate from the app seed (the requester) so the delegation is
+ * a genuine cross-identity grant, exactly as in the real wallet-to-requester
+ * flow.
  */
 export const DEFAULT_PROVISIONER_SEED: Uint8Array = new Uint8Array([
   0x70, 0x72, 0x6f, 0x76, 0x69, 0x73, 0x69, 0x6f, 0x6e, 0x65, 0x72, 0x2d, 0x64,
@@ -73,7 +75,7 @@ export interface ProvisionDevGrantsResult {
    */
   spaceUrl: string
   /**
-   * The app (relying party) controller DID the grants were delegated to.
+   * The app (requester) controller DID the grants were delegated to.
    */
   appDid: string
   /**
@@ -122,7 +124,7 @@ async function provisionerClient({
  *
  * @param options {object}
  * @param options.serverUrl {string}   base URL of a running was-teaching-server
- * @param options.seed {Uint8Array}   the app (relying party) master seed; the
+ * @param options.seed {Uint8Array}   the app (requester) master seed; the
  *   app DID the grants are delegated to is derived from it
  * @param options.collections {Array<string | object>}   the WAS collections to
  *   create and grant: a bare id string (private by default) or

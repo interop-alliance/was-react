@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * The relying-party side of the VC API request vocabulary: the Verifiable
+ * The requester side of the VC API request vocabulary: the Verifiable
  * Presentation Request this library composes for a wallet, and the queries it
  * carries.
  *
@@ -32,8 +32,10 @@ import type {
 /**
  * A request for a proof of DID Authentication (a signed VerifiablePresentation
  * over the request's `challenge` / `domain`), and a single requested capability
- * (which actions the RP wants on which storage target, with an optional
- * human-readable `reason` and RP-chosen `referenceId`). Both are owned by
+ * (which actions the requester wants on which storage target, with an optional
+ * human-readable `reason` and requester-chosen `referenceId`). The requester
+ * is the party (an app, service, or agent) that sends the request and receives
+ * the grants. Both are owned by
  * `@interop/data-integrity-core`'s VPR vocabulary.
  *
  * @see https://w3c-ccg.github.io/vp-request-spec/#the-did-authentication-query-format

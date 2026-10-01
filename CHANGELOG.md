@@ -1,5 +1,13 @@
 # @interop/was-react Changelog
 
+## 0.26.1 - TBD
+
+### Changed
+
+- Docs: the party that asks a wallet for grants is the "requester" (an app,
+  service, or agent), replacing "relying party" / "RP" in JSDoc, README, and
+  ARCHITECTURE.md. Here the requester is the app running this library.
+
 ## 0.26.0 - 2026-09-27
 
 ### Changed

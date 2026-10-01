@@ -3,8 +3,9 @@
  */
 /**
  * The persisted app session: what a reload needs to restore the authenticated
- * state with ZERO wallet popups, adapted to the RP model where the seed itself
- * is persisted -- the wallet remains the recovery source of truth, this is only
+ * state with ZERO wallet popups. It is adapted to the delegated model, where the
+ * app is the requester (an app, service, or agent) and the seed itself is
+ * persisted -- the wallet remains the recovery source of truth, this is only
  * the hot cache.
  *
  * Record: `{ seed, controllerDid, serverUrl, spaceId, grants, expires }`.

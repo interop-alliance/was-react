@@ -2,8 +2,10 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * RP-side VPR construction for Login With Wallet: the one-popup App Connect
- * request.
+ * Requester-side VPR construction for Login With Wallet: the one-popup App
+ * Connect request. The requester (an app, service, or agent) is the party that
+ * asks the wallet for grants; in the App Connect exchange it is the app running
+ * this library.
  *
  * A single CHAPI `get` carries DIDAuthentication plus an `AppConnectQuery` that
  * names the app (its display name for the wallet's consent screen and the

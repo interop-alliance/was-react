@@ -26,11 +26,11 @@
 "Bring Your Own Everything" (BYOE) is a way to build web apps with no backend
 that the app owns. The user brings their own identity (a wallet) and their own
 storage (Wallet Attached Storage, WAS), and the app stores everything encrypted
-in that user-owned space. The app is a Relying Party (RP): it authenticates via
-"Login With Wallet" (CHAPI) and reads and writes the user's WAS space using
-wallet-delegated authorization capabilities (zcaps). It never owns the space,
-never holds the wallet's root key, and invokes only the zcaps the wallet grants
-it.
+in that user-owned space. The app is a requester: the party (an app, service, or
+agent) that asks a wallet for grants. It authenticates via "Login With Wallet"
+(CHAPI) and reads and writes the user's WAS space using wallet-delegated
+authorization capabilities (zcaps). It never owns the space, never holds the
+wallet's root key, and invokes only the zcaps the wallet grants it.
 
 "Bring Your Own Storage" (BYOS) is the storage half of that model. Every
 application collection is encrypted client-side as an Encrypted Data Vault
@@ -637,7 +637,7 @@ const result = await provisionDevGrants({
 ```
 
 A throwaway "provisioner" identity owns the created Space (a genuine
-cross-identity delegation, as in the real wallet-to-relying-party flow), and a
+cross-identity delegation, as in the real wallet-to-requester flow), and a
 per-collection RW zcap is delegated to the app DID derived from `seed`. Pass
 `--probe` (or `probe: true`) to check whether the delegated zcap authorizes
 PUTting the EDV encryption descriptor.

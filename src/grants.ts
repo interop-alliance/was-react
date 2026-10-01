@@ -2,8 +2,9 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * Grant parsing and per-collection capability routing for the delegated
- * (relying-party) sync model. The app never provisions the Space and never
+ * Grant parsing and per-collection capability routing for the delegated sync
+ * model, where the app is the requester (an app, service, or agent) the wallet
+ * grants capabilities to. The app never provisions the Space and never
  * derives the spaceId itself; instead it receives a set of wallet-delegated
  * zcaps -- minted by a provisioning script during development, or returned by
  * the wallet through CHAPI -- and reads the WAS topology (server URL, space id,

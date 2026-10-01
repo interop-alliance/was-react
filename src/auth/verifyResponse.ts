@@ -2,7 +2,9 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * RP-side verification of a wallet's Login-With-Wallet response VP.
+ * Requester-side verification of a wallet's Login-With-Wallet response VP.
+ * The requester (an app, service, or agent) is the party that sent the
+ * request; here it is the app running this library.
  *
  * Layered checks:
  * 1. Cryptographic: `@interop/verifier-core` `verifyPresentation` (the VP's

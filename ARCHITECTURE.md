@@ -23,9 +23,10 @@ agent-facing rules (toolchain, tests, repo-specific dos and don'ts) see
   collection is read with), the app-key credential (issue/locate/parse), seed
   and descriptor persistence (`createSeedStore`, `createDescriptorCache`), the
   persisted app-session record, and the JSON-LD document loader.
-- `src/auth/` -- the relying-party side of Login With Wallet (App Connect):
-  CHAPI wrappers, VPR construction, response verification, and the
-  login/reconnect orchestration.
+- `src/auth/` -- the requester side of Login With Wallet (App Connect): CHAPI
+  wrappers, VPR construction, response verification, and the login/reconnect
+  orchestration. The requester (an app, service, or agent) is the party that
+  asks a wallet for grants; here it is the app running this library.
 - `src/storage/` -- the encrypted `LocalStore`, the session-scoped
   `StorageContext` (`storageContext.ts`: the open replica, the remote store, the
   writer id, the sync status store, and the rehydrate mechanism), the

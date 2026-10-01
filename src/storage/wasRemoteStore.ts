@@ -2,8 +2,9 @@
  * Copyright (c) 2026 Interop Alliance. All rights reserved.
  */
 /**
- * WasRemoteStore (delegated-only): the relying-party view of the user's WAS
- * Space, stripped to the RP model -- this app NEVER provisions the Space, never
+ * WasRemoteStore (delegated-only): the view of the user's WAS Space held by the
+ * requester (an app, service, or agent), stripped to the delegated model --
+ * this app NEVER provisions the Space, never
  * derives the spaceId, and never touches the `id` collection or DID publishing.
  * It receives a set of wallet-delegated zcaps, reads the server URL + space id
  * straight out of their `invocationTarget`s ({@link parseGrants}), and holds:
@@ -912,8 +913,8 @@ export class WasRemoteStore {
  * roster through.
  *
  * Deliberately NOT `wasDescriptorSource` from the same subpath: that one
- * describes through the client's root capability, which a relying-party app
- * never holds. Every read here must invoke the per-collection grant, which is
+ * describes through the client's root capability, which a requester never
+ * holds. Every read here must invoke the per-collection grant, which is
  * exactly what {@link WasRemoteStore.readCollectionEncryption} does.
  *
  * A read that fails for a transient reason is warned about and answered as
